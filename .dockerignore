@@ -1,0 +1,12 @@
+.git
+.workbuddy
+node_modules
+**/node_modules
+packages/web/dist
+data
+.shots
+*.png
+__pycache__
+**/__pycache__
+*.pyc
+.env

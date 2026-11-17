@@ -1,0 +1,5290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AlphaForge · 阿尔法熔炉 · 软件需求开发文档 v1.1</title>
+<style>
+:root{
+  --accent:#486ff2; --accent-soft:#eef2ff; --ink:#111827; --ink-2:#374151;
+  --ink-3:#6b7280; --line:#e5e8ef; --line-2:#eef1f6; --bg:#f6f7f9; --card:#ffffff;
+  --code-bg:#f4f6fa;
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{display:flex; align-items:flex-start; max-width:1500px; margin:0 auto;}
+
+/* ---------- 侧边栏 ---------- */
+aside{
+  position:sticky; top:0; height:100vh; width:290px; flex:0 0 290px;
+  background:var(--card); border-right:1px solid var(--line);
+  display:flex; flex-direction:column;
+}
+.brand{padding:20px 20px 14px; border-bottom:1px solid var(--line-2);}
+.brand .kicker{font-size:11px; letter-spacing:.14em; color:var(--accent); font-weight:700;}
+.brand h1{font-size:15px; margin:6px 0 4px; line-height:1.4; font-weight:700;}
+.brand .ver{font-size:11px; color:var(--ink-3);}
+nav.toc{overflow-y:auto; padding:12px 10px 40px; flex:1; font-size:13px;}
+nav.toc ul{list-style:none; margin:0; padding:0;}
+nav.toc > ul > li{margin:1px 0;}
+nav.toc a{
+  display:block; padding:5px 10px; border-radius:6px; color:var(--ink-2);
+  text-decoration:none; line-height:1.45; border-left:2px solid transparent;
+}
+nav.toc a:hover{background:var(--accent-soft); color:var(--accent);}
+nav.toc a.active{background:var(--accent-soft); color:var(--accent); font-weight:700; border-left-color:var(--accent);}
+nav.toc ul ul{margin:0 0 4px 0;}
+nav.toc ul ul a{padding-left:22px; font-size:12.5px; color:var(--ink-3);}
+
+/* ---------- 主体 ---------- */
+main{flex:1 1 auto; min-width:0; padding:34px 48px 100px; max-width:1180px;}
+main > h1:first-child{
+  font-size:27px; line-height:1.35; margin:0 0 6px; letter-spacing:-.01em;
+}
+main h2{
+  font-size:20px; margin:44px 0 14px; padding-bottom:9px;
+  border-bottom:2px solid var(--line); scroll-margin-top:20px;
+}
+main h2:first-of-type{margin-top:26px;}
+main h3{font-size:16px; margin:28px 0 10px; color:#0f172a; scroll-margin-top:20px;}
+main h4{font-size:14.5px; margin:20px 0 8px;}
+p{margin:10px 0; color:var(--ink-2);}
+strong{color:var(--ink); font-weight:600;}
+hr{border:0; border-top:1px solid var(--line); margin:38px 0;}
+a{color:var(--accent);}
+ul,ol{padding-left:22px; color:var(--ink-2);}
+li{margin:4px 0;}
+
+/* ---------- 表格 ---------- */
+.tbl-wrap{overflow-x:auto; margin:16px 0 22px; border:1px solid var(--line); border-radius:10px; background:var(--card);}
+table{border-collapse:collapse; width:100%; font-size:13px; line-height:1.6;}
+thead th{
+  background:#f1f4fb; text-align:left; font-weight:600; color:#0f172a;
+  padding:9px 12px; border-bottom:1px solid var(--line); white-space:nowrap;
+}
+tbody td{padding:8px 12px; border-bottom:1px solid var(--line-2); vertical-align:top; color:var(--ink-2);}
+tbody tr:last-child td{border-bottom:0;}
+tbody tr:nth-child(even){background:#fafbfd;}
+tbody tr:hover{background:var(--accent-soft);}
+td:first-child{color:var(--ink); font-weight:500;}
+td.nowrap{white-space:nowrap;}
+
+.meta-wrap table{font-size:13.5px;}
+.meta-wrap thead{display:none;}
+.meta-wrap td:first-child{width:150px; color:var(--ink-3); font-weight:500; background:#fafbfd;}
+
+/* ---------- 徽章 ---------- */
+.badge{display:inline-block; padding:1px 7px; border-radius:20px; font-size:11.5px; font-weight:700; letter-spacing:.02em;}
+.badge.p0{background:#fee2e2; color:#b91c1c;}
+.badge.p1{background:#fef3c7; color:#b45309;}
+.badge.p2{background:#dbeafe; color:#1d4ed8;}
+.badge.p3{background:#e5e7eb; color:#4b5563;}
+
+/* ---------- 代码 ---------- */
+code{
+  background:var(--code-bg); padding:1.5px 6px; border-radius:5px;
+  font:12.5px/1.6 ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace; color:#b3306b;
+}
+pre{
+  background:#0f172a; color:#e2e8f0; padding:16px 18px; border-radius:10px;
+  overflow-x:auto; font:12.5px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace; margin:14px 0 20px;
+}
+pre code{background:none; padding:0; color:inherit; font-size:12.5px;}
+
+/* ---------- 引用块（场景/说明） ---------- */
+blockquote{
+  margin:16px 0; padding:12px 18px; background:#f8faff;
+  border-left:3px solid var(--accent); border-radius:0 8px 8px 0; color:var(--ink-2);
+}
+blockquote p{margin:4px 0;}
+
+/* ---------- 架构图 ---------- */
+.fig{margin:22px 0 8px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 8px;}
+.fig svg{display:block; width:100%; height:auto;}
+
+.doc-end{margin-top:50px; padding-top:16px; border-top:1px solid var(--line); color:var(--ink-3); font-size:13px;}
+
+@media (max-width:1080px){
+  aside{display:none;}
+  main{padding:24px 18px 80px;}
+  .tbl-wrap{border-radius:8px;}
+}
+@media print{
+  aside{display:none;} body{background:#fff;} main{max-width:none; padding:0;}
+  .tbl-wrap{border:1px solid #ddd;} tbody tr:hover{background:none;}
+  pre{background:#f4f4f4; color:#111;}
+  h2{page-break-after:avoid;} table{page-break-inside:avoid;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside>
+    <div class="brand">
+      <div class="kicker">SRS · AF-001</div>
+      <h1>AlphaForge · 阿尔法熔炉</h1>
+      <div class="ver">软件需求开发文档 v1.1 · 2026-11-06</div>
+    </div>
+    <nav class="toc" id="tocNav">
+<ul>
+<li><a href="#0">0. 文档说明</a><ul>
+<li><a href="#01">0.1 修订记录</a></li>
+<li><a href="#02">0.2 需求优先级定义</a></li>
+<li><a href="#03">0.3 复杂度口径</a></li>
+</ul>
+</li>
+<li><a href="#1">1. 项目概述</a><ul>
+<li><a href="#11">1.1 背景</a></li>
+<li><a href="#12">1.2 产品定位</a></li>
+<li><a href="#13">1.3 设计原则</a></li>
+<li><a href="#14">1.4 与对标产品的取舍</a></li>
+<li><a href="#15">1.5 术语表</a></li>
+</ul>
+</li>
+<li><a href="#2">2. 用户与使用场景</a><ul>
+<li><a href="#21">2.1 用户画像</a></li>
+<li><a href="#22-daily-loop">2.2 交易日工作流（Daily Loop）</a></li>
+<li><a href="#23">2.3 核心场景清单</a></li>
+</ul>
+</li>
+<li><a href="#3">3. 范围与约束</a><ul>
+<li><a href="#31-in-scope">3.1 范围内（In Scope）</a></li>
+<li><a href="#32-out-of-scope">3.2 范围外（Out of Scope）</a></li>
+<li><a href="#33">3.3 假设与约束</a></li>
+</ul>
+</li>
+<li><a href="#4">4. 总体架构</a><ul>
+<li><a href="#41">4.1 逻辑分层</a></li>
+<li><a href="#42">4.2 技术选型</a></li>
+<li><a href="#43">4.3 数据流（主链路）</a></li>
+<li><a href="#44">4.4 服务拆分</a></li>
+<li><a href="#45">4.5 项目命名与代码组织形式</a></li>
+</ul>
+</li>
+<li><a href="#5">5. 功能需求</a><ul>
+<li><a href="#m01-dat">M01 数据中台（DAT）</a></li>
+<li><a href="#m02-sel">M02 选股引擎（SEL）</a></li>
+<li><a href="#m03-sig">M03 买卖区间与信号（SIG）★核心差异</a></li>
+<li><a href="#m04-bt">M04 回测引擎（BT）</a></li>
+<li><a href="#m05-harnessevo">M05 策略进化 Harness（EVO）★核心能力</a></li>
+<li><a href="#m06-tq">M06 交易记录与账户（TQ）</a></li>
+<li><a href="#m07-flow">M07 资金流向与大资金方向（FLOW）</a></li>
+<li><a href="#m08-fut">M08 股指期货与对冲（FUT）</a></li>
+<li><a href="#m09-rms">M09 风控（RMS）</a></li>
+<li><a href="#m10-qte">M10 行情终端（QTE）</a></li>
+<li><a href="#m11-rpt">M11 复盘与报告（RPT）</a></li>
+<li><a href="#m12-sch">M12 调度与通知（SCH）</a></li>
+<li><a href="#m13-str">M13 策略库与版本（STR）</a></li>
+<li><a href="#m14-sys">M14 系统管理（SYS）</a></li>
+</ul>
+</li>
+<li><a href="#6-feature-list">6. 功能清单（Feature List）</a><ul>
+<li><a href="#61">6.1 按模块统计</a></li>
+<li><a href="#62-5">6.2 明细清单（节选核心项，完整条目见第 5 章对应模块表）</a></li>
+</ul>
+</li>
+<li><a href="#7">7. 非功能需求</a><ul>
+<li><a href="#71">7.1 性能</a></li>
+<li><a href="#72">7.2 可靠性</a></li>
+<li><a href="#73">7.3 数据质量</a></li>
+<li><a href="#74">7.4 安全</a></li>
+<li><a href="#75">7.5 可维护性与可测试性</a></li>
+<li><a href="#76">7.6 合规</a></li>
+</ul>
+</li>
+<li><a href="#8">8. 数据模型（核心表）</a><ul>
+<li><a href="#81">8.1 表清单</a></li>
+<li><a href="#82">8.2 关键索引与分区</a></li>
+</ul>
+</li>
+<li><a href="#9">9. 接口设计</a><ul>
+<li><a href="#91">9.1 约定</a></li>
+<li><a href="#92">9.2 接口分组</a></li>
+<li><a href="#93">9.3 关键端点示例</a></li>
+<li><a href="#94-websocket">9.4 WebSocket 频道</a></li>
+<li><a href="#95">9.5 错误码</a></li>
+</ul>
+</li>
+<li><a href="#10">10. 关键技术难点与对策</a></li>
+<li><a href="#11_1">11. 迭代路线图</a><ul>
+<li><a href="#v05-mvp-8">V0.5 · MVP（建议 8 周）</a></li>
+<li><a href="#v10-7">V1.0 · 决策闭环（建议 7 周）</a></li>
+<li><a href="#v15-harness-v1-8">V1.5 · 进化 Harness v1（建议 8 周）</a></li>
+<li><a href="#v20-8">V2.0 · 真实反馈闭环 + 期货（建议 8 周）</a></li>
+<li><a href="#v25">V2.5+ · 储备</a></li>
+</ul>
+</li>
+<li><a href="#12_1">12. 验收标准（系统级）</a></li>
+<li><a href="#13_1">13. 风险与合规声明</a><ul>
+<li><a href="#131">13.1 项目风险</a></li>
+<li><a href="#132">13.2 合规声明</a></li>
+</ul>
+</li>
+<li><a href="#a">附录 A · 因子库清单</a></li>
+<li><a href="#b">附录 B · 关键指标公式</a></li>
+<li><a href="#c">附录 C · 内置策略清单</a></li>
+<li><a href="#d">附录 D · 数据源接口对照（免费档）</a><ul>
+<li><a href="#d1-2026-11-06">D.1 实施期落地口径（2026-11-06 回填）</a></li>
+</ul>
+</li>
+<li><a href="#e">附录 E · 快捷键建议（兼容通达信习惯）</a></li>
+</ul>
+</nav>
+  </aside>
+  <main><h1 id="alphaforge-srs">AlphaForge · 阿尔法熔炉 · 软件需求开发文档（SRS）</h1>
+<p><strong>AlphaForge — Quant Strategy Workbench for Solo Trader</strong></p>
+<div class="tbl-wrap meta-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>产品名称</td>
+<td><strong>AlphaForge · 阿尔法熔炉</strong>（日常简称「熔炉」）</td>
+</tr>
+<tr>
+<td>项目代号</td>
+<td>AlphaForge（工程前缀 <code>af</code>，全小写 ASCII）</td>
+</tr>
+<tr>
+<td>文档编号</td>
+<td>SRS-AF-001</td>
+</tr>
+<tr>
+<td>版本</td>
+<td>v1.1</td>
+</tr>
+<tr>
+<td>状态</td>
+<td>草案 · 待评审</td>
+</tr>
+<tr>
+<td>编制日期</td>
+<td class="nowrap">2026-11-06</td>
+</tr>
+<tr>
+<td>目标读者</td>
+<td>产品负责人、全栈开发、量化研究、测试</td>
+</tr>
+<tr>
+<td>技术栈基线</td>
+<td>Python 3.11+ 计算引擎 / FastAPI · Vue3 + Element Plus + Vite 前端 · Docker Compose 单机部署</td>
+</tr>
+<tr>
+<td>数据源基线</td>
+<td>AkShare / Tushare（免费开源档），预留商业源与券商 Level-2 适配层。<strong>实施期改为公开行情接口直连（新浪 / 东方财富 / 腾讯），零第三方依赖，见附录 D.1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="0">0. 文档说明</h2>
+<h3 id="01">0.1 修订记录</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>版本</th>
+<th>日期</th>
+<th>修订人</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>v0.1</td>
+<td class="nowrap">2026-11-06</td>
+<td>—</td>
+<td>初稿：目标、场景、模块划分</td>
+</tr>
+<tr>
+<td>v1.0</td>
+<td class="nowrap">2026-11-06</td>
+<td>—</td>
+<td>补齐功能清单、数据模型、接口、进化 Harness 设计、路线图、验收标准</td>
+</tr>
+<tr>
+<td>v1.1</td>
+<td class="nowrap">2026-11-06</td>
+<td>—</td>
+<td>确定产品名与工程命名（AlphaForge / <code>af</code>）；新增 4.5 项目命名与代码组织形式；文档编号由 SRS-QSW-001 改为 SRS-AF-001，服务名前缀 <code>qsw-</code> 统一为 <code>af-</code></td>
+</tr>
+<tr>
+<td>v1.1 补记</td>
+<td class="nowrap">2026-11-06</td>
+<td>—</td>
+<td>实施回填（不升版本，仍属 v1.1 草稿）：数据源基线由 AkShare/Tushare 改为公开接口直连，新增附录 D.1 落地对照；分层由 3 层扩为 4 层并加 <code>make layers</code> 静态校验（见 ADR 0001 / 0006）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="02">0.2 需求优先级定义</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>标记</th>
+<th>含义</th>
+<th>排期约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0</strong></td>
+<td>缺失则产品不成立，MVP 必须交付</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td><strong>P1</strong></td>
+<td>核心体验闭环，第二阶段必须交付</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td><strong>P2</strong></td>
+<td>显著增强，视资源投入</td>
+<td>V1.5 / V2.0</td>
+</tr>
+<tr>
+<td><strong>P3</strong></td>
+<td>储备需求，长期演进</td>
+<td>V2.5+</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="03">0.3 复杂度口径</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>标记</th>
+<th>参考工作量（单人）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S</td>
+<td>≤ 2 人日</td>
+</tr>
+<tr>
+<td>M</td>
+<td>3 – 8 人日</td>
+</tr>
+<tr>
+<td>L</td>
+<td>9 – 20 人日</td>
+</tr>
+<tr>
+<td>XL</td>
+<td>&gt; 20 人日，需拆分</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="1">1. 项目概述</h2>
+<h3 id="11">1.1 背景</h3>
+<p>个人交易者在实际交易中存在四个断裂：</p>
+<ol>
+<li><strong>选股与决策断裂</strong>：看盘软件能给出信号，但给不出"在什么区间买、什么区间卖、买多少、错了怎么退"的完整计划。</li>
+<li><strong>决策与执行断裂</strong>：计划是脑子里的，成交是手动的，事后无法判断亏损来自策略错还是执行错。</li>
+<li><strong>执行与复盘断裂</strong>：券商对账单是一堆流水，无法与当初的信号做逐笔匹配归因。</li>
+<li><strong>复盘与进化断裂</strong>：策略改参数靠感觉，缺少"真实成交反馈 → 成本模型校准 → 参数重优化"的机械闭环。</li>
+</ol>
+<p>现有工具（同花顺、通达信、东财、各类选股器）解决的是"看行情 + 写指标 + 出信号"，<strong>不解决策略资产化与可验证进化</strong>。本系统以"策略"为一等公民，把选股、区间化买卖计划、回测验证、真实成交反馈、策略进化串成一条可追溯、可复现的流水线。</p>
+<h3 id="12">1.2 产品定位</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>定位</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>产品名称</td>
+<td>AlphaForge · 阿尔法熔炉（英文工程名 <code>alphaforge</code>，前缀 <code>af</code>）</td>
+</tr>
+<tr>
+<td>命名寓意</td>
+<td>Forge＝熔炉：策略须经反复加热、锻打、淬火、去杂质，才能留下可用之物——正对应进化 Harness 的「搜索 → 稳健性闸门 → 淘汰劣质个体」流程</td>
+</tr>
+<tr>
+<td>用户规模</td>
+<td>单用户为主（个人交易者），架构预留 2–10 人小工作室</td>
+</tr>
+<tr>
+<td>部署形态</td>
+<td>本地优先（个人 PC / 家庭服务器 Docker Compose），数据与策略不出本机</td>
+</tr>
+<tr>
+<td>市场范围</td>
+<td>A 股主板 / 创业板 / 科创板 / 北交所、ETF、可转债；股指期货（IF/IH/IC/IM）；预留港美股</td>
+</tr>
+<tr>
+<td>交易频率</td>
+<td>日频调仓 + 盘中区间触发，最高到分钟级，<strong>不做 tick 级高频</strong></td>
+</tr>
+<tr>
+<td>决策权</td>
+<td>系统只出计划与区间，<strong>人做最终下单决策</strong>；V1 不接自动下单</td>
+</tr>
+<tr>
+<td>核心差异</td>
+<td>①区间化买卖建议（非单点信号）②真实成交反馈驱动的策略进化 Harness</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="13">1.3 设计原则</h3>
+<ol>
+<li><strong>可复现优先于好看</strong>：任何回测结果必须能由「代码版本 + 参数 + 数据快照」三者唯一重建。</li>
+<li><strong>风控前置</strong>：风控是不可被策略覆盖的一票否决层，位于信号之后、计划之前。</li>
+<li><strong>区间优于点位</strong>：不输出"买在 12.34"，输出"建仓区间 12.10–12.45，分批比例 4:3:3"。</li>
+<li><strong>真实成本入模</strong>：手续费、印花税、滑点、冲击成本、涨跌停不可成交，全部进撮合模型，否则回测必虚高。</li>
+<li><strong>反馈闭环机械可执行</strong>：进化不是手工调参，是有适应度函数、有搜索器、有稳健性门槛的自动化流程。</li>
+<li><strong>数据诚实</strong>：免费源的能力边界（无 Level-2、北向实时数据已停披露）在 UI 上明示口径，不制造精度幻觉。</li>
+</ol>
+<h3 id="14">1.4 与对标产品的取舍</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>能力</th>
+<th>同花顺 / 通达信</th>
+<th>本系统</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行情与盘口</td>
+<td>★★★★★ 全</td>
+<td>★★★☆ 日频+分钟频，L2 需升级数据源</td>
+</tr>
+<tr>
+<td>指标公式</td>
+<td>★★★★★ 公式系统成熟</td>
+<td>★★★★ 内置 + Python 自定义</td>
+</tr>
+<tr>
+<td>选股</td>
+<td>★★★ 条件选股</td>
+<td>★★★★★ 多因子 + 打分 + 归因拆解</td>
+</tr>
+<tr>
+<td>买卖计划</td>
+<td>★ 无</td>
+<td>★★★★★ 区间 + 仓位 + 失效条件</td>
+</tr>
+<tr>
+<td>回测</td>
+<td>★★ 简单且易过拟合</td>
+<td>★★★★★ 事件驱动 + 稳健性套件</td>
+</tr>
+<tr>
+<td>交易复盘</td>
+<td>★★ 流水</td>
+<td>★★★★★ 信号-成交逐笔匹配归因</td>
+</tr>
+<tr>
+<td>策略进化</td>
+<td>☆ 无</td>
+<td>★★★★★ 核心能力</td>
+</tr>
+<tr>
+<td>资金流/期货持仓</td>
+<td>★★★★</td>
+<td>★★★★ 口径明示 + 可回测</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>结论：本系统<strong>不替代</strong>行情终端，V0.5 内置基础 K 线与盘口用于减少切换成本，重度盯盘仍可外挂同花顺。</p>
+</blockquote>
+<h3 id="15">1.5 术语表</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>定义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>策略（Strategy）</td>
+<td>由「股票池 + 因子/规则 + 参数 + 调仓频率 + 风控约束」构成的可执行决策单元</td>
+</tr>
+<tr>
+<td>策略 DNA</td>
+<td>策略参数的可编码向量表示，供搜索器与进化算法操作</td>
+</tr>
+<tr>
+<td>区间（Zone）</td>
+<td>带上下界与置信度的价格带，代替单一点位作为买卖执行参考</td>
+</tr>
+<tr>
+<td>PIT（Point-in-Time）</td>
+<td>数据在历史某一时点"当时可见"的版本，防止未来函数</td>
+</tr>
+<tr>
+<td>未来函数</td>
+<td>回测中使用了当时尚不可得的信息（如用当日收盘价决定当日开盘买）</td>
+</tr>
+<tr>
+<td>生存偏差</td>
+<td>回测样本只含存续股票，剔除退市股导致收益虚高</td>
+</tr>
+<tr>
+<td>OOS / IS</td>
+<td>样本外 / 样本内</td>
+</tr>
+<tr>
+<td>Walk-Forward</td>
+<td>滚动前推验证：滚动窗口内优化，紧邻其后区间验证</td>
+</tr>
+<tr>
+<td>PBO</td>
+<td>回测过拟合概率（Probability of Backtest Overfitting）</td>
+</tr>
+<tr>
+<td>DSR</td>
+<td>去通胀夏普比率（Deflated Sharpe Ratio），对多重试验次数做惩罚</td>
+</tr>
+<tr>
+<td>交易计划卡</td>
+<td>一笔交易的完整执行卡：方向、区间、仓位、止损、目标、失效条件</td>
+</tr>
+<tr>
+<td>主力资金</td>
+<td>按单笔成交金额分层的"超大单+大单"净流入近似口径</td>
+</tr>
+<tr>
+<td>基差</td>
+<td>股指期货价格 − 现货指数价格；负值为贴水，年化后即对冲成本</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="2">2. 用户与使用场景</h2>
+<h3 id="21">2.1 用户画像</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主体</td>
+<td>个人交易者，具备开发能力，可自行维护部署</td>
+</tr>
+<tr>
+<td>市场</td>
+<td>A 股为主，关注涨停板/连板梯队、题材轮动、主力资金方向</td>
+</tr>
+<tr>
+<td>工具</td>
+<td>使用股指期货（IF/IC/IM）做对冲或方向交易</td>
+</tr>
+<tr>
+<td>痛点</td>
+<td>信号多但缺计划；复盘靠记忆；策略改进靠感觉</td>
+</tr>
+<tr>
+<td>时间</td>
+<td>早盘 09:15–09:30 决策、盘中区间触发、盘后 15:30 复盘，周末做研究</td>
+</tr>
+<tr>
+<td>诉求</td>
+<td>要"能验证真的赚钱"，不要"曲线好看"</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="22-daily-loop">2.2 交易日工作流（Daily Loop）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>时段</th>
+<th>用户动作</th>
+<th>系统支撑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>08:30 盘前</td>
+<td>看隔夜与今日计划</td>
+<td>自动生成《盘前简报》：持仓风险、待触发信号、今日除权/解禁/财报、期货基差</td>
+</tr>
+<tr>
+<td>09:15–09:25</td>
+<td>集合竞价观察</td>
+<td>竞价异动、涨停封单预估、昨日信号股竞价强度</td>
+</tr>
+<tr>
+<td>09:30–11:30</td>
+<td>区间触发监控</td>
+<td>信号看板：价格进入建仓/加仓/止盈/止损区间的实时提醒与一键生成计划卡</td>
+</tr>
+<tr>
+<td>13:00–14:30</td>
+<td>持仓管理、资金流跟踪</td>
+<td>主力净流入异动、板块轮动强度、期货持仓变化</td>
+</tr>
+<tr>
+<td>14:30–15:00</td>
+<td>尾盘决策</td>
+<td>尾盘信号（收盘价确认类策略）、明日预埋单区间</td>
+</tr>
+<tr>
+<td>15:30 盘后</td>
+<td>复盘、记录成交</td>
+<td>导入对账单→信号匹配→偏差归因→当日复盘报告</td>
+</tr>
+<tr>
+<td>周末</td>
+<td>研究、回测、进化</td>
+<td>跑回测、跑进化任务、评审冠军策略、上线/下线策略</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="23">2.3 核心场景清单</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>场景</th>
+<th>关键要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SC-01</td>
+<td>每日自动选出 20 只候选并按分数排序，给出入选理由</td>
+<td>因子贡献可拆解，同一逻辑不重复入选</td>
+</tr>
+<tr>
+<td>SC-02</td>
+<td>对候选股给出建仓/加仓/减仓/止损区间与仓位</td>
+<td>区间须附置信度与历史命中率</td>
+</tr>
+<tr>
+<td>SC-03</td>
+<td>验证某策略在过去 8 年是否真的赚钱</td>
+<td>含成本、涨跌停不可成交、T+1</td>
+</tr>
+<tr>
+<td>SC-04</td>
+<td>判断策略是"真有效"还是"参数拟合"</td>
+<td>Walk-forward + PBO + DSR 三关</td>
+</tr>
+<tr>
+<td>SC-05</td>
+<td>导入券商对账单，自动匹配当初的信号</td>
+<td>匹配率、滑点分布、偏差类型四象限</td>
+</tr>
+<tr>
+<td>SC-06</td>
+<td>根据我的真实成交习惯修正回测成本假设</td>
+<td>用真实成交反推滑点参数并回写</td>
+</tr>
+<tr>
+<td>SC-07</td>
+<td>系统自动迭代策略参数，输出下一代冠军</td>
+<td>有适应度、有约束、有谱系记录</td>
+</tr>
+<tr>
+<td>SC-08</td>
+<td>看今天大资金往哪个板块流</td>
+<td>个股/板块/概念三级，含连续净流入天数</td>
+</tr>
+<tr>
+<td>SC-09</td>
+<td>看股指期货多空单与基差，判断市场情绪与对冲成本</td>
+<td>前 20 席位净持仓、多空比、年化贴水</td>
+</tr>
+<tr>
+<td>SC-10</td>
+<td>用期货对冲持仓，算要开几手、保证金多少、何时追保</td>
+<td>Beta 对冲手数计算器 + 追保预警</td>
+</tr>
+<tr>
+<td>SC-11</td>
+<td>盘中盯多只股票的 K 线与指标，条件触发提醒</td>
+<td>多股同列、条件预警、桌面/微信推送</td>
+</tr>
+<tr>
+<td>SC-12</td>
+<td>复盘某笔亏损：是策略错还是我没执行</td>
+<td>对比信号价、计划区间、实际成交价、偏离原因</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="3">3. 范围与约束</h2>
+<h3 id="31-in-scope">3.1 范围内（In Scope）</h3>
+<ul>
+<li>数据接入、清洗、PIT 快照与数据质量管理</li>
+<li>多策略选股引擎（因子 + 规则 + 事件 + 涨停板专项）</li>
+<li>区间化买卖信号与交易计划卡</li>
+<li>事件驱动回测与稳健性检验套件</li>
+<li>策略进化 Harness（参数搜索 + 真实反馈闭环 + 谱系管理）</li>
+<li>券商对账单导入、账户绩效与交易归因</li>
+<li>资金流向、龙虎榜、融资融券、北向（日频口径）</li>
+<li>股指期货合约、基差、席位持仓、套保计算</li>
+<li>风控（事前/事中/事后）、行情终端基础、复盘报告、调度与通知</li>
+</ul>
+<h3 id="32-out-of-scope">3.2 范围外（Out of Scope）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>原因</th>
+<th>后续可能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>自动下单 / 程序化交易接口</td>
+<td>合规风险、券商接口稳定性、误单成本</td>
+<td>V3 可选，需独立评审与人工二次确认</td>
+</tr>
+<tr>
+<td>多租户 SaaS、对外荐股</td>
+<td>涉及投顾资质</td>
+<td>不做</td>
+</tr>
+<tr>
+<td>Tick 级高频、盘口微观结构建模</td>
+<td>与个人交易频率不匹配，数据成本极高</td>
+<td>不做</td>
+</tr>
+<tr>
+<td>期权定价与希腊字母</td>
+<td>非当前主线</td>
+<td>V3 储备</td>
+</tr>
+<tr>
+<td>港美股深度数据</td>
+<td>数据源成本</td>
+<td>预留表结构与适配器</td>
+</tr>
+<tr>
+<td>移动端原生 App</td>
+<td>响应式 Web 足够</td>
+<td>V2 响应式优化</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="33">3.3 假设与约束</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>假设/约束</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C-01</td>
+<td>A 股 T+1，当日买入次日可卖</td>
+<td>撮合与可卖数量计算必须建模</td>
+</tr>
+<tr>
+<td>C-02</td>
+<td>涨跌停板（10% / 20% / 30% / ST 5%）与停牌不可成交</td>
+<td>回测成交率需模拟，否则涨停板策略严重虚高</td>
+</tr>
+<tr>
+<td>C-03</td>
+<td>免费数据源无 Level-2 逐笔，大单口径为近似</td>
+<td>资金流功能须标注口径，阈值可配置</td>
+</tr>
+<tr>
+<td>C-04</td>
+<td>沪深港通自 2024-08 起取消盘中实时成交额与个股持股每日披露</td>
+<td>北向仅剩日频成交总额与季度持股，不可做实时信号</td>
+</tr>
+<tr>
+<td>C-05</td>
+<td>中金所席位持仓为 T 日盘后披露</td>
+<td>期货持仓分析存在 1 日滞后，不能做当日盘中信号</td>
+</tr>
+<tr>
+<td>C-06</td>
+<td>免费源存在限流、字段变更、历史回补缺失</td>
+<td>必须有契约测试、多源冗余、失败重试与缺口告警</td>
+</tr>
+<tr>
+<td>C-07</td>
+<td>财务数据按报告期披露，非按期末可得</td>
+<td>必须按公告日对齐，否则严重未来函数</td>
+</tr>
+<tr>
+<td>C-08</td>
+<td>单机部署，CPU 与内存有限（建议 8C16G 起）</td>
+<td>进化任务须采样、缓存、可中断续跑</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="4">4. 总体架构</h2>
+<h3 id="41">4.1 逻辑分层</h3>
+<div class="fig">
+
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="系统分层架构图">
+  <defs>
+    <style>
+      .lbl { font: 600 12px -apple-system,"PingFang SC",sans-serif; fill: #0f172a; }
+      .box { font: 11px -apple-system,"PingFang SC",sans-serif; fill: #1f2937; }
+      .boxw { font: 11px -apple-system,"PingFang SC",sans-serif; fill: #ffffff; }
+      .band { fill: #f8fafc; stroke: #e2e8f0; stroke-width: 1; }
+      .arw { stroke: #94a3b8; stroke-width: 1.5; fill: none; }
+    </style>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect class="band" x="16" y="12" width="868" height="56" rx="10"/>
+  <text class="lbl" x="32" y="46">呈现层</text>
+  <rect x="110" y="24" width="118" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="132" y="44">行情终端</text>
+  <rect x="236" y="24" width="118" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="252" y="44">选股工作台</text>
+  <rect x="362" y="24" width="118" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="378" y="44">交易计划卡</text>
+  <rect x="488" y="24" width="118" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="504" y="44">进化控制台</text>
+  <rect x="614" y="24" width="118" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="630" y="44">复盘与报告</text>
+  <rect x="740" y="24" width="128" height="32" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text class="box" x="756" y="44">风控看板</text>
+
+  <rect class="band" x="16" y="82" width="868" height="46" rx="10"/>
+  <text class="lbl" x="32" y="110">服务层</text>
+  <rect x="110" y="92" width="170" height="26" rx="6" fill="#e0f2fe" stroke="#bae6fd"/>
+  <text class="box" x="128" y="110">REST / OpenAPI</text>
+  <rect x="294" y="92" width="170" height="26" rx="6" fill="#e0f2fe" stroke="#bae6fd"/>
+  <text class="box" x="312" y="110">WebSocket 推送</text>
+  <rect x="478" y="92" width="170" height="26" rx="6" fill="#e0f2fe" stroke="#bae6fd"/>
+  <text class="box" x="496" y="110">认证与权限（对接 RuoYi）</text>
+  <rect x="662" y="92" width="206" height="26" rx="6" fill="#e0f2fe" stroke="#bae6fd"/>
+  <text class="box" x="680" y="110">任务触发 API</text>
+
+  <rect class="band" x="16" y="142" width="868" height="86" rx="10"/>
+  <text class="lbl" x="32" y="192">引擎层</text>
+  <rect x="110" y="156" width="118" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="130" y="180">因子引擎</text>
+  <text class="box" x="130" y="198">清洗/中性化</text>
+  <rect x="236" y="156" width="118" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="256" y="180">选股引擎</text>
+  <text class="box" x="256" y="198">打分/归因</text>
+  <rect x="362" y="156" width="118" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="382" y="180">区间信号</text>
+  <text class="box" x="382" y="198">计划卡生成</text>
+  <rect x="488" y="156" width="118" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="508" y="180">回测撮合</text>
+  <text class="box" x="508" y="198">成本/滑点</text>
+  <rect x="614" y="156" width="118" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="630" y="180">进化 Harness</text>
+  <text class="box" x="630" y="198">搜索/稳健性</text>
+  <rect x="740" y="156" width="128" height="58" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text class="box" x="758" y="180">风控引擎</text>
+  <text class="box" x="758" y="198">仓位/熔断</text>
+
+  <rect class="band" x="16" y="242" width="868" height="60" rx="10"/>
+  <text class="lbl" x="32" y="278">数据层</text>
+  <rect x="110" y="254" width="170" height="36" rx="6" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text class="box" x="126" y="277">Parquet + DuckDB 特征仓</text>
+  <rect x="294" y="254" width="170" height="36" rx="6" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text class="box" x="310" y="277">MySQL 业务库</text>
+  <rect x="478" y="254" width="170" height="36" rx="6" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text class="box" x="494" y="277">Redis 缓存 / 队列</text>
+  <rect x="662" y="254" width="206" height="36" rx="6" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text class="box" x="678" y="277">PIT 快照与数据版本</text>
+
+  <rect class="band" x="16" y="316" width="868" height="60" rx="10"/>
+  <text class="lbl" x="32" y="352">接入层</text>
+  <rect x="110" y="328" width="170" height="36" rx="6" fill="#fef3c7" stroke="#fde68a"/>
+  <text class="box" x="126" y="351">AkShare / Tushare</text>
+  <rect x="294" y="328" width="170" height="36" rx="6" fill="#fef3c7" stroke="#fde68a"/>
+  <text class="box" x="310" y="351">券商对账单</text>
+  <rect x="478" y="328" width="170" height="36" rx="6" fill="#fef3c7" stroke="#fde68a"/>
+  <text class="box" x="494" y="351">期货持仓 / 基差</text>
+  <rect x="662" y="328" width="206" height="36" rx="6" fill="#fef3c7" stroke="#fde68a"/>
+  <text class="box" x="678" y="351">手工记账 / 交易日志</text>
+
+  <rect class="band" x="16" y="390" width="868" height="54" rx="10"/>
+  <text class="lbl" x="32" y="422">调度层</text>
+  <rect x="110" y="402" width="350" height="30" rx="6" fill="#f1f5f9" stroke="#e2e8f0"/>
+  <text class="box" x="126" y="422">APScheduler / Celery：数据同步·因子计算·选股·回测·进化</text>
+  <rect x="476" y="402" width="392" height="30" rx="6" fill="#f1f5f9" stroke="#e2e8f0"/>
+  <text class="box" x="492" y="422">通知：桌面 / 邮件 / 企业微信 / 钉钉 / Webhook</text>
+
+  <path class="arw" d="M450,68 L450,80" marker-end="url(#a)"/>
+  <path class="arw" d="M450,128 L450,140" marker-end="url(#a)"/>
+  <path class="arw" d="M450,228 L450,240" marker-end="url(#a)"/>
+  <path class="arw" d="M450,302 L450,314" marker-end="url(#a)"/>
+</svg>
+
+</div>
+<h3 id="42">4.2 技术选型</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>层</th>
+<th>选型</th>
+<th>理由</th>
+<th>备选</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端框架</td>
+<td>Vue3 + TypeScript + Vite</td>
+<td>与既有 RuoYi 前端栈一致，团队复用</td>
+<td>React</td>
+</tr>
+<tr>
+<td>UI 组件</td>
+<td>Element Plus</td>
+<td>表格/表单密集场景成熟</td>
+<td>Naive UI</td>
+</tr>
+<tr>
+<td>图表</td>
+<td>ECharts（K 线、热力、雷达）+ Lightweight-Charts（高频 K 线渲染）</td>
+<td>ECharts 生态全；LWC 万级 Bar 流畅</td>
+<td>TradingView Charting Library（需授权）</td>
+</tr>
+<tr>
+<td>API 服务</td>
+<td>FastAPI + Pydantic v2 + SQLAlchemy</td>
+<td>异步、自动 OpenAPI、类型校验</td>
+<td>Flask（生态老）</td>
+</tr>
+<tr>
+<td>计算引擎</td>
+<td>pandas 2.x + polars + NumPy + Numba</td>
+<td>polars 处理宽表提速 3–10×，Numba 加速循环撮合</td>
+<td>纯 pandas（慢）</td>
+</tr>
+<tr>
+<td>回测</td>
+<td>自研事件驱动框架（核心）+ vectorbt 做快速探索</td>
+<td>自研可控成本模型；vectorbt 用于参数扫面</td>
+<td>backtrader（慢、维护弱）</td>
+</tr>
+<tr>
+<td>因子存储</td>
+<td>Parquet（分区：日期 / 标的）+ DuckDB 查询</td>
+<td>列存 + 单机 OLAP，无需大数据栈</td>
+<td>ClickHouse（重）</td>
+</tr>
+<tr>
+<td>业务库</td>
+<td>MySQL 8（沿用 ruoyi 库）</td>
+<td>与既有账号权限体系打通</td>
+<td>PostgreSQL</td>
+</tr>
+<tr>
+<td>缓存/队列</td>
+<td>Redis 7</td>
+<td>行情缓存、任务队列、限流</td>
+<td>—</td>
+</tr>
+<tr>
+<td>调度</td>
+<td>APScheduler（进程内）+ Celery（重任务）</td>
+<td>轻量起步，重任务可拆 worker</td>
+<td>Airflow（过重）</td>
+</tr>
+<tr>
+<td>进化搜索</td>
+<td>Optuna（TPE / CMA-ES / NSGA-II）+ 自研 GA</td>
+<td>Optuna 生态成熟，多目标支持好</td>
+<td>纯手写 GA</td>
+</tr>
+<tr>
+<td>部署</td>
+<td>Docker Compose（web / api / worker / redis / mysql）</td>
+<td>单机一键起，个人场景足够</td>
+<td>K8s（过重）</td>
+</tr>
+<tr>
+<td>监控</td>
+<td>结构化日志 + 自建任务看板 + 简单 Prometheus</td>
+<td>够用且轻</td>
+<td>完整可观测栈</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="43">4.3 数据流（主链路）</h3>
+<pre><code>外部数据源
+   │ ① 定时增量拉取（日频 17:00 / 分钟频 15:05 补齐 / 盘中 3s 轮询）
+   ▼
+raw 层（原样落盘，不可变，带抓取时间戳 source_ts）
+   │ ② 清洗：去重、字段标准化、单位统一、交易日历对齐、复权因子合成
+   ▼
+clean 层（PIT 对齐后的标准表）
+   │ ③ 因子计算：横截面算子 + 时序算子 → 因子宽表
+   ▼
+feature 层（Parquet 分区宽表 + 因子元数据）
+   │ ④ 选股引擎：打分 → Top-N → 入选理由
+   ▼
+信号层（Signal + Zone + TradePlan）
+   │ ⑤ 风控引擎：仓位、集中度、熔断校验 → 否决/降权
+   ▼
+计划层（TradePlanCard）→ 前端看板 / 预警推送
+   │ ⑥ 成交导入 → 信号-成交匹配 → 偏差归因 → 成本模型校准
+   ▼
+反馈层（FeedbackRecord）→ 进化 Harness 适应度输入
+</code></pre>
+<h3 id="44">4.4 服务拆分</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>服务（容器名）</th>
+<th>代码位置</th>
+<th>职责</th>
+<th>部署</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>af-web</code></td>
+<td><code>packages/web</code></td>
+<td>前端静态资源 + Nginx 反代</td>
+<td>容器</td>
+</tr>
+<tr>
+<td><code>af-api</code></td>
+<td><code>packages/api</code></td>
+<td>REST/WS 网关、业务编排、认证</td>
+<td>容器</td>
+</tr>
+<tr>
+<td><code>af-engine</code></td>
+<td><code>packages/engine</code></td>
+<td>因子计算、回测、进化任务（重 CPU）</td>
+<td>容器，可多副本</td>
+</tr>
+<tr>
+<td><code>af-scheduler</code></td>
+<td><code>packages/api</code>（同进程）</td>
+<td>定时任务编排、失败重试</td>
+<td>V0.5 并入 api 进程内 APScheduler；V1.5 起拆为独立容器</td>
+</tr>
+<tr>
+<td><code>af-store</code></td>
+<td>—</td>
+<td>MySQL / Redis / Parquet 卷</td>
+<td>容器 + 宿主卷</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>V0.5 阶段为降低运维复杂度，<code>web</code> / <code>api</code>（含 scheduler）/ <code>engine</code> / <code>mysql</code> / <code>redis</code> 共 5 个容器即可跑通全流程；<code>af-scheduler</code> 独立拆分推迟到 V1.5 出现多任务并发排队需求时再做。</p>
+</blockquote>
+<hr />
+<h3 id="45">4.5 项目命名与代码组织形式</h3>
+<blockquote>
+<p>本章锁定"文件夹叫什么、包叫什么、服务叫什么、提交怎么写"。这些一旦定下就不再改，因为改名的成本远高于忍受一个不够完美的名字。</p>
+</blockquote>
+<h4 id="451">4.5.1 命名体系</h4>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>取值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>产品名（中文）</td>
+<td>阿尔法熔炉</td>
+<td>日常口语简称「熔炉」，如"这策略过熔炉了吗"</td>
+</tr>
+<tr>
+<td>产品名（英文）</td>
+<td>AlphaForge</td>
+<td>界面 Logo、文档标题、README 使用</td>
+</tr>
+<tr>
+<td>项目代号</td>
+<td><code>alphaforge</code></td>
+<td>全小写 ASCII、无连字符、无下划线、不含中文</td>
+</tr>
+<tr>
+<td>工程前缀</td>
+<td><code>af</code></td>
+<td>用于环境变量、容器名、Redis key、日志前缀</td>
+</tr>
+<tr>
+<td>包名空间</td>
+<td><code>alphaforge_core</code> / <code>alphaforge_api</code> / <code>alphaforge_engine</code></td>
+<td>Python 包统一词根 + 角色后缀</td>
+</tr>
+<tr>
+<td>前端包名</td>
+<td><code>alphaforge-web</code></td>
+<td><code>package.json</code> 的 <code>name</code> 字段</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>命名寓意</strong>：Forge＝熔炉。策略必须经反复加热、锻打、淬火、去杂质才能留下可用之物，正对应进化 Harness 的「搜索 → 稳健性闸门 → 淘汰劣质个体」流程。</p>
+<p><strong>命名原则（硬约束）</strong></p>
+<ol>
+<li>目录名、包名、镜像名<strong>一律小写 ASCII</strong>，禁止中文、空格、连字符混用——Windows 路径、Docker volume、Nginx 配置三处都会因此出问题。</li>
+<li>前缀只有一套，不存在 <code>qsw</code> 与 <code>af</code> 并存。</li>
+<li>环境变量统一 <code>AF_</code> 开头，避免与系统变量或其他项目冲突。</li>
+</ol>
+<p><strong>备选方案（若日后更名，仅改前缀层，架构不变）</strong></p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>名称</th>
+<th>前缀</th>
+<th>取向</th>
+<th>取舍说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>StratEvo · 策演</td>
+<td><code>se</code></td>
+<td>强调策略演化，学术味重</td>
+<td><code>se</code> 过短易冲突，且不像产品名</td>
+</tr>
+<tr>
+<td>ZoneQuant · 区间</td>
+<td><code>zq</code></td>
+<td>强调区间化买卖这一差异化能力</td>
+<td>把护城河写在名字上，但忽略选股与进化</td>
+</tr>
+<tr>
+<td>QForge · 量化熔炉</td>
+<td><code>qf</code></td>
+<td>最短、最好输入</td>
+<td>与 AlphaForge 同源，"Q" 过于通用，不易检索</td>
+</tr>
+</tbody>
+</table></div>
+<h4 id="452">4.5.2 命名对照表（全量）</h4>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>位置</th>
+<th>名称</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>根仓库 / 根目录</td>
+<td><code>alphaforge</code></td>
+<td>monorepo，单人开发不拆仓</td>
+</tr>
+<tr>
+<td>前端目录</td>
+<td><code>packages/web</code></td>
+<td>Vue3 + TS + Vite + Element Plus</td>
+</tr>
+<tr>
+<td>后端网关目录</td>
+<td><code>packages/api</code></td>
+<td>FastAPI，Python 包 <code>alphaforge_api</code></td>
+</tr>
+<tr>
+<td>计算引擎目录</td>
+<td><code>packages/engine</code></td>
+<td>Python 包 <code>alphaforge_engine</code></td>
+</tr>
+<tr>
+<td>共享领域层</td>
+<td><code>packages/core</code></td>
+<td>Python 包 <code>alphaforge_core</code>，api 与 engine 共用</td>
+</tr>
+<tr>
+<td>前端类型来源</td>
+<td><code>core</code> 导出 OpenAPI → <code>web/src/types/api.d.ts</code></td>
+<td>由脚本生成，禁止手工维护两份类型</td>
+</tr>
+<tr>
+<td>Docker Compose 项目名</td>
+<td><code>alphaforge</code></td>
+<td>容器名自动带前缀</td>
+</tr>
+<tr>
+<td>容器服务名</td>
+<td><code>af-web</code> <code>af-api</code> <code>af-engine</code> <code>af-scheduler</code> <code>af-mysql</code> <code>af-redis</code></td>
+<td></td>
+</tr>
+<tr>
+<td>镜像名</td>
+<td><code>alphaforge/api</code> <code>alphaforge/engine</code> <code>alphaforge/web</code></td>
+<td>tag 用 <code>dev</code> / <code>0.5.0</code></td>
+</tr>
+<tr>
+<td>MySQL 库名</td>
+<td><code>alphaforge</code></td>
+<td>应用账号 <code>af_app</code>（最小权限，仅 DML）</td>
+</tr>
+<tr>
+<td>Redis key 前缀</td>
+<td><code>af:</code></td>
+<td><code>af:quote:*</code> <code>af:task:*</code> <code>af:lock:*</code></td>
+</tr>
+<tr>
+<td>环境变量前缀</td>
+<td><code>AF_</code></td>
+<td><code>AF_DB_HOST</code> <code>AF_TUSHARE_TOKEN</code> <code>AF_JWT_SECRET</code> <code>AF_APP_VERSION</code></td>
+</tr>
+<tr>
+<td>日志前缀</td>
+<td><code>[AF]</code></td>
+<td>便于 <code>grep</code> 与日志聚合过滤</td>
+</tr>
+<tr>
+<td>Python 虚拟环境</td>
+<td><code>.venv</code></td>
+<td>放在仓库根，<code>packages/*</code> 共用</td>
+</tr>
+<tr>
+<td>前端本地开发</td>
+<td><code>http://localhost:5173</code></td>
+<td>Vite 默认端口</td>
+</tr>
+<tr>
+<td>API 本地开发</td>
+<td><code>http://localhost:8000/api/v1</code></td>
+<td></td>
+</tr>
+<tr>
+<td>生产入口</td>
+<td>Nginx <code>80</code> → 静态资源 + <code>/api</code> 反代</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h4 id="453">4.5.3 仓库结构</h4>
+<pre><code>alphaforge/
+├── README.md                      # 项目简介、快速启动、模块索引
+├── Makefile                       # make dev / make sync / make backtest / make fmt
+├── .gitignore
+├── .env.example                   # 全部 AF_* 变量示例，不含真实密钥
+├── docs/
+│   ├── SRS-AlphaForge-v1.1.md     # 本文档
+│   ├── SRS-AlphaForge-v1.1.html
+│   └── adr/                       # 架构决策记录：每次选型变更写一条，形如 0001-use-duckdb-for-factor-store.md
+├── deploy/
+│   ├── docker-compose.yml         # 生产/日常运行
+│   ├── docker-compose.dev.yml     # 开发覆盖：热重载、端口暴露
+│   ├── nginx/alphaforge.conf
+│   └── Dockerfile.{web,api,engine}
+├── packages/
+│   ├── core/                      # 共享领域层
+│   │   └── src/alphaforge_core/
+│   │       ├── models/            # ORM 表模型（对应第 8 章数据模型）
+│   │       ├── schemas/           # Pydantic DTO，同时作为 API 契约
+│   │       ├── constants/         # 枚举、错误码、风控默认值
+│   │       └── utils/
+│   ├── api/
+│   │   └── src/alphaforge_api/
+│   │       ├── main.py            # FastAPI 入口
+│   │       ├── routers/           # 按第 9 章分组：market/data/select/signal/backtest/evo/trade/flow/future/risk/strategy/report/sys
+│   │       ├── services/          # 业务编排（只编排，不写计算）
+│   │       ├── deps/              # 依赖注入：db session、当前用户、分页
+│   │       └── ws/                # WebSocket 频道
+│   └── engine/
+│       └── src/alphaforge_engine/
+│           ├── data/              # 接入、清洗、质量校验、PIT 快照
+│           ├── factor/            # 因子计算、预处理、中性化、检验
+│           ├── select/            # 选股引擎、打分合成、涨停板专项
+│           ├── backtest/          # 撮合、成本、滑点、组合、绩效
+│           ├── evo/               # DNA、适应度、搜索器、稳健性套件、谱系
+│           └── risk/              # 仓位算法、限额校验
+├── data/                          # 不进 git，挂 Docker volume
+│   ├── raw/                       # 原始落盘，只增不改
+│   ├── clean/                     # 清洗后标准表
+│   ├── feature/                   # Parquet 分区宽表
+│   └── snapshot/                  # PIT 快照与版本清单
+└── scripts/
+    ├── init_db.py                 # 建库建表 + 初始数据
+    ├── gen_types.py               # OpenAPI → 前端 TS 类型
+    └── scaffold_strategy.py       # 生成自定义策略模板文件
+</code></pre>
+<p><strong>为什么用 monorepo 而非前后端分仓</strong>：<code>core</code> 必须同时被 <code>api</code> 与 <code>engine</code> 依赖。分仓意味着要么发包走私有源，要么复制模型文件——对单人项目是纯粹的自我消耗。前端只通过 HTTP 访问后端，隔离性本就足够；前后端分仓的收益（独立发布、权限隔离）在此场景下为零。</p>
+<h4 id="454">4.5.4 依赖方向（架构硬约束）</h4>
+<pre><code>web  ──HTTP──►  api  ──►  engine
+                 │          │
+                 └──►  core ◄──┘
+</code></pre>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>规则</th>
+<th>说明</th>
+<th>违反后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>core</code> 不依赖任何上层包</td>
+<td>core 只含模型、DTO、常量、工具</td>
+<td>循环依赖，无法独立测试</td>
+</tr>
+<tr>
+<td><code>engine</code> 只依赖 <code>core</code></td>
+<td>计算逻辑不得调用 api 的 service</td>
+<td>计算逻辑被 HTTP 层绑死，无法批量跑</td>
+</tr>
+<tr>
+<td><code>api</code> 可依赖 <code>core</code> 与 <code>engine</code></td>
+<td>api 负责编排与鉴权，不含计算</td>
+<td>计算散落在路由层，回测与实盘口径分叉</td>
+</tr>
+<tr>
+<td><code>engine</code> 禁止 import <code>api</code></td>
+<td>通过任务参数传入配置，不反向取</td>
+<td>违反后 engine 无法脱离 Web 进程运行</td>
+</tr>
+<tr>
+<td><code>web</code> 只通过 HTTP/WS 访问</td>
+<td>禁止在前端重算因子或指标</td>
+<td>前后端口径不一致，最常见的"图上看是买点、系统说不是"</td>
+</tr>
+</tbody>
+</table></div>
+<h4 id="455">4.5.5 工程约定</h4>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>约定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>分支模型</td>
+<td><code>main</code> 必须随时可运行；开发走 <code>feat/xxx</code>、<code>fix/xxx</code>、<code>data/xxx</code>。单人可 trunk-based，但<strong>每次提交必须能跑起来</strong>——因为你经常要回测一周前的代码</td>
+</tr>
+<tr>
+<td>提交前缀</td>
+<td><code>feat:</code> <code>fix:</code> <code>data:</code> <code>strat:</code> <code>evo:</code> <code>docs:</code> <code>chore:</code>。其中 <code>strat:</code>（策略逻辑变更）与 <code>evo:</code>（进化实验配置/适应度变更）单独留出，这两类是最需要回溯的变更</td>
+</tr>
+<tr>
+<td>版本号三处联动</td>
+<td><code>packages/web/package.json</code> 的 <code>version</code>、<code>alphaforge_api.__version__</code>、<code>.env</code> 的 <code>AF_APP_VERSION</code> 必须一致</td>
+</tr>
+<tr>
+<td>回测结果必带版本</td>
+<td>每次回测落库必须写入 <code>AF_APP_VERSION</code> 与 <code>git commit</code>，否则半年后无法判断某次回测出自哪版代码（对应 FR-BT-15）</td>
+</tr>
+<tr>
+<td>数据目录</td>
+<td><code>data/</code> 全部进 <code>.gitignore</code>，只提交 <code>.gitkeep</code> 与目录说明</td>
+</tr>
+<tr>
+<td>密钥</td>
+<td>只存在 <code>.env</code>（gitignore）与宿主机环境变量，<code>.env.example</code> 只放占位符（对应 FR-SYS-05）</td>
+</tr>
+<tr>
+<td>代码风格</td>
+<td>Python：ruff + black，行宽 100；TS：eslint + prettier。<code>make fmt</code> 一键执行</td>
+</tr>
+<tr>
+<td>测试</td>
+<td><code>engine</code> 的撮合、成本、绩效计算必须有单元测试（对应 NFR-M-01），<code>api</code> 路由做接口级测试</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="5">5. 功能需求</h2>
+<blockquote>
+<p>编号规则：<code>FR-&lt;模块码&gt;-&lt;序号&gt;</code>。每条需求可被一条验收用例覆盖。</p>
+</blockquote>
+<h3 id="m01-dat">M01 数据中台（DAT）</h3>
+<p><strong>目标</strong>：提供唯一可信、可回溯、PIT 对齐的数据底座。所有上层模块只读数据中台，禁止各自直连外部源。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-DAT-01</td>
+<td>交易日历同步</td>
+<td>沪深交易所交易日、半日市、临时休市</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-02</td>
+<td>行情日线接入</td>
+<td>开高低收、成交量额、复权因子、换手率</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-03</td>
+<td>分钟线接入</td>
+<td>1/5/15/30/60 分钟，保留 3 年</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-DAT-04</td>
+<td>标的元数据</td>
+<td>代码、名称、上市日、退市日、板块、ST 标记、所属行业（申万三级）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-05</td>
+<td>股本与除权</td>
+<td>总股本/流通股本变动、分红送转、除权除息日</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-06</td>
+<td>停复牌与涨跌停</td>
+<td>每日停牌标记、当日涨跌停价、是否一字板</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-07</td>
+<td>财务数据（PIT）</td>
+<td>三大报表 + 衍生指标，按<strong>公告日</strong>入库，保留原始报告期</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-08</td>
+<td>龙虎榜/大宗交易</td>
+<td>上榜原因、买卖席位、成交额</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-DAT-09</td>
+<td>融资融券</td>
+<td>每日融资余额、融券余量、标的名单变更</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-DAT-10</td>
+<td>陆股通持股</td>
+<td>季度个股持股明细 + 日频成交总额（2024-08 后口径，UI 需明示限制）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-DAT-11</td>
+<td>板块与指数成分</td>
+<td>行业/概念成分及历史变更（防生存偏差）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-12</td>
+<td>期货合约与持仓</td>
+<td>IF/IH/IC/IM 合约、结算价、基差、前 20 席位持仓排名</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-DAT-13</td>
+<td>ETF 与可转债</td>
+<td>基础行情、溢价率、转股价值</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-DAT-14</td>
+<td>数据质量校验</td>
+<td>完整性/唯一性/值域/时序跳变/复权连续性 五类规则，失败阻断下游并告警</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-15</td>
+<td>缺口回补</td>
+<td>缺失日期自动重拉，最多 3 次退避重试，仍失败进入人工待办</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-16</td>
+<td>PIT 快照与版本</td>
+<td>每次全量快照打版本号，回测必须绑定快照版本</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-17</td>
+<td>数据字典与血缘</td>
+<td>每个字段：中文名、口径、来源接口、更新频率、责任模块</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-DAT-18</td>
+<td>多源冗余与切换</td>
+<td>主源失败自动切备源，字段级一致性校验</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-DAT-19</td>
+<td>退市股保留</td>
+<td>退市标的行情与财务永久保留，用于消除生存偏差</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-DAT-20</td>
+<td>数据源契约测试</td>
+<td>每日抓取后校验关键字段非空率、数值区间，防源端改字段</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>关键规则</strong></p>
+<ol>
+<li>所有下游只能通过 <code>data_service.get_bars(codes, start, end, freq, adjust, as_of)</code> 取数，<code>as_of</code> 参数强制 PIT 语义。</li>
+<li>财务指标必须提供 <code>announce_date</code> 与 <code>report_period</code> 两个时间字段；回测取数按 <code>announce_date &lt;= as_of</code> 过滤。</li>
+<li>原始 raw 层只增不改；清洗逻辑变更时新建 clean 版本并行，不覆盖历史。</li>
+</ol>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>抽取任意 50 个交易日、500 只股票的日线，与交易所公开数据比对，收盘价与成交额差异为 0。</li>
+<li>人为删除某日数据后重跑，系统在 3 分钟内自动补齐并记录日志。</li>
+<li>对 2015 年退市的股票，回测区间覆盖时可以取到其完整历史行情。</li>
+</ul>
+<hr />
+<h3 id="m02-sel">M02 选股引擎（SEL）</h3>
+<p><strong>目标</strong>：把"选什么"变成可解释、可配置、可复现的多策略打分过程。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-SEL-01</td>
+<td>股票池管理</td>
+<td>全 A / 沪深300 / 中证500 / 中证1000 / 行业 / 概念 / 自选；支持排除 ST、次新（上市 &lt; N 日）、停牌、低流动性（日均成交额 &lt; X）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-02</td>
+<td>因子库</td>
+<td>6 大类 40+ 因子（见附录 A），统一注册、版本化、可停用</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-03</td>
+<td>因子预处理流水线</td>
+<td>去极值（MAD 3 倍）→ 缺失填充（行业中位数）→ 标准化（Z-score / Rank）→ 行业市值中性化，步骤顺序可配置</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-04</td>
+<td>单因子检验</td>
+<td>IC / RankIC / ICIR / 分层回测（5 层）/ 多空收益 / 因子自相关 / 衰减曲线</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SEL-05</td>
+<td>打分合成</td>
+<td>等权 / IC 加权 / ICIR 加权 / 最大化 ICIR / 机器学习排序（LightGBM Ranker）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SEL-06</td>
+<td>选股输出</td>
+<td>Top-N 列表：代码、名称、综合分、各因子分位、所属行业、流动性指标</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-07</td>
+<td>入选理由拆解</td>
+<td>每只股票输出"贡献前 3 的正向因子 + 前 2 的负向因子"，可展开因子值</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-08</td>
+<td>相似度去重</td>
+<td>同行业同逻辑不重复入选（相关性 &gt; 0.85 或同概念取分数最高者）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SEL-09</td>
+<td>策略模板库</td>
+<td>内置 ≥8 个可跑策略（附录 C），开箱可用</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-10</td>
+<td>自定义策略（代码）</td>
+<td>Python 策略文件，实现 <code>select(ctx) -&gt; list[Candidate]</code> 接口，沙箱执行</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SEL-11</td>
+<td>自定义策略（可视化）</td>
+<td>条件构建器：指标 + 比较符 + 阈值 + AND/OR 组合，可保存复用</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-SEL-12</td>
+<td>涨停板专项</td>
+<td>连板梯队（首板/2板/3板+）、封单额与封单比、封板时间、炸板次数、晋级率统计、题材热度</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SEL-13</td>
+<td>龙头识别</td>
+<td>基于板块内涨幅、成交额占比、封板时间、连板高度综合评分</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-SEL-14</td>
+<td>多策略并行选股</td>
+<td>同时运行 N 个策略，合并去重，标注来源策略</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-15</td>
+<td>选股结果快照</td>
+<td>每日结果落库，支持回看"某日某策略选了什么"</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SEL-16</td>
+<td>结果对比</td>
+<td>两日/两策略选股结果 diff（新增、剔除、留存）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>关键规则</strong></p>
+<ol>
+<li>因子计算必须严格使用 <code>as_of</code> 当日及以前数据；当日收盘后运行的选股，若用于次日交易，信号时间戳记为 <code>T 日 15:30</code>，可执行时间不早于 <code>T+1 开盘</code>。</li>
+<li>中性化后的因子禁止再与原始市值因子混用，避免隐性风格暴露。</li>
+<li>涨停板封单额需以"封单量 × 涨停价"计算，且盘中动态值仅作观察，进策略必须用收盘定格值。</li>
+</ol>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>同一策略、同一日期、同一数据快照，两次运行结果完全一致（含排序）。</li>
+<li>选股结果页展示的因子分位值与因子宽表中数值一致。</li>
+<li>涨停板模块对某日全部涨停股，连板高度统计与交易所公开连板数据一致。</li>
+</ul>
+<hr />
+<h3 id="m03-sig">M03 买卖区间与信号（SIG）★核心差异</h3>
+<p><strong>目标</strong>：把"买/卖"从单点信号升级为带概率、带仓位、带失效条件的可执行区间。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-SIG-01</td>
+<td>信号类型</td>
+<td>建仓（ENTRY）/ 加仓（ADD）/ 减仓（TRIM）/ 清仓（EXIT）/ 观察（WATCH）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-02</td>
+<td>区间化输出模型</td>
+<td>每信号输出：观察区、建仓区、加仓区、目标区（TP1/TP2）、止损区、失效条件</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-03</td>
+<td>区间生成算法 A：波动率法</td>
+<td>ATR(14) × 系数 k，k 由策略 DNA 决定；上下界围绕参考价对称或偏置</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-04</td>
+<td>区间生成算法 B：结构法</td>
+<td>支撑阻力簇（成交密集区、前高前低、缺口、均线簇、斐波那契回撤）聚类取带</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-05</td>
+<td>区间生成算法 C：分位法</td>
+<td>近 N 日价格分位（20%/40%/60%/80%）作为分批触发线</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-06</td>
+<td>区间生成算法 D：通道法</td>
+<td>布林带 / 肯特纳通道 / 唐奇安通道上下轨</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-07</td>
+<td>分批比例</td>
+<td>区间内按 4:3:3 或 5:5 分批，比例可配置，输出每批的触发价与股数</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-08</td>
+<td>区间置信度</td>
+<td>0–100 综合分：信号强度 × 历史同类信号命中率 × 流动性 × 波动率适配度</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-09</td>
+<td>历史命中率回填</td>
+<td>对同类信号（同策略同信号类型）历史触发后 N 日胜率与平均收益，作为区间可信度依据</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-10</td>
+<td>赔率标注</td>
+<td>每张计划卡标注 R:R =（目标区中枢 − 建仓中枢）/（建仓中枢 − 止损中枢）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-11</td>
+<td>仓位建议</td>
+<td>基于单笔风险 R（账户净值 × 单笔风险比例）÷ 每股风险额，输出建议股数与占比</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-12</td>
+<td>多策略冲突消解</td>
+<td>同标的被多策略给出相反信号时，按 权重投票 / 优先级 / 一票否决（风控）三选一策略</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-13</td>
+<td>交易计划卡</td>
+<td>结构化卡片：标的、方向、区间、分批、仓位、最大亏损、目标、失效条件、时间止损（N 日不达预期离场）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SIG-14</td>
+<td>信号生命周期状态机</td>
+<td>待触发 → 已触发 → 持有 → 部分了结 → 已了结 / 已失效 / 已过期，状态变更留痕</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-15</td>
+<td>动态区间调整</td>
+<td>持仓后按移动止损（吊灯止损 ATR×k）、保本止损、波动率收缩自适应调整区间并推送变更</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-16</td>
+<td>区间有效性衰减</td>
+<td>信号生成后 N 日未触发自动降权/过期，避免"僵尸信号"</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SIG-17</td>
+<td>计划卡导出</td>
+<td>导出为图片/PDF，便于手机端查看或记录</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>区间输出结构（核心数据契约）</strong></p>
+<pre><code class="language-json">{
+  &quot;plan_id&quot;: &quot;PLAN-20261106-600519-001&quot;,
+  &quot;code&quot;: &quot;600519.SH&quot;,
+  &quot;name&quot;: &quot;贵州茅台&quot;,
+  &quot;strategy_id&quot;: &quot;S-MULTIFACTOR-V3&quot;,
+  &quot;signal_type&quot;: &quot;ENTRY&quot;,
+  &quot;direction&quot;: &quot;LONG&quot;,
+  &quot;as_of&quot;: &quot;2026-11-06T15:30:00+08:00&quot;,
+  &quot;executable_from&quot;: &quot;2026-11-09T09:30:00+08:00&quot;,
+  &quot;zones&quot;: {
+    &quot;watch&quot;:    {&quot;low&quot;: 1650.00, &quot;high&quot;: 1720.00},
+    &quot;entry&quot;:    {&quot;low&quot;: 1668.00, &quot;high&quot;: 1692.00, &quot;confidence&quot;: 78, &quot;method&quot;: &quot;ATR+CHANNEL&quot;},
+    &quot;add&quot;:      {&quot;low&quot;: 1620.00, &quot;high&quot;: 1645.00, &quot;condition&quot;: &quot;回踩20日线不破&quot;},
+    &quot;target&quot;:   [{&quot;level&quot;: &quot;TP1&quot;, &quot;low&quot;: 1805.00, &quot;high&quot;: 1830.00, &quot;ratio&quot;: 0.5},
+                 {&quot;level&quot;: &quot;TP2&quot;, &quot;low&quot;: 1910.00, &quot;high&quot;: 1960.00, &quot;ratio&quot;: 0.5}],
+    &quot;stop&quot;:     {&quot;low&quot;: 1585.00, &quot;high&quot;: 1600.00}
+  },
+  &quot;sizing&quot;: {&quot;risk_per_trade_pct&quot;: 1.0, &quot;shares&quot;: 300, &quot;weight_pct&quot;: 8.5,
+             &quot;tranches&quot;: [{&quot;price&quot;: 1690.0, &quot;pct&quot;: 0.4}, {&quot;price&quot;: 1680.0, &quot;pct&quot;: 0.3},
+                          {&quot;price&quot;: 1670.0, &quot;pct&quot;: 0.3}]},
+  &quot;rr&quot;: 2.31,
+  &quot;invalidation&quot;: [&quot;收盘跌破 1585 且成交量放大 1.5 倍&quot;, &quot;所属行业指数跌破 60 日线&quot;],
+  &quot;time_stop_days&quot;: 15,
+  &quot;reason&quot;: {
+    &quot;positive&quot;: [&quot;20日动量分位 92%&quot;, &quot;主力5日净流入 3.2 亿&quot;, &quot;ROE 分位 88%&quot;],
+    &quot;negative&quot;: [&quot;估值分位 76%（偏高）&quot;, &quot;近 3 日融资余额下降&quot;]
+  }
+}
+</code></pre>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>任一计划卡的 <code>entry.high</code> 与 <code>stop.low</code> 之间关系必须满足 <code>entry.high &gt; stop.high</code>，否则拒绝生成并报错。</li>
+<li>计划卡给出的 <code>shares</code> 在按 <code>stop</code> 成交时，账户亏损 ≤ <code>risk_per_trade_pct × 净值</code>（误差 ≤ 1 股）。</li>
+<li>区间置信度与历史命中率均可追溯到具体回测样本区间与样本量。</li>
+</ul>
+<hr />
+<h3 id="m04-bt">M04 回测引擎（BT）</h3>
+<p><strong>目标</strong>：给出"如果过去这样做，扣掉真实成本后剩多少"的可信答案。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-BT-01</td>
+<td>双引擎</td>
+<td>向量化引擎（快速参数扫描，秒级）+ 事件驱动引擎（逐 Bar 撮合，真实性优先）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-02</td>
+<td>撮合时点</td>
+<td>次日开盘 / 次日收盘 / 当日收盘 / 指定时段 VWAP，可选</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-03</td>
+<td>订单类型</td>
+<td>市价、限价、止损单、移动止损单</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-04</td>
+<td>涨停跌停不可成交</td>
+<td>一字板买入失败、跌停卖出失败；涨停开盘按封单比例概率成交（可配）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-05</td>
+<td>停牌处理</td>
+<td>停牌期间不可交易，持仓按最后价估值，复牌按实际开盘成交</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-06</td>
+<td>T+1 约束</td>
+<td>当日买入份额当日不可卖，可卖数量按 <code>昨仓 + 今买解冻</code> 计算</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-07</td>
+<td>成本模型</td>
+<td>佣金（万 2.5，最低 5 元）、印花税（卖出 0.05%）、过户费、可配置</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-08</td>
+<td>滑点模型</td>
+<td>固定 / 百分比 / 波动率相关（k×ATR）/ 冲击成本（成交量占比幂函数），四选一或组合</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-09</td>
+<td>部分成交</td>
+<td>大单按标的日均成交额的 X% 上限拆分，超出部分顺延或作废</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-BT-10</td>
+<td>组合层回测</td>
+<td>多标的同时持仓、资金竞争、最大持仓数、单票/行业上限、定期再平衡</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-11</td>
+<td>绩效指标</td>
+<td>年化收益、最大回撤、夏普、索提诺、卡玛、胜率、盈亏比、换手率、持仓天数分布、月度收益矩阵</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-12</td>
+<td>基准对比</td>
+<td>沪深300 / 中证500 / 中证1000 / 等权全A，超额收益与跟踪误差</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-13</td>
+<td>归因分析</td>
+<td>Brinson 归因（行业配置 + 个股选择）、风格暴露（规模/价值/动量/波动）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-BT-14</td>
+<td>未来函数检测器</td>
+<td>静态扫描策略代码（<code>.shift(-n)</code>、<code>iloc[i+1]</code>、当日收盘取当日信号当日成交）+ 财务数据时间对齐校验</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-BT-15</td>
+<td>实验管理</td>
+<td>每次回测落库：代码 commit、参数、数据快照版本、结果、耗时，可一键复现</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-BT-16</td>
+<td>回测报告</td>
+<td>自动生成含净值曲线、回撤曲线、月度热力图、交易明细、指标卡的 HTML 报告</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-BT-17</td>
+<td>交易明细下钻</td>
+<td>任一交易可跳转查看当日行情、信号、因子值</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>构造一个"每日 9:30 全仓买入某股、次日 9:30 卖出"的基准策略，回测收益与手工公式计算结果偏差 &lt; 0.1%。</li>
+<li>对 2024-10-08 这类千股涨停日回测，买入订单成交率应显著低于 100%，与真实情况方向一致。</li>
+<li>故意在策略中写 <code>.shift(-1)</code>，未来函数检测器必须报错并阻止回测入库。</li>
+</ul>
+<hr />
+<h3 id="m05-harnessevo">M05 策略进化 Harness（EVO）★核心能力</h3>
+<p><strong>目标</strong>：把策略当作可迭代对象，用<strong>真实成交反馈</strong>驱动的适应度，机械地搜索、验证、淘汰、晋升策略。</p>
+<h4 id="51">5.1 设计理念</h4>
+<pre><code>         ┌─────────────── 进化循环（每代） ───────────────┐
+         │                                               │
+   策略种群 ──► 适应度评估 ──► 选择 ──► 交叉/变异 ──► 新种群
+         ▲          │                                    │
+         │          ├── 理论适应度：回测净收益、回撤、夏普
+         │          ├── 稳健适应度：Walk-Forward OOS 表现、PBO、DSR
+         │          └── 真实适应度：实盘/模拟成交后的净收益偏差
+         │                                               │
+         └────────── 稳健性闸门（不达标直接淘汰） ◄────────┘
+</code></pre>
+<h4 id="52">5.2 需求清单</h4>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-EVO-01</td>
+<td>策略 DNA 编码</td>
+<td>参数向量化：因子权重、阈值、持有期、止损 ATR 倍数、止盈 R 倍数、池子代码、再平衡频率、择时开关、区间半径系数</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-02</td>
+<td>基因约束</td>
+<td>每个基因定义类型、范围、步长、整数/浮点、互斥关系（如止盈倍数 &gt; 止损倍数）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-03</td>
+<td>适应度函数（可配置）</td>
+<td>多目标加权：年化、最大回撤、夏普、OOS 稳定性、换手成本惩罚、与现有策略相关性惩罚</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-04</td>
+<td>硬约束</td>
+<td>最大回撤上限、最小交易次数、最小持仓天数，任一违反即适应度置为无效</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-05</td>
+<td>搜索器：网格 / 随机</td>
+<td>基线搜索，支持并行 worker</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-06</td>
+<td>搜索器：贝叶斯</td>
+<td>Optuna TPE，适合低维连续参数</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-07</td>
+<td>搜索器：CMA-ES</td>
+<td>高维连续参数，收敛快</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-EVO-08</td>
+<td>搜索器：遗传算法</td>
+<td>实数编码 GA，交叉（SBX）+ 变异（多项式）+ 精英保留</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-09</td>
+<td>多目标优化</td>
+<td>NSGA-II 输出帕累托前沿（收益 vs 回撤），前端以散点图示</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-EVO-10</td>
+<td>Walk-Forward 验证</td>
+<td>滚动窗口：IS 优化窗口 + OOS 验证窗口 + 步长，输出 OOS 拼接净值</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-11</td>
+<td>交叉验证</td>
+<td>Purged K-Fold + Embargo（防止标签泄漏与序列相关污染）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-12</td>
+<td>参数敏感性分析</td>
+<td>邻域扫描生成热力图，输出"平台区"评分（平台优于尖峰）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-13</td>
+<td>蒙特卡洛稳健性</td>
+<td>交易顺序重排 1000 次、成本 +50%、滑点 ×2、起止日扰动，输出指标分布与 5% 分位</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-14</td>
+<td>过拟合度量</td>
+<td>计算 PBO（组合对称交叉验证）与 DSR（按试验次数惩罚），超阈值标记"疑似过拟合"</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-15</td>
+<td>试验次数台账</td>
+<td>全局记录同一数据集上的试验次数，供 DSR 计算与自我警示</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-16</td>
+<td>真实成交反馈接入</td>
+<td>导入对账单后，用真实成交价与信号区间的偏离反推滑点模型参数（回溯校准）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-17</td>
+<td>真实适应度重估</td>
+<td>以「按真实执行习惯修正后的净收益」重算策略适应度，替换纯理论值</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-EVO-18</td>
+<td>行为偏差画像</td>
+<td>从成交记录计算：执行率、平均滑点、追高概率、提前止盈率、扛单率、处置效应得分</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-19</td>
+<td>进化谱系</td>
+<td>记录每代每个体的父代、变异算子、参数 diff、得分，可画谱系树</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-20</td>
+<td>策略墓地</td>
+<td>淘汰策略归档并记录失效原因（回撤超限/参数不稳/相关性过高/成本吞噬）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-21</td>
+<td>晋升闸门</td>
+<td>冠军策略进入"候选池"需通过：WF OOS 夏普 &gt; 阈值、PBO &lt; 0.5、DSR &gt; 0、蒙特卡洛 5% 分位不为负</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-EVO-22</td>
+<td>进化任务管理</td>
+<td>任务提交/暂停/续跑/资源配额（CPU 核数上限），支持断点续跑</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-23</td>
+<td>进化报告</td>
+<td>种群适应度演化曲线、帕累托前沿、冠军策略卡、与前代对比、风险提示</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-EVO-24</td>
+<td>拟实盘跟踪（Paper Trading）</td>
+<td>冠军策略上线后进入影子运行，记录每日信号与假设成交，N 周后再决定是否真实跟单</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<h4 id="53-v1">5.3 适应度函数定义（v1 默认）</h4>
+<pre><code>fitness = w1·z(年化收益)
+        + w2·z(-最大回撤)
+        + w3·z(夏普)
+        + w4·z(WF_OOS_夏普)          # 稳健性权重不低于 0.25
+        - w5·z(年化换手率)            # 成本惩罚
+        - w6·z(与现有策略池最大相关性)  # 分散化惩罚
+
+默认权重：w1=0.20, w2=0.25, w3=0.15, w4=0.25, w5=0.08, w6=0.07
+硬约束：最大回撤 ≤ 25%，年化换手 ≤ 30 倍，交易次数 ≥ 100，持仓天数中位数 ≥ 3
+</code></pre>
+<h4 id="54">5.4 防止"进化出废策略"的四道闸门</h4>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>闸门</th>
+<th>检查内容</th>
+<th>不通过处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1 数据闸门</td>
+<td>数据快照完整、无未来函数、无生存偏差</td>
+<td>直接拒绝评估</td>
+</tr>
+<tr>
+<td>G2 稳健闸门</td>
+<td>WF OOS 为正、PBO &lt; 0.5、参数邻域平台区</td>
+<td>适应度打折或淘汰</td>
+</tr>
+<tr>
+<td>G3 成本闸门</td>
+<td>扣真实成本后仍为正；换手未超限</td>
+<td>淘汰</td>
+</tr>
+<tr>
+<td>G4 相关性闸门</td>
+<td>与已上线策略相关性 &lt; 0.8</td>
+<td>淘汰或仅归档</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>用同一随机种子重跑进化，冠军个体与适应度完全可复现。</li>
+<li>构造一个纯噪声策略（随机买卖），进化 200 代后不得通过 G2（PBO 应显著偏高），系统需明确标记"无法区分于随机"。</li>
+<li>真实成交导入后，滑点模型参数发生变化，且再次回测的净收益向实盘靠拢（偏差绝对值下降）。</li>
+</ul>
+<hr />
+<h3 id="m06-tq">M06 交易记录与账户（TQ）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-TQ-01</td>
+<td>对账单导入</td>
+<td>支持 CSV/Excel，提供券商模板库（华泰/中信/东财/国金/招商等），字段映射可视化配置</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-02</td>
+<td>字段标准化</td>
+<td>成交日期、证券代码、方向、价格、数量、金额、手续费、印花税、发生金额 → 统一表</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-03</td>
+<td>去重与幂等</td>
+<td>同一对账单重复导入不产生重复流水（业务唯一键哈希）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-04</td>
+<td>手工记账</td>
+<td>无对账单时手动录入买卖、分红、送转、转托管</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-TQ-05</td>
+<td>持仓重建</td>
+<td>由流水重放生成每日持仓、可卖数量（T+1）、成本（加权/摊薄双口径）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-06</td>
+<td>除权除息调整</td>
+<td>分红送转自动调整持仓数量与成本</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-07</td>
+<td>对账校验</td>
+<td>重算持仓市值与对账单期末市值比对，差异超阈值告警</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-08</td>
+<td>信号-成交匹配</td>
+<td>按标的+时间窗口+方向，将真实成交匹配到计划卡，输出匹配率</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-TQ-09</td>
+<td>偏差四象限归因</td>
+<td>①未执行 ②成交价偏离（追高/滑点）③提前止盈/超限扛单 ④数量不符</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-TQ-10</td>
+<td>账户绩效</td>
+<td>净值曲线、年化、回撤、夏普、月度收益、与基准对比、策略级拆分</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-TQ-11</td>
+<td>交易成本统计</td>
+<td>累计佣金/印花税/滑点损耗，占毛收益比例</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-TQ-12</td>
+<td>交易日志与标签</td>
+<td>每笔可打标签（追高/情绪/纪律/计划内）+ 复盘笔记，支持全文检索</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-TQ-13</td>
+<td>多账户支持</td>
+<td>多个券商账户分别统计与合并</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>导入一份含 500 笔成交的真实对账单，持仓重建结果与券商 App 显示一致（数量误差 0，成本误差 &lt; 0.01 元）。</li>
+<li>重复导入同一文件两次，流水条数不变。</li>
+<li>同一天买入的股票，当日持仓页面"可卖数量"为 0。</li>
+</ul>
+<hr />
+<h3 id="m07-flow">M07 资金流向与大资金方向（FLOW）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-FLOW-01</td>
+<td>资金分层口径</td>
+<td>按单笔成交额分档：超大单（≥100 万）、大单（20–100 万）、中单（4–20 万）、小单（&lt;4 万）；<strong>明示为近似口径</strong></td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-02</td>
+<td>个股资金流</td>
+<td>主力净流入额、净流入占比（占成交额）、连续净流入天数、5/10/20 日累计</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-03</td>
+<td>主动买卖比</td>
+<td>外盘/内盘、主动买入占比</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-04</td>
+<td>板块资金流</td>
+<td>行业（申万一级/二级）、概念板块净流入排行、近 5 日趋势</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-05</td>
+<td>板块轮动强度</td>
+<td>板块资金流排名变化速率 + 涨幅排名变化，识别加速流入/流出</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-06</td>
+<td>大资金方向仪表盘</td>
+<td>一屏：主力净流入 Top/Bottom、板块流向热力图、连续流入榜、异动个股</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-07</td>
+<td>资金-价格背离</td>
+<td>价涨资金流出 / 价跌资金流入，标记背离强度</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-08</td>
+<td>龙虎榜分析</td>
+<td>上榜个股、买卖席位性质（机构/游资/营业部）、净买入额、同席位重复出现</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-09</td>
+<td>融资融券跟踪</td>
+<td>融资余额变化率、融券余量变化、融资买入占成交额比</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-10</td>
+<td>大宗交易</td>
+<td>折价率、买卖方、金额</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-11</td>
+<td>股东户数变化</td>
+<td>季度户数变化率（筹码集中度代理）</td>
+<td><span class="badge p3">P3</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-12</td>
+<td>陆股通持有</td>
+<td>季度持股变化（2024-08 后不再日频披露，仅作慢变量参考）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FLOW-13</td>
+<td>资金流异动预警</td>
+<td>净流入突增（&gt; 3 倍 20 日均值）、连续 N 日流入、板块集体流入</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>任一个股资金流分档金额之和 = 当日成交额（误差 &lt; 0.5%）。</li>
+<li>板块资金流为成分股资金流之和，可下钻核对。</li>
+<li>UI 每个资金流指标旁有口径说明入口，点击显示计算方法与数据源。</li>
+</ul>
+<hr />
+<h3 id="m08-fut">M08 股指期货与对冲（FUT）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-FUT-01</td>
+<td>合约管理</td>
+<td>IF/IH/IC/IM 当月/次月/当季/下季；合约乘数（300/300/200/200）、最小变动价位、保证金率</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FUT-02</td>
+<td>主力合约识别</td>
+<td>按持仓量+成交量自动判定主力，输出换月提示</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FUT-03</td>
+<td>基差计算</td>
+<td>期货价 − 现货指数；基差率；年化基差（考虑到期天数）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FUT-04</td>
+<td>期限结构曲线</td>
+<td>四合约价格曲线，跨期价差（当月 − 次月）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FUT-05</td>
+<td>席位持仓分析</td>
+<td>前 20 会员多单/空单/净持仓、增减仓、多空比、净持仓占持仓量比</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FUT-06</td>
+<td>持仓量 PCR</td>
+<td>看跌/看涨持仓比（若有期权数据则扩展）</td>
+<td><span class="badge p3">P3</span></td>
+</tr>
+<tr>
+<td>FR-FUT-07</td>
+<td>期货情绪指标</td>
+<td>升贴水变化作为市场情绪代理，与指数走势叠加对比</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FUT-08</td>
+<td>套保计算器</td>
+<td>输入持仓组合 Beta 与市值 → 对冲手数 = 市值 × Beta ÷（指数点位 × 合约乘数）；输出保证金占用、追保价</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-FUT-09</td>
+<td>对冲有效性</td>
+<td>跟踪对冲后组合波动率下降幅度、对冲成本（年化贴水 × 持有期）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FUT-10</td>
+<td>基差历史分位</td>
+<td>当前基差在近 3 年分位，判断贴水是否极端（极端贴水利于多头替代）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-FUT-11</td>
+<td>期货资金流联动</td>
+<td>期货持仓变化 vs 现货成分股资金流的同步性分析</td>
+<td><span class="badge p3">P3</span></td>
+</tr>
+<tr>
+<td>FR-FUT-12</td>
+<td>追保预警</td>
+<td>保证金占用率 &gt; 阈值推送预警</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>关键规则</strong></p>
+<ol>
+<li>中金所席位持仓为 T 日盘后数据，UI 必须标注"数据日期"，禁止用于当日盘中决策提示。</li>
+<li>基差年化公式：<code>年化基差率 = 基差率 × 365 / 剩余到期天数</code>，指向近月合约。</li>
+</ol>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>手工计算某日 IF 主力基差与系统一致（误差 &lt; 0.2 点）。</li>
+<li>套保计算器给定 1000 万市值、Beta 1.1、IF 4000 点，输出手数与人工计算一致。</li>
+</ul>
+<hr />
+<h3 id="m09-rms">M09 风控（RMS）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-RMS-01</td>
+<td>事前：单票上限</td>
+<td>单标的市值占净值上限（默认 15%）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-02</td>
+<td>事前：行业集中度</td>
+<td>单行业上限（默认 30%）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-03</td>
+<td>事前：总仓位上限</td>
+<td>权益仓位上限（默认 90%），可设择时开关动态下调</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-04</td>
+<td>事前：单笔风险 R</td>
+<td>单笔最大亏损占净值（默认 1%），由仓位算法强制</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-05</td>
+<td>事前：流动性与黑名单</td>
+<td>日均成交额门槛、停牌/ST/退市整理期禁止、自定义黑名单</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-06</td>
+<td>事中：回撤监控</td>
+<td>账户/策略级实时回撤，触阈值推送</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RMS-07</td>
+<td>事中：熔断开关</td>
+<td>日内亏损 &gt; X% 或组合回撤 &gt; Y%，禁止新开仓（风控一票否决）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RMS-08</td>
+<td>事中：集中度实时校验</td>
+<td>新计划卡若突破集中度限制，自动降权或拒绝</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-RMS-09</td>
+<td>事后：风险报告</td>
+<td>波动率、VaR(95/99)、CVaR、最大回撤持续期、相关性矩阵</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RMS-10</td>
+<td>事后：压力测试</td>
+<td>历史情景重放（2015-06、2018-10、2020-02、2022-04、2024-02），输出组合回撤</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-RMS-11</td>
+<td>仓位算法库</td>
+<td>固定分数、凯利分数（半凯利）、波动率目标（目标年化波动 X%）、等风险贡献</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RMS-12</td>
+<td>风控日志</td>
+<td>每次否决/降权记录原因，可追溯</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>构造一个会突破单票上限的选股结果，风控必须自动降权并在计划卡上标注"受风控约束"。</li>
+<li>触发熔断后，系统拒绝生成任何新开仓计划卡，已有持仓的减仓/止损信号不受影响。</li>
+</ul>
+<hr />
+<h3 id="m10-qte">M10 行情终端（QTE）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-QTE-01</td>
+<td>K 线图</td>
+<td>日/周/月/60/30/15/5/1 分钟，前复权/后复权/不复权切换</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-02</td>
+<td>分时图</td>
+<td>当日分时 + 均价线 + 成交量</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-03</td>
+<td>盘口</td>
+<td>五档买卖盘（十档视数据源），逐笔成交（Level-2 需升级）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-QTE-04</td>
+<td>技术指标库</td>
+<td>MA/EMA/MACD/KDJ/RSI/BOLL/ATR/OBV/DMI/CCI/WR/BIAS/筹码分布</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-05</td>
+<td>指标参数可调</td>
+<td>每个指标周期可在线修改并记忆</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-QTE-06</td>
+<td>画线工具</td>
+<td>趋势线、水平线、矩形、斐波那契回撤，可保存</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-QTE-07</td>
+<td>多股同列</td>
+<td>2/4/9 宫格同屏，联动缩放与十字光标</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-QTE-08</td>
+<td>多周期联动</td>
+<td>同一标的多周期联排</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-QTE-09</td>
+<td>条件预警</td>
+<td>价格/涨跌幅/成交量/指标穿越/资金流/涨停开板，支持组合条件</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-QTE-10</td>
+<td>预警推送</td>
+<td>桌面通知、邮件、企业微信、钉钉、Webhook</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-QTE-11</td>
+<td>自选股分组</td>
+<td>多分组、标签、拖拽排序、批量导入</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-12</td>
+<td>快捷键方案</td>
+<td>兼容通达信习惯：F5 切周期、数字代码直达、上下翻页、<code>/</code> 搜索</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-QTE-13</td>
+<td>自定义版面</td>
+<td>保存窗口布局（K 线 + 盘口 + 自选 + 计划卡）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-QTE-14</td>
+<td>信号标注</td>
+<td>在 K 线上标注本系统生成的历史信号与计划卡区间（阴影带）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-15</td>
+<td>区间可视化</td>
+<td>计划卡的建仓区/加仓区/目标区/止损区以彩色横带叠加在 K 线右侧</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-QTE-16</td>
+<td>数据导出</td>
+<td>行情、指标值、信号导出 CSV</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>信号区间在 K 线上的位置与计划卡数值完全一致（像素级对齐误差 ≤ 1px）。</li>
+<li>切换复权方式后，最新交易日收盘价保持不变（前复权锚定最新）。</li>
+</ul>
+<hr />
+<h3 id="m11-rpt">M11 复盘与报告（RPT）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-RPT-01</td>
+<td>盘前简报</td>
+<td>持仓风险、待触发信号、今日除权/解禁/财报、期货基差、隔夜外盘</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RPT-02</td>
+<td>盘后日报</td>
+<td>市场概览（涨跌家数、成交额、情绪）、板块强弱、资金流 Top、涨停梯队、持仓表现、信号执行情况</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RPT-03</td>
+<td>周报/月报</td>
+<td>收益归因、策略表现排名、执行纪律评分、下期计划</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RPT-04</td>
+<td>策略运行报告</td>
+<td>单策略：净值、持仓、换手、与回测预期偏差</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-RPT-05</td>
+<td>复盘工作台</td>
+<td>按交易逐笔回看：信号→计划→成交→结果，四联对照</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-RPT-06</td>
+<td>教训库</td>
+<td>记录复盘结论与标签，可检索、可统计高频错误</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-RPT-07</td>
+<td>报告模板</td>
+<td>可配置板块显隐与顺序</td>
+<td><span class="badge p3">P3</span></td>
+</tr>
+<tr>
+<td>FR-RPT-08</td>
+<td>报告导出/推送</td>
+<td>HTML/PDF/长图，定时推送到微信/邮箱</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收标准</strong></p>
+<ul>
+<li>日报在 15:30 数据同步完成后 3 分钟内自动生成。</li>
+<li>日报中涨停家数与交易所公开数据一致。</li>
+</ul>
+<hr />
+<h3 id="m12-sch">M12 调度与通知（SCH）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-SCH-01</td>
+<td>任务定义</td>
+<td>Cron 表达式、依赖前置任务、超时、重试策略</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SCH-02</td>
+<td>任务编排</td>
+<td>DAG 依赖（数据同步 → 因子 → 选股 → 信号 → 报告）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SCH-03</td>
+<td>运行监控</td>
+<td>任务看板：状态、耗时、日志、失败原因</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SCH-04</td>
+<td>手动触发</td>
+<td>任一任务可手动重跑（单日/区间）</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SCH-05</td>
+<td>失败告警</td>
+<td>连续失败 N 次推送通知</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SCH-06</td>
+<td>通知渠道管理</td>
+<td>渠道配置、消息模板、静默时段</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SCH-07</td>
+<td>盘中轮询任务</td>
+<td>交易时段定时拉取实时行情与预警计算（3–5s 间隔）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SCH-08</td>
+<td>资源配额</td>
+<td>引擎任务并发上限，防止本机卡死</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h3 id="m13-str">M13 策略库与版本（STR）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-STR-01</td>
+<td>策略元数据</td>
+<td>名称、类型、描述、作者、标签、适用市况</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-STR-02</td>
+<td>策略版本</td>
+<td>每次修改生成新版本，保留代码快照与参数快照</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-STR-03</td>
+<td>生命周期状态</td>
+<td>草稿 → 回测中 → 候选 → 影子运行 → 上线 → 下线 → 归档</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-STR-04</td>
+<td>策略对比</td>
+<td>同区间多策略横向对比（净值、指标、月度收益相关性）</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-STR-05</td>
+<td>策略组合</td>
+<td>多策略资金分配（等权/风险平价/按历史夏普），组合层回测</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-STR-06</td>
+<td>相关性矩阵</td>
+<td>已上线策略两两收益相关性，提示冗余</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-STR-07</td>
+<td>参数版本对比</td>
+<td>两版本参数 diff 高亮</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-STR-08</td>
+<td>导入导出</td>
+<td>策略打包为 json+py 包，可备份/迁移</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+<tr>
+<td>FR-STR-09</td>
+<td>策略说明书</td>
+<td>每个策略自动生成说明文档（逻辑、参数、适用、失效条件、历史表现）</td>
+<td><span class="badge p2">P2</span></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h3 id="m14-sys">M14 系统管理（SYS）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>需求</th>
+<th>说明</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-SYS-01</td>
+<td>用户与角色</td>
+<td>单用户默认，保留 RBAC 表结构；可选对接既有 RuoYi 账号体系</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SYS-02</td>
+<td>登录鉴权</td>
+<td>JWT + 刷新令牌，本地部署可开启 IP 白名单</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SYS-03</td>
+<td>审计日志</td>
+<td>登录、策略变更、参数修改、数据删除全留痕</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SYS-04</td>
+<td>配置中心</td>
+<td>数据源 Key、券商模板、默认风控参数、通知渠道</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SYS-05</td>
+<td>密钥管理</td>
+<td>数据源 Token 加密存储（本地 KMS/环境变量），不落明文</td>
+<td><span class="badge p0">P0</span></td>
+</tr>
+<tr>
+<td>FR-SYS-06</td>
+<td>备份恢复</td>
+<td>策略、交易数据、配置一键导出 zip；支持定时备份</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SYS-07</td>
+<td>系统健康</td>
+<td>磁盘、内存、数据最新日期、任务积压 状态页</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+<tr>
+<td>FR-SYS-08</td>
+<td>策略沙箱</td>
+<td>自定义策略在子进程执行，限制 CPU/内存/网络/文件写权限与执行时长</td>
+<td><span class="badge p1">P1</span></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="6-feature-list">6. 功能清单（Feature List）</h2>
+<blockquote>
+<p>共 <strong>193</strong> 条。P0=75，P1=87，P2=29，P3=2。批次口径见第 11 章路线图。</p>
+</blockquote>
+<h3 id="61">6.1 按模块统计</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>功能数</th>
+<th>P0</th>
+<th>P1</th>
+<th>P2</th>
+<th>P3</th>
+<th>主要批次</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M01 数据中台</td>
+<td>20</td>
+<td>11</td>
+<td>7</td>
+<td>2</td>
+<td>0</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>M02 选股引擎</td>
+<td>16</td>
+<td>7</td>
+<td>6</td>
+<td>3</td>
+<td>0</td>
+<td>V0.5–V1.0</td>
+</tr>
+<tr>
+<td>M03 区间信号</td>
+<td>17</td>
+<td>8</td>
+<td>8</td>
+<td>1</td>
+<td>0</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>M04 回测引擎</td>
+<td>17</td>
+<td>9</td>
+<td>7</td>
+<td>1</td>
+<td>0</td>
+<td>V0.5–V1.0</td>
+</tr>
+<tr>
+<td>M05 进化 Harness</td>
+<td>24</td>
+<td>6</td>
+<td>14</td>
+<td>4</td>
+<td>0</td>
+<td>V1.5–V2.0</td>
+</tr>
+<tr>
+<td>M06 交易记录</td>
+<td>13</td>
+<td>6</td>
+<td>5</td>
+<td>2</td>
+<td>0</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>M07 资金流向</td>
+<td>13</td>
+<td>3</td>
+<td>7</td>
+<td>3</td>
+<td>0</td>
+<td>V1.0–V2.0</td>
+</tr>
+<tr>
+<td>M08 股指期货</td>
+<td>12</td>
+<td>0</td>
+<td>7</td>
+<td>4</td>
+<td>1</td>
+<td>V2.0</td>
+</tr>
+<tr>
+<td>M09 风控</td>
+<td>12</td>
+<td>6</td>
+<td>5</td>
+<td>1</td>
+<td>0</td>
+<td>V0.5–V1.5</td>
+</tr>
+<tr>
+<td>M10 行情终端</td>
+<td>16</td>
+<td>5</td>
+<td>6</td>
+<td>5</td>
+<td>0</td>
+<td>V0.5–V1.5</td>
+</tr>
+<tr>
+<td>M11 复盘报告</td>
+<td>8</td>
+<td>0</td>
+<td>6</td>
+<td>1</td>
+<td>1</td>
+<td>V1.0–V2.0</td>
+</tr>
+<tr>
+<td>M12 调度通知</td>
+<td>8</td>
+<td>5</td>
+<td>3</td>
+<td>0</td>
+<td>0</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>M13 策略库</td>
+<td>9</td>
+<td>5</td>
+<td>2</td>
+<td>2</td>
+<td>0</td>
+<td>V0.5–V2.0</td>
+</tr>
+<tr>
+<td>M14 系统管理</td>
+<td>8</td>
+<td>4</td>
+<td>4</td>
+<td>0</td>
+<td>0</td>
+<td>V0.5–V1.0</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>193</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="62-5">6.2 明细清单（节选核心项，完整条目见第 5 章对应模块表）</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>功能名称</th>
+<th>所属模块</th>
+<th>优先级</th>
+<th>复杂度</th>
+<th>批次</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-DAT-01</td>
+<td>交易日历同步</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>S</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-DAT-02</td>
+<td>日线行情接入</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-DAT-07</td>
+<td>财务数据 PIT 入库</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-DAT-14</td>
+<td>五类数据质量校验</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-DAT-16</td>
+<td>PIT 快照与版本</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-DAT-19</td>
+<td>退市股保留</td>
+<td>数据</td>
+<td><span class="badge p0">P0</span></td>
+<td>S</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-01</td>
+<td>股票池管理</td>
+<td>选股</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-03</td>
+<td>因子预处理流水线</td>
+<td>选股</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-06</td>
+<td>Top-N 选股输出</td>
+<td>选股</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-07</td>
+<td>入选理由拆解</td>
+<td>选股</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-09</td>
+<td>内置策略模板库</td>
+<td>选股</td>
+<td><span class="badge p0">P0</span></td>
+<td>XL</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SEL-12</td>
+<td>涨停板专项</td>
+<td>选股</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SIG-02</td>
+<td>区间化输出模型</td>
+<td>信号</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SIG-07</td>
+<td>分批比例与股数</td>
+<td>信号</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SIG-11</td>
+<td>仓位建议</td>
+<td>信号</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SIG-13</td>
+<td>交易计划卡</td>
+<td>信号</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SIG-15</td>
+<td>动态区间调整</td>
+<td>信号</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-BT-04</td>
+<td>涨跌停不可成交</td>
+<td>回测</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-BT-06</td>
+<td>T+1 约束</td>
+<td>回测</td>
+<td><span class="badge p0">P0</span></td>
+<td>S</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-BT-08</td>
+<td>滑点模型</td>
+<td>回测</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-BT-10</td>
+<td>组合层回测</td>
+<td>回测</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-BT-11</td>
+<td>绩效指标体系</td>
+<td>回测</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-BT-14</td>
+<td>未来函数检测器</td>
+<td>回测</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-EVO-01</td>
+<td>策略 DNA 编码</td>
+<td>进化</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-EVO-03</td>
+<td>适应度函数</td>
+<td>进化</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-EVO-05</td>
+<td>网格/随机搜索</td>
+<td>进化</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-EVO-10</td>
+<td>Walk-Forward 验证</td>
+<td>进化</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-EVO-21</td>
+<td>晋升四闸门</td>
+<td>进化</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-EVO-16</td>
+<td>真实成交反推滑点</td>
+<td>进化</td>
+<td><span class="badge p1">P1</span></td>
+<td>XL</td>
+<td>V2.0</td>
+</tr>
+<tr>
+<td>FR-EVO-14</td>
+<td>PBO / DSR 过拟合度量</td>
+<td>进化</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-TQ-01</td>
+<td>对账单导入与映射</td>
+<td>交易记录</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-TQ-05</td>
+<td>持仓重建（T+1）</td>
+<td>交易记录</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-TQ-08</td>
+<td>信号-成交匹配</td>
+<td>交易记录</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-TQ-09</td>
+<td>偏差四象限归因</td>
+<td>交易记录</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-FLOW-01</td>
+<td>资金分层口径</td>
+<td>资金流</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-FLOW-02</td>
+<td>个股资金流</td>
+<td>资金流</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-FLOW-04</td>
+<td>板块资金流</td>
+<td>资金流</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-FLOW-13</td>
+<td>资金流异动预警</td>
+<td>资金流</td>
+<td><span class="badge p1">P1</span></td>
+<td>M</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-FUT-03</td>
+<td>基差与年化贴水</td>
+<td>期货</td>
+<td><span class="badge p1">P1</span></td>
+<td>M</td>
+<td>V2.0</td>
+</tr>
+<tr>
+<td>FR-FUT-05</td>
+<td>席位持仓分析</td>
+<td>期货</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V2.0</td>
+</tr>
+<tr>
+<td>FR-FUT-08</td>
+<td>套保计算器</td>
+<td>期货</td>
+<td><span class="badge p1">P1</span></td>
+<td>M</td>
+<td>V2.0</td>
+</tr>
+<tr>
+<td>FR-RMS-01</td>
+<td>单票上限</td>
+<td>风控</td>
+<td><span class="badge p0">P0</span></td>
+<td>S</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-RMS-04</td>
+<td>单笔风险 R</td>
+<td>风控</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-RMS-07</td>
+<td>熔断开关</td>
+<td>风控</td>
+<td><span class="badge p1">P1</span></td>
+<td>M</td>
+<td>V1.5</td>
+</tr>
+<tr>
+<td>FR-QTE-01</td>
+<td>多周期 K 线</td>
+<td>终端</td>
+<td><span class="badge p0">P0</span></td>
+<td>L</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-QTE-14</td>
+<td>K 线信号标注</td>
+<td>终端</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-QTE-15</td>
+<td>区间彩色横带</td>
+<td>终端</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-RPT-02</td>
+<td>盘后日报</td>
+<td>报告</td>
+<td><span class="badge p1">P1</span></td>
+<td>L</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>FR-SCH-02</td>
+<td>任务 DAG 编排</td>
+<td>调度</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-STR-02</td>
+<td>策略版本快照</td>
+<td>策略库</td>
+<td><span class="badge p0">P0</span></td>
+<td>M</td>
+<td>V0.5</td>
+</tr>
+<tr>
+<td>FR-SYS-05</td>
+<td>密钥加密存储</td>
+<td>系统</td>
+<td><span class="badge p0">P0</span></td>
+<td>S</td>
+<td>V0.5</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="7">7. 非功能需求</h2>
+<h3 id="71">7.1 性能</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>指标</th>
+<th>目标值</th>
+<th>测量方法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-P-01</td>
+<td>全 A 日线 15 年因子批量计算</td>
+<td>≤ 10 min（8C）</td>
+<td>全量重算计时</td>
+</tr>
+<tr>
+<td>NFR-P-02</td>
+<td>单策略 10 年日频组合回测</td>
+<td>≤ 30 s</td>
+<td>事件驱动引擎</td>
+</tr>
+<tr>
+<td>NFR-P-03</td>
+<td>单参数组向量化回测</td>
+<td>≤ 1 s</td>
+<td>vectorbt</td>
+</tr>
+<tr>
+<td>NFR-P-04</td>
+<td>页面首屏加载</td>
+<td>≤ 1.5 s</td>
+<td>Lighthouse</td>
+</tr>
+<tr>
+<td>NFR-P-05</td>
+<td>K 线渲染 5000 根</td>
+<td>≤ 300 ms 交互流畅</td>
+<td>帧率采样</td>
+</tr>
+<tr>
+<td>NFR-P-06</td>
+<td>盘中行情刷新延迟</td>
+<td>≤ 5 s（免费源）</td>
+<td>时间戳比对</td>
+</tr>
+<tr>
+<td>NFR-P-07</td>
+<td>选股任务端到端</td>
+<td>≤ 3 min（含数据）</td>
+<td>任务日志</td>
+</tr>
+<tr>
+<td>NFR-P-08</td>
+<td>进化任务 200 代 / 50 参数组</td>
+<td>≤ 6 h（可夜间跑）</td>
+<td>任务日志</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="72">7.2 可靠性</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-R-01</td>
+<td>数据任务失败率 &lt; 2%，失败自动重试 3 次并告警</td>
+</tr>
+<tr>
+<td>NFR-R-02</td>
+<td>引擎任务支持断点续跑，进程重启不丢已完成结果</td>
+</tr>
+<tr>
+<td>NFR-R-03</td>
+<td>数据库每日自动备份，保留 30 天</td>
+</tr>
+<tr>
+<td>NFR-R-04</td>
+<td>单机断电后重启，服务 3 分钟内自动恢复可用</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="73">7.3 数据质量</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-D-01</td>
+<td>核心行情表关键字段非空率 ≥ 99.9%</td>
+</tr>
+<tr>
+<td>NFR-D-02</td>
+<td>与券商对账单对账差异率 = 0（数量）、成本差异 &lt; 0.01 元</td>
+</tr>
+<tr>
+<td>NFR-D-03</td>
+<td>复权因子链连续性校验：相邻两日复权价跳变 &gt; 阈值时告警</td>
+</tr>
+<tr>
+<td>NFR-D-04</td>
+<td>每个指标在 UI 上可查到口径说明与最后更新时间</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="74">7.4 安全</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-S-01</td>
+<td>默认仅监听本机/内网，公网访问须显式开启并强制 HTTPS</td>
+</tr>
+<tr>
+<td>NFR-S-02</td>
+<td>数据源 Token、券商账号信息加密存储，日志脱敏</td>
+</tr>
+<tr>
+<td>NFR-S-03</td>
+<td>自定义策略沙箱：无网络、限内存 2G、限 CPU 时间 10 min、只读数据</td>
+</tr>
+<tr>
+<td>NFR-S-04</td>
+<td>全部变更操作有审计日志，保留 ≥ 180 天</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="75">7.5 可维护性与可测试性</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-M-01</td>
+<td>回测引擎、撮合逻辑、风控计算单元测试覆盖率 ≥ 70%</td>
+</tr>
+<tr>
+<td>NFR-M-02</td>
+<td>撮合与成本模型提供黄金用例（golden case）回归集</td>
+</tr>
+<tr>
+<td>NFR-M-03</td>
+<td>模块间通过明确定义的 service 接口通信，禁止跨层直连数据库</td>
+</tr>
+<tr>
+<td>NFR-M-04</td>
+<td>关键计算函数为纯函数（输入快照 → 输出结果），便于测试与复现</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="76">7.6 合规</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFR-C-01</td>
+<td>系统仅限个人自用，不对外提供荐股、代客理财、投资顾问服务</td>
+</tr>
+<tr>
+<td>NFR-C-02</td>
+<td>不接入自动下单（V1/V2），避免程序化交易报备与误单风险</td>
+</tr>
+<tr>
+<td>NFR-C-03</td>
+<td>数据源使用遵守其服务条款，不转售、不再分发原始数据</td>
+</tr>
+<tr>
+<td>NFR-C-04</td>
+<td>所有页面展示"仅供参考，不构成投资建议"声明</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="8">8. 数据模型（核心表）</h2>
+<h3 id="81">8.1 表清单</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>表名</th>
+<th>说明</th>
+<th>关键字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dim_symbol</code></td>
+<td>标的维度</td>
+<td>code, name, exchange, board, list_date, delist_date, industry_l1/l2/l3, is_st</td>
+</tr>
+<tr>
+<td><code>dim_trading_day</code></td>
+<td>交易日历</td>
+<td>trade_date, is_open, is_half_day</td>
+</tr>
+<tr>
+<td><code>fact_daily_bar</code></td>
+<td>日线行情</td>
+<td>code, trade_date, open, high, low, close, volume, amount, turnover_rate, adj_factor</td>
+</tr>
+<tr>
+<td><code>fact_minute_bar</code></td>
+<td>分钟行情</td>
+<td>code, dt, freq, ohlcv</td>
+</tr>
+<tr>
+<td><code>fact_financial</code></td>
+<td>财务（PIT）</td>
+<td>code, report_period, announce_date, roe, gross_margin, debt_ratio, revenue_yoy, ...</td>
+</tr>
+<tr>
+<td><code>fact_share_change</code></td>
+<td>股本与除权</td>
+<td>code, ex_date, bonus_ratio, dividend, total_share, float_share</td>
+</tr>
+<tr>
+<td><code>fact_limit_status</code></td>
+<td>涨跌停/停牌</td>
+<td>code, trade_date, limit_up, limit_down, is_halt, is_one_word_board</td>
+</tr>
+<tr>
+<td><code>fact_money_flow</code></td>
+<td>资金流</td>
+<td>code, trade_date, super_large_net, large_net, mid_net, small_net, main_net, main_net_ratio</td>
+</tr>
+<tr>
+<td><code>fact_sector_flow</code></td>
+<td>板块资金流</td>
+<td>sector_code, trade_date, net_inflow, rank</td>
+</tr>
+<tr>
+<td><code>fact_lhb</code></td>
+<td>龙虎榜</td>
+<td>code, trade_date, reason, buy_seats, sell_seats, net_buy</td>
+</tr>
+<tr>
+<td><code>fact_margin</code></td>
+<td>融资融券</td>
+<td>code, trade_date, fin_balance, sec_balance, fin_buy_amt</td>
+</tr>
+<tr>
+<td><code>fact_future_contract</code></td>
+<td>期货合约</td>
+<td>contract_code, underlying, maturity, multiplier, price, settle, basis, basis_rate</td>
+</tr>
+<tr>
+<td><code>fact_future_position</code></td>
+<td>席位持仓</td>
+<td>contract_code, trade_date, member, long_pos, short_pos, net_pos, long_chg, short_chg</td>
+</tr>
+<tr>
+<td><code>dim_sector_member</code></td>
+<td>板块成分（含历史）</td>
+<td>sector_code, code, in_date, out_date</td>
+</tr>
+<tr>
+<td><code>factor_value</code></td>
+<td>因子宽表（Parquet）</td>
+<td>code, trade_date, factor_name, value, neutralized_value</td>
+</tr>
+<tr>
+<td><code>strat_strategy</code></td>
+<td>策略主表</td>
+<td>id, name, type, status, current_version, tags, description</td>
+</tr>
+<tr>
+<td><code>strat_version</code></td>
+<td>策略版本</td>
+<td>strategy_id, version, params_json, code_snapshot, created_at, parent_version</td>
+</tr>
+<tr>
+<td><code>strat_run</code></td>
+<td>回测运行</td>
+<td>run_id, version_id, data_snapshot_id, start, end, metrics_json, cost_config, status</td>
+</tr>
+<tr>
+<td><code>strat_trade</code></td>
+<td>回测交易明细</td>
+<td>run_id, code, side, dt, price, qty, cost, pnl, reason</td>
+</tr>
+<tr>
+<td><code>evo_experiment</code></td>
+<td>进化实验</td>
+<td>exp_id, strategy_id, fitness_config, search_space, generations, trials_count</td>
+</tr>
+<tr>
+<td><code>evo_individual</code></td>
+<td>进化个体</td>
+<td>exp_id, gen, individual_id, genes_json, fitness, metrics_json, parent_ids, gate_status</td>
+</tr>
+<tr>
+<td><code>evo_genealogy</code></td>
+<td>谱系边</td>
+<td>exp_id, parent_id, child_id, operator</td>
+</tr>
+<tr>
+<td><code>sig_plan</code></td>
+<td>交易计划卡</td>
+<td>plan_id, code, strategy_version_id, signal_type, zones_json, sizing_json, rr, status, confidence</td>
+</tr>
+<tr>
+<td><code>sig_event</code></td>
+<td>信号状态流转</td>
+<td>plan_id, from_status, to_status, event_time, note</td>
+</tr>
+<tr>
+<td><code>trade_order</code></td>
+<td>真实成交</td>
+<td>account_id, code, side, dt, price, qty, fee, tax, order_id, import_batch</td>
+</tr>
+<tr>
+<td><code>trade_position</code></td>
+<td>每日持仓</td>
+<td>account_id, code, trade_date, qty, sellable_qty, cost_weighted, cost_diluted, close, mv</td>
+</tr>
+<tr>
+<td><code>trade_match</code></td>
+<td>信号-成交匹配</td>
+<td>plan_id, order_id, match_score, price_deviation, deviation_type</td>
+</tr>
+<tr>
+<td><code>risk_limit</code></td>
+<td>风控参数</td>
+<td>scope(global/strategy), item, value, enabled</td>
+</tr>
+<tr>
+<td><code>risk_event</code></td>
+<td>风控事件</td>
+<td>dt, level, rule, target, action, detail</td>
+</tr>
+<tr>
+<td><code>sys_task_run</code></td>
+<td>任务运行</td>
+<td>task_id, task_name, start, end, status, log_path, retry</td>
+</tr>
+<tr>
+<td><code>sys_audit_log</code></td>
+<td>审计日志</td>
+<td>user, action, target, before, after, ip, ts</td>
+</tr>
+<tr>
+<td><code>data_snapshot</code></td>
+<td>数据快照版本</td>
+<td>snapshot_id, scope, created_at, row_counts, hash</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="82">8.2 关键索引与分区</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>表</th>
+<th>策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fact_daily_bar</code></td>
+<td>按 <code>trade_date</code> 年分区；索引 (code, trade_date)</td>
+</tr>
+<tr>
+<td><code>fact_minute_bar</code></td>
+<td>按年月分区，冷数据转 Parquet</td>
+</tr>
+<tr>
+<td><code>factor_value</code></td>
+<td>Parquet 分区：<code>year/month</code>；DuckDB 视图挂载</td>
+</tr>
+<tr>
+<td><code>trade_order</code></td>
+<td>索引 (account_id, dt)、(code, dt)</td>
+</tr>
+<tr>
+<td><code>sig_plan</code></td>
+<td>索引 (code, as_of)、(status)</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="9">9. 接口设计</h2>
+<h3 id="91">9.1 约定</h3>
+<ul>
+<li>Base：<code>/api/v1</code></li>
+<li>认证：<code>Authorization: Bearer &lt;jwt&gt;</code></li>
+<li>响应包：<code>{ "code": 0, "msg": "ok", "data": {...}, "traceId": "..." }</code></li>
+<li>时间一律 ISO8601 带时区（<code>+08:00</code>）</li>
+<li>分页：<code>page</code>, <code>pageSize</code>，返回 <code>total</code></li>
+</ul>
+<h3 id="92">9.2 接口分组</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>分组</th>
+<th>前缀</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行情</td>
+<td><code>/market</code></td>
+<td>K 线、分时、盘口、快照、指标计算</td>
+</tr>
+<tr>
+<td>数据</td>
+<td><code>/data</code></td>
+<td>数据同步、质量报告、快照管理、字典</td>
+</tr>
+<tr>
+<td>选股</td>
+<td><code>/select</code></td>
+<td>策略运行、结果查询、因子暴露、结果 diff</td>
+</tr>
+<tr>
+<td>信号</td>
+<td><code>/signal</code></td>
+<td>计划卡 CRUD、状态流转、区间调整、冲突消解</td>
+</tr>
+<tr>
+<td>回测</td>
+<td><code>/backtest</code></td>
+<td>提交、进度、结果、交易明细、报告</td>
+</tr>
+<tr>
+<td>进化</td>
+<td><code>/evo</code></td>
+<td>实验创建、进度、种群、帕累托、晋升评审、谱系</td>
+</tr>
+<tr>
+<td>交易</td>
+<td><code>/trade</code></td>
+<td>对账单上传、流水、持仓、匹配、归因、绩效</td>
+</tr>
+<tr>
+<td>资金流</td>
+<td><code>/flow</code></td>
+<td>个股、板块、异动、背离</td>
+</tr>
+<tr>
+<td>期货</td>
+<td><code>/future</code></td>
+<td>合约、基差、席位、套保计算</td>
+</tr>
+<tr>
+<td>风控</td>
+<td><code>/risk</code></td>
+<td>限额配置、校验、事件、压力测试</td>
+</tr>
+<tr>
+<td>策略</td>
+<td><code>/strategy</code></td>
+<td>策略 CRUD、版本、对比、组合</td>
+</tr>
+<tr>
+<td>报告</td>
+<td><code>/report</code></td>
+<td>日报/周报生成与获取</td>
+</tr>
+<tr>
+<td>系统</td>
+<td><code>/sys</code></td>
+<td>任务、通知、配置、健康、审计</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="93">9.3 关键端点示例</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/market/bars?code=600519.SH&amp;freq=1d&amp;start=2025-01-01&amp;end=2026-11-06&amp;adjust=qfq</code></td>
+<td>K 线</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/select/run</code></td>
+<td>运行选股 <code>{strategyVersionId, tradeDate, universe, topN}</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/select/result/{taskId}</code></td>
+<td>选股结果 + 因子拆解</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/signal/plan</code></td>
+<td>生成计划卡</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/signal/plan/active</code></td>
+<td>当前有效计划卡（看板）</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td><code>/signal/plan/{planId}/status</code></td>
+<td>状态流转</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/backtest/run</code></td>
+<td>提交回测</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/backtest/{runId}/metrics</code></td>
+<td>绩效指标</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/evo/experiment</code></td>
+<td>创建进化实验 <code>{strategyId, searchSpace, fitnessWeights, gates}</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/evo/{expId}/frontier</code></td>
+<td>帕累托前沿</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/evo/{expId}/promote/{individualId}</code></td>
+<td>提交晋升评审</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/trade/import</code></td>
+<td>上传对账单（multipart）</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/trade/attribution?from=&amp;to=</code></td>
+<td>偏差四象限归因</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/flow/sector/rank?date=&amp;window=5</code></td>
+<td>板块资金流排行</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/future/basis?contract=IF2603</code></td>
+<td>基差与年化贴水</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/future/hedge/calc</code></td>
+<td>套保手数计算</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/risk/check</code></td>
+<td>计划卡风控校验（可被前端预调用）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="94-websocket">9.4 WebSocket 频道</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>频道</th>
+<th>载荷</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ws/market/tick</code></td>
+<td>秒级快照</td>
+<td>自选股实时价格、涨跌幅</td>
+</tr>
+<tr>
+<td><code>ws/signal/alert</code></td>
+<td>计划卡触发事件</td>
+<td>区间触发提醒</td>
+</tr>
+<tr>
+<td><code>ws/task/progress</code></td>
+<td>任务进度</td>
+<td>回测/进化/数据同步进度条</td>
+</tr>
+<tr>
+<td><code>ws/risk/event</code></td>
+<td>风控事件</td>
+<td>熔断、超限提醒</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="95">9.5 错误码</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>码</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>成功</td>
+</tr>
+<tr>
+<td>1001</td>
+<td>参数校验失败</td>
+</tr>
+<tr>
+<td>2001</td>
+<td>数据快照缺失或不完整</td>
+</tr>
+<tr>
+<td>2002</td>
+<td>数据质量校验未通过</td>
+</tr>
+<tr>
+<td>3001</td>
+<td>策略代码执行异常（含超时）</td>
+</tr>
+<tr>
+<td>3002</td>
+<td>检出未来函数，拒绝执行</td>
+</tr>
+<tr>
+<td>4001</td>
+<td>风控校验未通过（附具体规则）</td>
+</tr>
+<tr>
+<td>5001</td>
+<td>数据源限流/不可用</td>
+</tr>
+<tr>
+<td>9001</td>
+<td>内部错误</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="10">10. 关键技术难点与对策</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>难点</th>
+<th>风险</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>K-01</td>
+<td>未来函数</td>
+<td>回测虚高数倍，实盘崩盘</td>
+<td>PIT 数据 + <code>as_of</code> 强制参数 + 静态代码扫描 + 财务按公告日对齐 + 信号与执行时点分离（T 日收盘出信号，T+1 开盘才可成交）</td>
+</tr>
+<tr>
+<td>K-02</td>
+<td>生存偏差</td>
+<td>年化虚高 2–5%</td>
+<td>退市股永久保留 + 历史成分股表（<code>dim_sector_member</code> 含 out_date）</td>
+</tr>
+<tr>
+<td>K-03</td>
+<td>涨跌停不可成交</td>
+<td>涨停板策略收益严重虚高</td>
+<td>撮合层模拟一字板拒绝成交、涨停开盘按封单比例概率成交，且该概率必须来自历史统计而非拍脑袋</td>
+</tr>
+<tr>
+<td>K-04</td>
+<td>滑点与冲击成本</td>
+<td>高换手策略被成本吞噬</td>
+<td>四类滑点模型 + 用真实成交反推参数（FR-EVO-16）+ 换手率惩罚项</td>
+</tr>
+<tr>
+<td>K-05</td>
+<td>过拟合</td>
+<td>参数在 OOS 立刻失效</td>
+<td>WF + Purged K-Fold + PBO + DSR + 参数平台区 + 蒙特卡洛，且全局记录试验次数</td>
+</tr>
+<tr>
+<td>K-06</td>
+<td>免费数据源不稳定</td>
+<td>字段变更/限流导致任务失败</td>
+<td>多源冗余 + 契约测试（字段非空率与值域）+ 抓取留档 + 失败告警</td>
+</tr>
+<tr>
+<td>K-07</td>
+<td>无 Level-2 的大单口径</td>
+<td>资金流与真实主力行为偏离</td>
+<td>明示口径、阈值可配置、以"相对变化"而非绝对值做信号、与龙虎榜交叉验证</td>
+</tr>
+<tr>
+<td>K-08</td>
+<td>北向实时数据已停披露</td>
+<td>依赖北向的因子失效</td>
+<td>降级为日频/季度口径，仅做慢变量；不作为日内信号</td>
+</tr>
+<tr>
+<td>K-09</td>
+<td>期货席位数据 T 日盘后</td>
+<td>滞后使用导致误判</td>
+<td>UI 显式标注数据日期，仅用于次日及以后的判断</td>
+</tr>
+<tr>
+<td>K-10</td>
+<td>进化计算资源爆炸</td>
+<td>单机跑不完</td>
+<td>搜索空间剪枝 + 分层评估（先向量化粗筛 Top 20%，再事件驱动精算）+ 结果缓存（参数哈希）+ 夜间批跑</td>
+</tr>
+<tr>
+<td>K-11</td>
+<td>策略代码安全</td>
+<td>自定义脚本误删文件/耗尽资源</td>
+<td>子进程隔离 + 只读数据挂载 + CPU 时间与内存上限 + 禁网</td>
+</tr>
+<tr>
+<td>K-12</td>
+<td>复权一致性</td>
+<td>前复权随新数据变化导致历史价格漂移</td>
+<td>复权因子单独存储，价格永远存原始价 + 因子；回测内即时合成，禁止存前复权价</td>
+</tr>
+<tr>
+<td>K-13</td>
+<td>除权与成本调整</td>
+<td>持仓成本失真、绩效错误</td>
+<td>分红送转自动重算数量与成本，双口径（加权/摊薄）并列展示</td>
+</tr>
+<tr>
+<td>K-14</td>
+<td>时区与交易日历</td>
+<td>跨市场时间对齐错误</td>
+<td>全系统统一 <code>Asia/Shanghai</code>，期货夜盘单独日历，禁止用自然日做持有期计算</td>
+</tr>
+<tr>
+<td>K-15</td>
+<td>信号与成交匹配歧义</td>
+<td>归因失真</td>
+<td>匹配打分（时间窗 + 方向 + 数量 + 价格接近度），低分匹配标记"待人工确认"，不静默丢弃</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="11_1">11. 迭代路线图</h2>
+<h3 id="v05-mvp-8">V0.5 · MVP（建议 8 周）</h3>
+<p><strong>目标</strong>：跑通「数据 → 选股 → 回测 → 看结果」最小闭环。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>交付</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据中台</td>
+<td>日线 + 元数据 + 财务 PIT + 质量校验 + 快照（M01 的 P0 项）</td>
+</tr>
+<tr>
+<td>选股引擎</td>
+<td>股票池 + 因子预处理 + 打分 + Top-N + 理由拆解 + 3 个内置策略</td>
+</tr>
+<tr>
+<td>回测引擎</td>
+<td>事件驱动 + 成本/滑点 + 涨跌停 + T+1 + 组合层 + 绩效指标</td>
+</tr>
+<tr>
+<td>风控</td>
+<td>单票/行业/总仓位/单笔 R 事前校验</td>
+</tr>
+<tr>
+<td>行情终端</td>
+<td>多周期 K 线 + 6 个基础指标 + 自选股</td>
+</tr>
+<tr>
+<td>基础</td>
+<td>任务 DAG、策略版本、密钥管理、登录</td>
+</tr>
+<tr>
+<td>工程基建</td>
+<td>monorepo 骨架（<code>packages/{web,api,engine,core}</code>）、命名规范落地、Docker Compose、Makefile、ruff/eslint、最小 CI（lint + 单测）</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>完成标志（DoD）</strong>：能对 3 个内置策略出具扣成本后的 8 年回测报告，且能复现。</p>
+<h3 id="v10-7">V1.0 · 决策闭环（建议 7 周）</h3>
+<p><strong>目标</strong>：从"看结果"到"能下单"——计划卡 + 区间可视化 + 真实成交导入。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>交付</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>区间信号</td>
+<td>区间模型 + 4 种生成算法 + 分批 + 仓位 + 计划卡 + 赔率</td>
+</tr>
+<tr>
+<td>K 线可视化</td>
+<td>信号标注 + 区间彩色横带</td>
+</tr>
+<tr>
+<td>交易记录</td>
+<td>对账单导入 + 持仓重建 + 绩效 + 信号-成交匹配 + 四象限归因</td>
+</tr>
+<tr>
+<td>资金流向</td>
+<td>个股/板块资金流 + 龙虎榜 + 融资融券 + 仪表盘</td>
+</tr>
+<tr>
+<td>其他</td>
+<td>盘前简报 + 盘后日报 + 未来函数检测器 + 策略对比</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>DoD</strong>：导入真实对账单后，能对过去 3 个月每笔成交给出"是否符合计划"的判断，并生成日报。</p>
+<h3 id="v15-harness-v1-8">V1.5 · 进化 Harness v1（建议 8 周）</h3>
+<p><strong>目标</strong>：让策略自己迭代，且不能自欺欺人。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>交付</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DNA 与适应度</td>
+<td>基因编码 + 多目标适应度 + 硬约束</td>
+</tr>
+<tr>
+<td>搜索器</td>
+<td>网格 / 随机 / 贝叶斯 / GA</td>
+</tr>
+<tr>
+<td>稳健性套件</td>
+<td>Walk-Forward + Purged K-Fold + 参数敏感性 + 蒙特卡洛 + PBO/DSR</td>
+</tr>
+<tr>
+<td>治理</td>
+<td>四道闸门 + 晋升评审 + 谱系 + 策略墓地 + 试验台账</td>
+</tr>
+<tr>
+<td>其他</td>
+<td>熔断开关 + 动态区间调整 + 资金流异动预警 + 条件预警推送</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>DoD</strong>：能在夜间跑完一次 200 代进化，输出帕累托前沿与冠军策略卡，且冠军需通过四道闸门才进候选池。</p>
+<h3 id="v20-8">V2.0 · 真实反馈闭环 + 期货（建议 8 周）</h3>
+<p><strong>目标</strong>：让真实成交反向改造策略与成本模型。</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>交付</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>真实反馈</td>
+<td>滑点反推校准 + 真实适应度重估 + 行为偏差画像 + 影子运行（Paper Trading）</td>
+</tr>
+<tr>
+<td>股指期货</td>
+<td>合约、基差、席位持仓、套保计算器、追保预警</td>
+</tr>
+<tr>
+<td>进阶</td>
+<td>NSGA-II 多目标、策略组合与相关性矩阵、压力测试、Brinson 归因</td>
+</tr>
+<tr>
+<td>报告</td>
+<td>周报/月报 + 复盘工作台 + 教训库</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>DoD</strong>：真实成交导入后，回测净收益与实盘偏差绝对值下降 ≥ 30%。</p>
+<h3 id="v25">V2.5+ · 储备</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>券商 Level-2</td>
+<td>逐笔委托/成交，重构资金流口径</td>
+</tr>
+<tr>
+<td>期权模块</td>
+<td>隐波、希腊字母、备兑/保护性认沽策略</td>
+</tr>
+<tr>
+<td>港美股</td>
+<td>数据适配器 + 时区/交易日历扩展</td>
+</tr>
+<tr>
+<td>自动下单</td>
+<td>需独立评审：券商接口合规、二次人工确认、异常撤单兜底</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="12_1">12. 验收标准（系统级）</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>验收项</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AC-01</td>
+<td>回测可信性</td>
+<td>基准策略（买入持有）回测结果与手工计算偏差 &lt; 0.1%</td>
+</tr>
+<tr>
+<td>AC-02</td>
+<td>成本真实性</td>
+<td>同一策略在"零成本"与"真实成本"下的年化差异被正确量化并展示</td>
+</tr>
+<tr>
+<td>AC-03</td>
+<td>无未来函数</td>
+<td>未来函数检测器对 5 个人为植入的泄漏案例 100% 检出</td>
+</tr>
+<tr>
+<td>AC-04</td>
+<td>数据可复现</td>
+<td>同一快照 + 同一代码 + 同一参数，两次回测结果完全一致</td>
+</tr>
+<tr>
+<td>AC-05</td>
+<td>计划卡合规</td>
+<td>100 张随机计划卡中，无一张突破风控限额</td>
+</tr>
+<tr>
+<td>AC-06</td>
+<td>区间有效性</td>
+<td>计划卡区间与 K 线渲染位置像素级一致</td>
+</tr>
+<tr>
+<td>AC-07</td>
+<td>对账准确性</td>
+<td>真实对账单 500 笔，持仓重建与券商一致</td>
+</tr>
+<tr>
+<td>AC-08</td>
+<td>进化不可作弊</td>
+<td>纯随机策略无法通过 G2 稳健闸门</td>
+</tr>
+<tr>
+<td>AC-09</td>
+<td>性能</td>
+<td>满足 NFR-P-01 至 NFR-P-08</td>
+</tr>
+<tr>
+<td>AC-10</td>
+<td>可运维</td>
+<td>任一数据任务失败后，系统能自我恢复并在 10 分钟内补齐</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="13_1">13. 风险与合规声明</h2>
+<h3 id="131">13.1 项目风险</h3>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>风险</th>
+<th>等级</th>
+<th>缓解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据源不可用或收费变更</td>
+<td>高</td>
+<td>适配层抽象 + 备源 + 本地留档，最坏情况可切换商业源</td>
+</tr>
+<tr>
+<td>过拟合导致实盘亏损</td>
+<td>高</td>
+<td>四道闸门 + 影子运行 + 真实适应度重估</td>
+</tr>
+<tr>
+<td>功能蔓延导致长期无法交付</td>
+<td>中</td>
+<td>严格按 V0.5→V1.0 分批，P0 未完成不启动 P2</td>
+</tr>
+<tr>
+<td>单机算力不足</td>
+<td>中</td>
+<td>分层评估 + 缓存 + 夜间批跑，必要时上云 CPU 竞价实例</td>
+</tr>
+<tr>
+<td>免费源延迟导致盘中信号失真</td>
+<td>中</td>
+<td>明确标注"非实时"，盘中信号仅作提醒不作为自动决策依据</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="132">13.2 合规声明</h3>
+<ol>
+<li>本系统为<strong>个人自用研究工具</strong>，不对外提供证券投资咨询服务，不代客理财，不发布荐股信息。</li>
+<li>系统输出的所有买卖区间、评分、建议均为<strong>基于历史数据的统计结果</strong>，不构成任何投资建议。</li>
+<li>历史回测收益不代表未来表现。任何策略在实盘中均可能产生重大亏损。</li>
+<li>数据使用遵守数据提供方服务条款，仅限本地研究，不转售、不二次分发。</li>
+<li>V1/V2 不接入自动下单接口；若未来引入，须另行完成合规评估与人工二次确认机制。</li>
+</ol>
+<hr />
+<h2 id="a">附录 A · 因子库清单</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>类别</th>
+<th>因子</th>
+<th>计算口径</th>
+<th>方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>价值</td>
+<td>EP</td>
+<td>净利润(TTM)/总市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>价值</td>
+<td>BP</td>
+<td>净资产/总市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>价值</td>
+<td>SP</td>
+<td>营业收入(TTM)/总市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>价值</td>
+<td>CFP</td>
+<td>经营现金流(TTM)/总市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>价值</td>
+<td>股息率</td>
+<td>近 12 月分红/市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>成长</td>
+<td>营收同比</td>
+<td>单季营收 YoY</td>
+<td>正</td>
+</tr>
+<tr>
+<td>成长</td>
+<td>净利同比</td>
+<td>单季净利 YoY</td>
+<td>正</td>
+</tr>
+<tr>
+<td>成长</td>
+<td>扣非净利同比</td>
+<td>剔除一次性损益</td>
+<td>正</td>
+</tr>
+<tr>
+<td>成长</td>
+<td>营收环比加速</td>
+<td>单季营收 QoQ 的环比变化</td>
+<td>正</td>
+</tr>
+<tr>
+<td>成长</td>
+<td>一致预期上调</td>
+<td>分析师净利预测变化（若有）</td>
+<td>正</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>ROE(TTM)</td>
+<td>净利润/平均净资产</td>
+<td>正</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>毛利率</td>
+<td>毛利/营收</td>
+<td>正</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>净利率</td>
+<td>净利/营收</td>
+<td>正</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>资产负债率</td>
+<td>负债/资产</td>
+<td>负</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>经营现金流/净利</td>
+<td>盈利质量</td>
+<td>正</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>应计利润</td>
+<td>(净利−经营现金流)/资产</td>
+<td>负</td>
+</tr>
+<tr>
+<td>动量</td>
+<td>20 日收益</td>
+<td>复权收盘价变动</td>
+<td>正</td>
+</tr>
+<tr>
+<td>动量</td>
+<td>60 日收益</td>
+<td>同上</td>
+<td>正</td>
+</tr>
+<tr>
+<td>动量</td>
+<td>120 日收益（跳过近 5 日）</td>
+<td>剔除短期反转</td>
+<td>正</td>
+</tr>
+<tr>
+<td>动量</td>
+<td>相对强弱 RS</td>
+<td>个股收益 − 行业收益</td>
+<td>正</td>
+</tr>
+<tr>
+<td>动量</td>
+<td>距 52 周高点</td>
+<td>当前价/52 周最高</td>
+<td>正</td>
+</tr>
+<tr>
+<td>反转</td>
+<td>5 日收益</td>
+<td>短期反转</td>
+<td>负</td>
+</tr>
+<tr>
+<td>反转</td>
+<td>偏离 20 日均线</td>
+<td>(价−MA20)/MA20</td>
+<td>负</td>
+</tr>
+<tr>
+<td>波动</td>
+<td>20 日波动率</td>
+<td>日收益标准差年化</td>
+<td>负</td>
+</tr>
+<tr>
+<td>波动</td>
+<td>特质波动率</td>
+<td>剔除市场/行业后的残差波动</td>
+<td>负</td>
+</tr>
+<tr>
+<td>波动</td>
+<td>最大回撤（60 日）</td>
+<td>区间最大回撤</td>
+<td>负</td>
+</tr>
+<tr>
+<td>波动</td>
+<td>Beta</td>
+<td>对指数回归斜率</td>
+<td>视策略</td>
+</tr>
+<tr>
+<td>流动性</td>
+<td>换手率</td>
+<td>成交量/流通股</td>
+<td>视策略</td>
+</tr>
+<tr>
+<td>流动性</td>
+<td>成交额（20 日均）</td>
+<td>对数化</td>
+<td>正（有下限门槛）</td>
+</tr>
+<tr>
+<td>流动性</td>
+<td>Amihud 非流动性</td>
+<td>收益绝对值/成交额</td>
+<td>负</td>
+</tr>
+<tr>
+<td>流动性</td>
+<td>量比</td>
+<td>当日量/5 日均量</td>
+<td>正</td>
+</tr>
+<tr>
+<td>资金</td>
+<td>主力净流入占比</td>
+<td>主力净流入/成交额</td>
+<td>正</td>
+</tr>
+<tr>
+<td>资金</td>
+<td>连续净流入天数</td>
+<td>连续正值天数</td>
+<td>正</td>
+</tr>
+<tr>
+<td>资金</td>
+<td>大单买入占比</td>
+<td>大单买入额/总买入额</td>
+<td>正</td>
+</tr>
+<tr>
+<td>资金</td>
+<td>融资余额变化率</td>
+<td>5 日融资余额变动</td>
+<td>正</td>
+</tr>
+<tr>
+<td>情绪</td>
+<td>龙虎榜净买入</td>
+<td>净买入/流通市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>情绪</td>
+<td>涨停次数（20 日）</td>
+<td>涨停天数</td>
+<td>正</td>
+</tr>
+<tr>
+<td>情绪</td>
+<td>封单强度</td>
+<td>封单额/流通市值</td>
+<td>正</td>
+</tr>
+<tr>
+<td>情绪</td>
+<td>分析师覆盖变化</td>
+<td>覆盖机构数变动</td>
+<td>正</td>
+</tr>
+<tr>
+<td>结构</td>
+<td>股东户数变化</td>
+<td>季度户数变化率</td>
+<td>负</td>
+</tr>
+<tr>
+<td>结构</td>
+<td>机构持股比例</td>
+<td>基金+北向持股占比</td>
+<td>正</td>
+</tr>
+<tr>
+<td>结构</td>
+<td>解禁压力</td>
+<td>未来 90 日解禁市值/流通市值</td>
+<td>负</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="b">附录 B · 关键指标公式</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>公式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>年化收益</td>
+<td><code>(期末净值/期初净值)^(252/交易日数) − 1</code></td>
+</tr>
+<tr>
+<td>最大回撤</td>
+<td><code>max(1 − 净值_t / 累计最高净值_t)</code></td>
+</tr>
+<tr>
+<td>夏普比率</td>
+<td><code>(年化收益 − 无风险利率) / 年化波动率</code>，<code>年化波动率 = 日收益std × √252</code></td>
+</tr>
+<tr>
+<td>索提诺比率</td>
+<td><code>(年化收益 − 无风险利率) / 下行波动率</code></td>
+</tr>
+<tr>
+<td>卡玛比率</td>
+<td><code>年化收益 / 最大回撤</code></td>
+</tr>
+<tr>
+<td>胜率</td>
+<td><code>盈利交易笔数 / 总交易笔数</code></td>
+</tr>
+<tr>
+<td>盈亏比</td>
+<td><code>平均盈利额 / 平均亏损额</code></td>
+</tr>
+<tr>
+<td>ATR</td>
+<td><code>TR = max(H−L, |H−C_prev|, |L−C_prev|)</code>；<code>ATR = SMA(TR, n)</code></td>
+</tr>
+<tr>
+<td>单笔仓位</td>
+<td><code>shares = floor(净值 × 单笔风险% / (建仓价 − 止损价) / 100) × 100</code></td>
+</tr>
+<tr>
+<td>凯利比例</td>
+<td><code>f = (p·b − q) / b</code>，实际使用 <code>f × 0.5</code>（半凯利）</td>
+</tr>
+<tr>
+<td>波动率目标仓位</td>
+<td><code>仓位 = 目标年化波动 / 策略年化波动</code>，上限截断</td>
+</tr>
+<tr>
+<td>年化基差率</td>
+<td><code>(期货价 − 现货价)/现货价 × 365 / 剩余到期天数</code></td>
+</tr>
+<tr>
+<td>对冲手数</td>
+<td><code>手数 = 组合市值 × Beta / (指数点位 × 合约乘数)</code></td>
+</tr>
+<tr>
+<td>PBO</td>
+<td>组合对称交叉验证下，IS 最优个体在 OOS 排名落入后半的比例</td>
+</tr>
+<tr>
+<td>DSR</td>
+<td>对夏普按试验次数 N 与偏度峰度调整后的显著性概率</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="c">附录 C · 内置策略清单</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>策略</th>
+<th>逻辑</th>
+<th>核心参数</th>
+<th>适用市况</th>
+<th>失效条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S-01</td>
+<td>多因子质量价值</td>
+<td>低估值 + 高 ROE + 低负债，按综合分取 Top 30，月频调仓</td>
+<td>因子权重、TopN、调仓频率</td>
+<td>震荡/慢牛</td>
+<td>小盘题材极端行情、流动性枯竭</td>
+</tr>
+<tr>
+<td>S-02</td>
+<td>动量趋势突破</td>
+<td>60 日新高 + 均线多头排列 + 放量确认，20 日持有</td>
+<td>突破周期、量能倍数、ATR 止损</td>
+<td>单边趋势</td>
+<td>频繁假突破的震荡市</td>
+</tr>
+<tr>
+<td>S-03</td>
+<td>涨停板连板</td>
+<td>首板/二板打板，结合封单强度、板块热度、晋级率</td>
+<td>连板高度上限、封单比阈值、板块热度门槛</td>
+<td>情绪高潮期</td>
+<td>监管收紧、情绪退潮期（炸板率 &gt; 40%）</td>
+</tr>
+<tr>
+<td>S-04</td>
+<td>主力资金跟随</td>
+<td>连续 3 日主力净流入 + 价量配合 + 非高位</td>
+<td>流入天数、净流入占比、位置约束</td>
+<td>存量博弈</td>
+<td>资金流入但价格滞涨（背离）</td>
+</tr>
+<tr>
+<td>S-05</td>
+<td>事件驱动</td>
+<td>业绩预告超预期、龙虎榜机构买入、大额回购</td>
+<td>事件类型、时间窗、预期幅度</td>
+<td>年报/季报窗口</td>
+<td>事件已充分定价（公告后高开低走）</td>
+</tr>
+<tr>
+<td>S-06</td>
+<td>行业轮动</td>
+<td>申万一级行业动量 + 资金流强度排序，取前 3 行业龙头</td>
+<td>动量窗口、换仓周期</td>
+<td>板块轮动明显</td>
+<td>全面普涨/普跌，行业分化度低</td>
+</tr>
+<tr>
+<td>S-07</td>
+<td>低波红利</td>
+<td>低波动 + 高股息 + 稳定现金流，季度调仓</td>
+<td>波动率上限、股息率下限、调仓频率</td>
+<td>熊市/避险</td>
+<td>利率快速上行、成长风格极致</td>
+</tr>
+<tr>
+<td>S-08</td>
+<td>超跌反转</td>
+<td>短期跌幅超阈值 + 超卖指标 + 缩量止跌</td>
+<td>跌幅阈值、RSI 阈值、止跌确认</td>
+<td>急跌后修复</td>
+<td>系统性下跌中继（持续阴跌）</td>
+</tr>
+<tr>
+<td>S-09</td>
+<td>ETF 轮动</td>
+<td>宽基/行业 ETF 动量轮动，月度调仓</td>
+<td>ETF 池、动量窗口</td>
+<td>大类资产切换</td>
+<td>各 ETF 同涨同跌</td>
+</tr>
+<tr>
+<td>S-10</td>
+<td>可转债双低</td>
+<td>低价格 + 低溢价率排序，等权持有</td>
+<td>价格上限、溢价率上限</td>
+<td>债市平稳</td>
+<td>信用风险事件、正股暴跌</td>
+</tr>
+<tr>
+<td>S-11</td>
+<td>配对交易</td>
+<td>同行业高相关个股价差回归</td>
+<td>相关性门槛、Z-score 开平仓</td>
+<td>震荡市</td>
+<td>价差结构性断裂（并购/退市）</td>
+</tr>
+<tr>
+<td>S-12</td>
+<td>指数对冲增强</td>
+<td>多头选股组合 + IF/IC 空头对冲，赚取 Alpha</td>
+<td>对冲比例、Beta 目标</td>
+<td>系统性风险高</td>
+<td>基差深度贴水（对冲成本过高）</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="d">附录 D · 数据源接口对照（免费档）</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>数据</th>
+<th>AkShare 接口（示例）</th>
+<th>Tushare 接口（示例）</th>
+<th>频率</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>股票列表</td>
+<td><code>stock_info_a_code_name</code></td>
+<td><code>stock_basic</code></td>
+<td>日</td>
+<td>含 ST 标记需另取</td>
+</tr>
+<tr>
+<td>日线行情</td>
+<td><code>stock_zh_a_hist</code></td>
+<td><code>daily</code></td>
+<td>日</td>
+<td>需处理复权参数</td>
+</tr>
+<tr>
+<td>复权因子</td>
+<td><code>stock_zh_a_hist(adjust="hfq-factor")</code></td>
+<td><code>adj_factor</code></td>
+<td>日</td>
+<td>单独存因子</td>
+</tr>
+<tr>
+<td>分钟行情</td>
+<td><code>stock_zh_a_hist_min_em</code></td>
+<td><code>stk_mins</code>（需积分）</td>
+<td>分钟</td>
+<td>历史深度有限</td>
+</tr>
+<tr>
+<td>财务指标</td>
+<td><code>stock_financial_analysis_indicator</code></td>
+<td><code>fina_indicator</code></td>
+<td>季</td>
+<td>需公告日字段</td>
+</tr>
+<tr>
+<td>业绩预告</td>
+<td><code>stock_yjyg_em</code></td>
+<td><code>forecast</code></td>
+<td>事件</td>
+<td>—</td>
+</tr>
+<tr>
+<td>龙虎榜</td>
+<td><code>stock_lhb_detail_em</code></td>
+<td><code>top_list</code></td>
+<td>日</td>
+<td>含席位明细需另接口</td>
+</tr>
+<tr>
+<td>大宗交易</td>
+<td><code>stock_dzjy_mrmx</code></td>
+<td><code>block_trade</code></td>
+<td>日</td>
+<td>—</td>
+</tr>
+<tr>
+<td>融资融券</td>
+<td><code>stock_margin_detail_sse/szse</code></td>
+<td><code>margin_detail</code></td>
+<td>日</td>
+<td>两市分开</td>
+</tr>
+<tr>
+<td>板块成分</td>
+<td><code>stock_board_industry_cons_em</code></td>
+<td><code>index_member</code></td>
+<td>周/变更</td>
+<td>需自建历史成分</td>
+</tr>
+<tr>
+<td>资金流（个股）</td>
+<td><code>stock_individual_fund_flow</code></td>
+<td><code>moneyflow</code></td>
+<td>日</td>
+<td>口径近似</td>
+</tr>
+<tr>
+<td>资金流（板块）</td>
+<td><code>stock_sector_fund_flow_rank</code></td>
+<td><code>moneyflow_ind_ths</code></td>
+<td>日</td>
+<td>—</td>
+</tr>
+<tr>
+<td>涨停池</td>
+<td><code>stock_zt_pool_em</code></td>
+<td><code>limit_list_d</code></td>
+<td>日</td>
+<td>含封单、炸板次数</td>
+</tr>
+<tr>
+<td>期货合约</td>
+<td><code>futures_main_sina</code></td>
+<td><code>fut_daily</code></td>
+<td>日</td>
+<td>主力连续需拼接</td>
+</tr>
+<tr>
+<td>期货持仓排名</td>
+<td><code>futures_hold_pos_sina</code></td>
+<td><code>fut_holding</code></td>
+<td>日</td>
+<td>T 日盘后</td>
+</tr>
+<tr>
+<td>陆股通持股</td>
+<td><code>stock_hsgt_hold_stock_em</code></td>
+<td><code>hk_hold</code></td>
+<td>季</td>
+<td>2024-08 后个股持股改季度披露，日频仅剩成交总额</td>
+</tr>
+<tr>
+<td>指数行情</td>
+<td><code>index_zh_a_hist</code></td>
+<td><code>index_daily</code></td>
+<td>日</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>说明：以上接口名随数据源版本可能变动，实现时须以「适配器 + 契约测试」方式接入，接口名集中配置，禁止散落在业务代码中。</p>
+</blockquote>
+<h3 id="d1-2026-11-06">D.1 实施期落地口径（2026-11-06 回填）</h3>
+<p>首版实现<strong>没有</strong>走 AkShare / Tushare，改为直接请求三家公开行情接口，理由与细节见
+<a href="docs/adr/0006-real-market-data.md">docs/adr/0006-real-market-data.md</a>。落地对照：</p>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>数据</th>
+<th>规划源</th>
+<th>实际源</th>
+<th>落地说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>股票列表 / 快照</td>
+<td>AkShare</td>
+<td>新浪 <code>hq.sinajs.cn</code> + 东财 <code>clist</code></td>
+<td>一次拿全市场 5578 只，含 PE/PB/流通市值</td>
+</tr>
+<tr>
+<td>个股与指数日线</td>
+<td>AkShare / Tushare</td>
+<td>新浪 <code>quotes_service</code>（个股 + 指数同接口）</td>
+<td>520 根，不复权原始价</td>
+</tr>
+<tr>
+<td>复权因子</td>
+<td><code>hfq-factor</code></td>
+<td><strong>本地按分红送配推算</strong></td>
+<td>源不提供因子，用除权参考价连乘，锚点取窗口末根</td>
+</tr>
+<tr>
+<td>财务指标（ROE / 行业）</td>
+<td><code>fina_indicator</code></td>
+<td>东财 <code>datacenter-web</code></td>
+<td>ROE <strong>必须取年报</strong>（<code>WEIGHTAVG_ROE</code> 是累计值），行业取最新报告期</td>
+</tr>
+<tr>
+<td>分红送配</td>
+<td><code>stock_fhps_em</code></td>
+<td>东财 <code>datacenter-web</code></td>
+<td>复权因子的输入</td>
+</tr>
+<tr>
+<td>个股资金流</td>
+<td><code>stock_individual_fund_flow</code></td>
+<td>新浪 <code>money_flow</code></td>
+<td>只有主力/超大单，大单由两者相减反推，中小单留 0 不编造</td>
+</tr>
+<tr>
+<td>指数实时点位</td>
+<td>—</td>
+<td>新浪 <code>hq.sinajs.cn</code>（批量）</td>
+<td>仅点位，盘中 3 秒；成交额不提供</td>
+</tr>
+<tr>
+<td><strong>实时报价</strong></td>
+<td>—</td>
+<td>新浪 <code>hq.sinajs.cn</code></td>
+<td>一次最多 80 个代码/批，覆盖「当前 + 自选 + 7 指数」，见 ADR 0007</td>
+</tr>
+<tr>
+<td><strong>当日分时</strong></td>
+<td>—</td>
+<td>新浪 <code>CN_MinlineService</code></td>
+<td>逐分钟 + 真实均价线；腾讯分时已整片返回空，仅作兜底</td>
+</tr>
+</tbody>
+</table></div>
+<p>两条硬约束在此口径下仍成立：接口名集中在 <code>packages/data/alphaforge_data/sources/</code>，
+业务代码不出现 URL；<code>alphaforge_data</code> 不依赖任何第三方 HTTP 库，标准库 <code>urllib</code> 直连。
+<code>ROE</code> 取年报、复权因子本地推算这两处已在本节写死为<strong>实现契约</strong>，不得回退为季报口径。</p>
+<p><strong>实时与批次是两条独立的路</strong>（ADR 0007）：<code>hq.sinajs.cn</code> 一请求多代码、1 秒级刷新，
+用于盘中报价与分时；<code>Market_Center</code> 一次拍平全市场、要翻 56 页，用于日频同步。
+实时范围仅覆盖「当前标的 + 自选 + 7 大指数」，需要全市场同一时刻截面的指标
+（涨跌家数、涨停家数、市场温度、涨跌幅榜）不得声称实时，界面上必须区分标注。</p>
+<hr />
+<h2 id="e">附录 E · 快捷键建议（兼容通达信习惯）</h2>
+<div class="tbl-wrap"><table>
+<thead>
+<tr>
+<th>按键</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>F5</code></td>
+<td>分时 / K 线切换</td>
+</tr>
+<tr>
+<td><code>F8</code></td>
+<td>循环切换周期（日→周→月→60→30→15→5→1）</td>
+</tr>
+<tr>
+<td><code>↑</code> / <code>↓</code></td>
+<td>上一只 / 下一只自选股</td>
+</tr>
+<tr>
+<td><code>Enter</code></td>
+<td>打开选中标的详情</td>
+</tr>
+<tr>
+<td><code>/</code></td>
+<td>全局搜索（代码/名称/拼音首字母）</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>关闭弹窗 / 返回</td>
+</tr>
+<tr>
+<td><code>.</code> + 代码</td>
+<td>快速调出标的</td>
+</tr>
+<tr>
+<td><code>Ctrl+K</code></td>
+<td>命令面板（运行策略、生成计划卡、导入对账单）</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<div class="doc-end">
+
+**文档结束** · SRS-AF-001 v1.1 · AlphaForge 阿尔法熔炉
+
+> 本文件为工程实施蓝本。所有功能条目在开发前须经需求评审确认优先级；任何新增需求须补编号并更新修订记录。
+
+</div></main>
+</div>
+<script>
+const links=[...document.querySelectorAll('#tocNav a')];
+const heads=links.map(a=>document.querySelector(a.getAttribute('href'))).filter(Boolean);
+function spy(){
+  const y=window.scrollY+120;
+  let idx=0;
+  heads.forEach((h,i)=>{ if(h.offsetTop<=y) idx=i; });
+  links.forEach(l=>l.classList.remove('active'));
+  if(links[idx]) links[idx].classList.add('active');
+}
+window.addEventListener('scroll',spy,{passive:true}); window.addEventListener('load',spy);
+document.querySelectorAll('#tocNav a').forEach(a=>{
+  a.addEventListener('click',e=>{
+    const t=document.querySelector(a.getAttribute('href'));
+    if(t){ e.preventDefault(); window.scrollTo({top:t.offsetTop-12,behavior:'smooth'}); history.replaceState(null,'',a.getAttribute('href')); }
+  });
+});
+</script>
+</body>
+</html>
