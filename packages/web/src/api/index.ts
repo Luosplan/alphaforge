@@ -6,14 +6,19 @@ import type {
   FieldMeta,
   IndexDetail,
   IndexQuote,
+  GlobalIndexBook,
   LiveResponse,
   MarketOverview,
   MinuteResponse,
+  ChipResponse,
+  TickResponse,
   OverviewData,
   ProfileResponse,
   SearchHit,
   UserProfile,
   PlanCard,
+  PlanSource,
+  DismissedPlan,
   PortfolioResponse,
   Quote,
   RiskCheckResult,
@@ -39,6 +44,10 @@ export const api = {
   bars: (params: { code: string; freq?: string; adjust?: string; limit?: number; indicators?: string }) =>
     http.get<BarsResponse>('/market/bars', { params }),
   minute: (code: string) => http.get<MinuteResponse>('/market/minute', { params: { code } }),
+  chips: (code: string, days = 250, bins = 120) =>
+    http.get<ChipResponse>('/market/chips', { params: { code, days, bins } }),
+  ticks: (code: string, limit = 30) =>
+    http.get<TickResponse>('/market/ticks', { params: { code, limit } }),
   /** 实时报价：盘中轮询用，服务端 3 秒内合并同批代码的上游请求 */
   marketLive: (codes: string[], indices = true) =>
     http.get<LiveResponse>('/market/live', { params: { codes: codes.join(','), indices } }),
@@ -47,6 +56,7 @@ export const api = {
   sectorFlow: (limit = 12) => http.get<SectorFlow[]>('/market/sector-flow', { params: { limit } }),
   stockFlow: (code: string) => http.get<Record<string, unknown>>('/market/stock-flow', { params: { code } }),
   indices: () => http.get<IndexQuote[]>('/market/indices'),
+  globalIndices: () => http.get<GlobalIndexBook>('/market/global-indices'),
   indexDetail: (code: string, days = 120) =>
     http.get<IndexDetail>(`/market/indices/${code}`, { params: { days } }),
   temperature: () => http.get<Temperature>('/market/temperature'),
@@ -81,8 +91,15 @@ export const api = {
     http.put<Strategy>(`/select/strategies/${id}`, payload),
   deleteStrategy: (id: string) => http.delete<{ deleted: string }>(`/select/strategies/${id}`),
 
-  plans: () => http.get<{ items: PlanCard[]; stats: Record<string, number> }>('/signal/plans'),
+  plans: () =>
+    http.get<{ items: PlanCard[]; stats: Record<string, number>; source: PlanSource }>('/signal/plans'),
   planDetail: (id: string) => http.get<{ plan: PlanCard; bars: unknown[] }>(`/signal/plans/${id}`),
+  dismissedPlans: () => http.get<{ items: DismissedPlan[]; total: number }>('/signal/plans/dismissed'),
+  dismissPlan: (id: string) => http.delete<Record<string, unknown>>(`/signal/plans/${id}`),
+  restorePlan: (id: string) =>
+    http.post<{ restored: string }>(`/signal/plans/${id}/restore`, null),
+  clearDismissedPlans: () =>
+    http.delete<{ cleared: number }>('/signal/plans/dismissed'),
   previewPlan: (params: { code: string; strategy?: string; signal_type?: string }) =>
     http.post<PlanCard>('/signal/plans/preview', null, { params }),
   riskCheck: (payload: { code: string; shares: number; price: number }) =>

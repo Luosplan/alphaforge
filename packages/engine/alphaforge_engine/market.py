@@ -13,11 +13,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 from alphaforge_core.market_session import is_live, label as session_label, session_state
 from alphaforge_core.universe import board_key as board_of
 
 HISTORY_DAYS = 520
+
+# 逐笔成交的上游（东财 push2）连发会被拉黑，同一只票 5 秒内复用结果。
+# key 是代码，值是天真的 (抓取时刻, 响应)。
+_TICK_CACHE: dict[str, tuple[float, dict]] = {}
+_TICK_TTL = 5.0
 
 # 实时报价里覆盖「当日状态」的字段。财务类字段（PE/ROE/行业/流通市值）
 # 仍然从库里取——它们一天内不会变，没必要每秒重算。
@@ -119,7 +125,7 @@ class MarketEngine:
 
     # ------------------------------------------------------------------ K 线
     def bars(self, code: str, freq: str = "1d", adjust: str = "qfq",
-             limit: int | None = None) -> list[dict]:
+             limit: int | None = None, *, live: bool = False) -> list[dict]:
         s = self.series(code)
         if not s:
             return []
@@ -145,12 +151,73 @@ class MarketEngine:
             }
             for i, d in enumerate(s.dates)
         ]
+        # 当日那根还没入库（日线源要等收盘后才发），用实时报价补一根临时的。
+        # 只在接口层显式要求时做：选股 / 因子这类批量路径一秒钟调几百次 bars()，
+        # 每次再去打一次实时接口会把限速打满。
+        if live and freq in ("1d", "1w", "1M"):
+            rows = self._append_today(code, rows, s)
+        # 当日的临时标记要跟着重采样传下去，否则周 K / 月 K 的最后一根
+        # 就不知道自己「还在长」，前端也就不会去追
+        provisional = bool(rows and rows[-1].get("provisional"))
         if freq == "60m":
             rows = self._intraday_bars(rows, days=60)
         elif freq != "1d":
             rows = self._resample(rows, freq)
+            if provisional and rows:
+                rows[-1]["provisional"] = True
         if limit:
             rows = rows[-limit:]
+        return rows
+
+    def _append_today(self, code: str, rows: list[dict], series) -> list[dict]:
+        """用实时报价给日线补上「今天」这根，收盘前是进行中的，收盘后是终值。
+
+        三个前提，缺一个都不补：
+        1. 实时源给得出**交易日期**（`ts` 的日期部分）——不能拿本机日期顶替你，
+           周末或数据源停更时会把昨天的收盘价复制成一根新 K 线；
+        2. 该日期必须晚于库里最后一根，避免和已入库的当日 K 线重复；
+        3. 开盘价与现价都大于 0（停牌 / 集合竞价未成交时不画实体）。
+        """
+        if not rows:
+            return rows
+        try:
+            from alphaforge_data.live import feed
+
+            hit = (feed().quotes([code]) or {}).get(code)
+        except Exception:                                  # noqa: BLE001 - 实时链路不许炸
+            return rows
+        if not hit:
+            return rows
+
+        session = str(hit.get("ts") or "")[:10]
+        if not session or session <= rows[-1]["date"]:
+            return rows
+
+        price = float(hit.get("price") or 0)
+        open_ = float(hit.get("open") or 0)
+        if price <= 0 or open_ <= 0:
+            return rows
+
+        # 实时价是不复权的，要和已复权的历史价格同尺度：用最后一根的
+        # 「复权价 / 原始价」比例换算，等于把今天当作没有除权事件
+        raw_last = series.raw_close[-1] if series.raw_close else 0.0
+        k = rows[-1]["close"] / raw_last if raw_last else 1.0
+        high = max(float(hit.get("high") or 0), price)
+        low = min(float(hit.get("low") or price), price)
+
+        rows.append({
+            "date": session,
+            "open": round(open_ * k, 2),
+            "high": round(high * k, 2),
+            "low": round(low * k, 2),
+            "close": round(price * k, 2),
+            "volume": float(hit.get("volume") or 0),
+            "amount": float(hit.get("amount") or 0),
+            "turnover": 0.0,
+            "main_net": 0.0,
+            # 前端据此标注「盘中/实时」，也便于排查「这根是不是落库了」
+            "provisional": True,
+        })
         return rows
 
     @staticmethod
@@ -287,6 +354,112 @@ class MarketEngine:
             cum_vol += v
             out.append(round(cum_amt / cum_vol, 3) if cum_vol else p)
         return out
+
+    # ---------------------------------------------------------------- 筹码峰
+    def chips(self, code: str, *, days: int = 250, bins: int = 120) -> dict:
+        """筹码分布（成本分布）。
+
+        口径说明写在 `alphaforge_core.chips` 里：成交量按当日价格区间摊到
+        价格轴上、再按换手率逐日衰减。这里只负责凑料：
+
+        - 价格用**前复权**（`adjust="qfq"`）。用不复权价算，除权那天筹码会
+          整体凭空跳一档，峰直接裂成两座；
+        - 换手率用 `volume(手) × 100 / float_shares`，流通股本取 `symbol`
+          表（东财给的是最新值，历史股本变动会被抹平，这是近似模型的固有误差）；
+        - 当日那根用实时价补（`live=True`），不吃实时的话盘中筹码峰永远停在
+          昨收，看起来像坏了。
+        """
+        sym = self.symbol(code) or {}
+        float_shares = float(sym.get("float_shares") or 0)
+        if float_shares <= 0:
+            return {"code": code, "available": False,
+                    "reason": "缺少流通股本，无法换算换手率",
+                    "levels": [], "peak": 0.0, "avg_cost": 0.0,
+                    "profit_ratio": 0.0, "cost90": [0.0, 0.0], "concentration": 0.0}
+
+        rows = self.bars(code, "1d", "qfq", limit=days, live=True)
+        if not rows:
+            return {"code": code, "available": False, "reason": "无日线数据",
+                    "levels": [], "peak": 0.0, "avg_cost": 0.0,
+                    "profit_ratio": 0.0, "cost90": [0.0, 0.0], "concentration": 0.0}
+
+        from alphaforge_core.chips import cost_distribution
+
+        current = float(rows[-1]["close"] or 0)
+        # 盘中用实时价当现价，否则获利比例会拿「上一分钟那根」的收盘算
+        try:
+            hit = (self.live_quotes([code]).get("items") or [])[0]
+            if float(hit.get("price") or 0) > 0 and rows[-1].get("provisional"):
+                current = float(hit["price"])
+        except Exception:                                  # noqa: BLE001
+            pass
+
+        out = cost_distribution(rows, float_shares, bins=bins, current=current)
+        return {
+            "code": code,
+            "price": round(current, 2),
+            "float_shares": round(float_shares / 1e8, 2),   # 亿股，前端标注用
+            "days": len(rows),
+            "range": [rows[0]["date"], rows[-1]["date"]],
+            "source": "local:volume-decay",
+            **out,
+        }
+
+    # -------------------------------------------------------------- 分时成交
+    def ticks(self, code: str, limit: int = 30) -> dict:
+        """最近逐笔成交。东财失败时退回「分钟聚合」，并标记 `approx`。
+
+        退回不是造假：分时接口本来就有每分钟的成交量与成交价，聚合成一行
+        「14:56　1447.72　4 手」在语义上是成立的，只是笔数变粗、买卖方向
+        不可知。前端据此把方向列显示为「—」。
+        """
+        from alphaforge_data.sources import eastmoney as em
+
+        now = time.time()
+        cached = _TICK_CACHE.get(code)
+        if cached and now - cached[0] < _TICK_TTL:
+            return cached[1]
+
+        payload: dict
+        try:
+            payload = em.ticks(code, limit)
+        except Exception:                                  # noqa: BLE001
+            payload = {"items": [], "available": False}
+
+        if payload.get("available"):
+            payload["approx"] = False
+            payload["source"] = "eastmoney"
+        else:
+            payload = self._ticks_from_minute(code, limit)
+
+        _TICK_CACHE[code] = (now, payload)
+        return payload
+
+    def _ticks_from_minute(self, code: str, limit: int) -> dict:
+        try:
+            m = self.minute(code)
+        except Exception:                                  # noqa: BLE001
+            m = {}
+        times = m.get("times") or []
+        prices = m.get("prices") or []
+        vols = m.get("volumes") or []
+        items = [
+            {
+                "time": str(t),
+                "price": round(float(p or 0), 2),
+                "volume": float(v or 0),
+                "amount": round(float(p or 0) * float(v or 0) * 100, 2),
+                "side": "mid",
+            }
+            for t, p, v in list(zip(times, prices, vols))[-limit:]
+        ]
+        return {
+            "items": items,
+            "prev_close": float(m.get("prev_close") or 0),
+            "available": bool(items),
+            "approx": True,
+            "source": "minute-aggregate",
+        }
 
     # ------------------------------------------------------------------ 快照
     def quote(self, code: str) -> dict:

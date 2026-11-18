@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from alphaforge_core.indicators import compute_all
-from alphaforge_engine.panorama import index_book, market_temperature
+from alphaforge_engine.panorama import global_book, index_book, market_temperature
 from alphaforge_engine.signal import active_plans
 
 from ..deps import market, ok
@@ -65,12 +65,18 @@ def bars(
     indicators: str | None = Query(default="MA,MACD,BOLL", description="逗号分隔"),
 ):
     engine = market()
-    rows = engine.bars(code, freq=freq, adjust=adjust, limit=limit)
+    rows = engine.bars(code, freq=freq, adjust=adjust, limit=limit, live=True)
     sets = {s.strip().upper() for s in (indicators or "").split(",") if s.strip()}
     ind = compute_all(rows, sets) if sets else {}
-    quote_row = engine.quote(code)
+    # 报价也用实时值：K 线已经补上了今天那根，报价却还挂昨天的收盘价，
+    # 同一屏里两个数字会当场打架。实时源取不到才退回库里的值。
+    # 以库里的报价为底再盖实时字段：实时接口不提供 industry / board /
+    # turnover_rate，整体替换会让这些字段消失。
+    base_quote = engine.quote(code)
+    live = engine.live_quotes([code]).get("items") or []
+    quote_row = {**base_quote, **live[0]} if live else base_quote
     symbol = {"code": code, "name": quote_row["name"], "industry": quote_row["industry"], "board": quote_row["board"]}
-    zones = [p for p in active_plans(engine) if p["code"] == code]
+    zones = [p for p in active_plans(engine)["items"] if p["code"] == code]
     return ok({
         "symbol": symbol,
         "freq": freq,
@@ -93,10 +99,49 @@ def minute(request: Request, code: str = Query(...)):
     return ok(data)
 
 
+@router.get("/chips")
+def chips(
+    request: Request,
+    code: str = Query(..., description="代码"),
+    days: int = Query(250, ge=60, le=520, description="参与计算的交易日数"),
+    bins: int = Query(120, ge=30, le=300, description="价格轴分箱数"),
+):
+    """筹码分布（成本分布）。
+
+    **不是真实持仓**——交易所不公开逐户持仓，这是「成交量按价格摊开 + 换手率
+    逐日衰减」的近似模型，和通达信/同花顺同源。价格口径为前复权，与 K 线一致。
+    """
+    return ok(market().chips(code, days=days, bins=bins))
+
+
+@router.get("/ticks")
+def ticks(
+    request: Request,
+    code: str = Query(..., description="代码"),
+    limit: int = Query(30, ge=5, le=200, description="返回最近多少笔"),
+):
+    """最近逐笔成交。
+
+    上游失败时退回「分钟聚合」，响应里 `approx: true`、`side` 恒为 `mid`，
+    前端不要把它当成真实逐笔渲染买卖方向。
+    """
+    return ok(market().ticks(code, limit=limit))
+
+
 @router.get("/indices")
 def indices(request: Request):
     """7 个主要指数：点位、涨跌幅、成交额、成分涨跌家数、迷你走势。"""
     return ok(index_book(market()).list())
+
+
+@router.get("/global-indices")
+def global_indices(request: Request):
+    """全球主要指数：点位、涨跌、所在城市经纬度（前端据此在地图上打点）。
+
+    不落库、不提供 5/20 日动量：各市场休市日不同，用 A 股的交易日历去凑
+    区间涨跌幅会算错。要的是「此刻全球在涨还是在跌」，给日涨跌就够了。
+    """
+    return ok(global_book(market()).list())
 
 
 @router.get("/indices/{code}")

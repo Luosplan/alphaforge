@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { Bar, IndicatorSet, PlanCard } from '@/types'
 import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
 import { useAppStore } from '@/stores/app'
@@ -18,6 +18,11 @@ const props = withDefaults(
 const store = useAppStore()
 const el = ref<HTMLElement | null>(null)
 const compact = computed(() => store.device === 'mobile')
+
+/* 缩放窗口要跨标的保留：切一只票就弹回「最近 90 根」等于强迫用户每次
+   重新拖一次滑块。存在模块级而不是组件内，是因为切标的时组件会被重建。
+   百分比而不是根数——不同标的的历史长度不一样，比例才不会错位。 */
+const zoomWindow: { start: number | null; end: number } = { start: null, end: 100 }
 
 const labels = computed(() =>
   props.bars.map((b) => {
@@ -42,7 +47,7 @@ const zones = computed(() => {
     .map((z2) => ({ ...z2, mid: Number(((z2.low + z2.high) / 2).toFixed(2)) }))
 })
 
-useEChart(
+const { getChart } = useEChart(
   el,
   () => {
     const bars = props.bars
@@ -109,16 +114,28 @@ useEChart(
           const idx = list[0]?.dataIndex ?? 0
           const b = bars[idx]
           if (!b) return ''
-          const chg = ((b.close / b.open - 1) * 100).toFixed(2)
-          const cls = b.close >= b.open ? chartColors.up : chartColors.down
+          /* 涨跌幅按「前收」算，不是按「开盘」算：跳空高开时两者能差好几个点，
+             而用户要的「今天涨了多少」永远是相对昨收。第一根没有前收，显示 —。 */
+          const prev = idx > 0 ? bars[idx - 1].close : null
+          const diff = prev === null ? null : b.close - prev
+          const pct = prev ? (b.close / prev - 1) * 100 : null
+          const tone = diff === null ? '#8b95a7' : diff >= 0 ? chartColors.up : chartColors.down
+          const sign = diff !== null && diff > 0 ? '+' : ''
+          // 振幅的标准口径也是除昨收，不是除开盘
+          const base = prev || b.open
+          const amp = base ? ((b.high - b.low) / base) * 100 : 0
           return `
-            <div style="font-weight:600;margin-bottom:6px">${b.date}</div>
+            <div style="font-weight:600;margin-bottom:6px">${b.date}${
+              b.provisional ? '<span style="font-weight:400;font-size:11px;color:#8b95a7"> · 盘中实时</span>' : ''
+            }</div>
             <div style="display:grid;grid-template-columns:auto auto;gap:3px 16px;font-size:12px">
               <span style="color:#8b95a7">开</span><span>${b.open.toFixed(2)}</span>
               <span style="color:#8b95a7">高</span><span>${b.high.toFixed(2)}</span>
               <span style="color:#8b95a7">低</span><span>${b.low.toFixed(2)}</span>
-              <span style="color:#8b95a7">收</span><span style="color:${cls};font-weight:600">${b.close.toFixed(2)}</span>
-              <span style="color:#8b95a7">振幅</span><span>${(((b.high - b.low) / b.open) * 100).toFixed(2)}%</span>
+              <span style="color:#8b95a7">收</span><span style="color:${tone};font-weight:600">${b.close.toFixed(2)}</span>
+              <span style="color:#8b95a7">涨跌</span><span style="color:${tone}">${diff === null ? '—' : sign + diff.toFixed(2)}</span>
+              <span style="color:#8b95a7">涨跌幅</span><span style="color:${tone};font-weight:600">${pct === null ? '—' : sign + pct.toFixed(2) + '%'}</span>
+              <span style="color:#8b95a7">振幅</span><span>${amp.toFixed(2)}%</span>
               <span style="color:#8b95a7">量</span><span>${(b.volume / 1e4).toFixed(1)} 万手</span>
             </div>`
         },
@@ -169,9 +186,12 @@ useEChart(
         {
           type: 'inside',
           xAxisIndex: [0, 1],
-          // 初始只看最近 N 根：移动端窄，少放几根才看得清实体
-          start: Math.max(0, 100 - ((compact.value ? 55 : 90) * 100) / Math.max(n, 1)),
-          end: 100,
+          // 用户拖过就沿用它上一次的窗口，否则默认只看最近 N 根
+          // （移动端窄，少放几根才看得清实体）
+          start:
+            zoomWindow.start ??
+            Math.max(0, 100 - ((compact.value ? 55 : 90) * 100) / Math.max(n, 1)),
+          end: zoomWindow.end,
         },
         ...(compact.value
           ? []
@@ -259,6 +279,19 @@ useEChart(
   },
   () => [props.bars, props.indicators, props.plans, props.freq, compact.value],
 )
+
+/* 只记用户拖出来的窗口。程序 setOption 不会触发 dataZoom 事件，
+   所以这里不会和 buildOption 里的 start/end 互相覆盖。 */
+onMounted(() => {
+  const chart = getChart()
+  chart?.on('dataZoom', () => {
+    const dz = (chart.getOption() as any)?.dataZoom?.[0]
+    if (typeof dz?.start === 'number' && typeof dz?.end === 'number') {
+      zoomWindow.start = dz.start
+      zoomWindow.end = dz.end
+    }
+  })
+})
 </script>
 
 <template>

@@ -76,6 +76,8 @@ export interface Bar {
   amount: number
   turnover: number
   main_net: number
+  /** 当日临时 K 线：日线源未发当日数据时，用实时报价补的一根（未入库） */
+  provisional?: boolean
 }
 
 export interface IndicatorSet {
@@ -138,6 +140,33 @@ export interface PlanCard {
   invalidation: string[]
   time_stop_days: number
   reason: { positive: string[]; negative: string[] }
+  /** 选股排名与得分：候选取自选股结果时，排名说明它在候选中排第几 */
+  rank?: number | null
+  score?: number | null
+}
+
+/** 计划卡的候选来源：策略、股票池、匹配数——让「这批卡从哪来」写在标题边上 */
+export interface PlanSource {
+  strategy_id: string
+  strategy_name: string
+  as_of: string | null
+  universe: string
+  universe_size: number
+  matched_count: number
+  top_n: number
+  notice?: string | null
+}
+
+/** 已移除的计划卡快照（不存点位，恢复时重算） */
+export interface DismissedPlan {
+  plan_id: string
+  code: string
+  name: string
+  strategy_name: string
+  signal_label: string
+  status_label: string
+  as_of: string
+  removed_at: string
 }
 
 export interface BarsResponse {
@@ -158,6 +187,44 @@ export interface MinuteResponse {
   avg: number[]
   volumes: number[]
   quote: Quote
+}
+
+/** 筹码分布（成本分布）。levels 已按 weight 归一化成占比 %。 */
+export interface ChipResponse {
+  code: string
+  available: boolean
+  reason?: string
+  price: number
+  float_shares: number
+  days: number
+  range: [string, string]
+  levels: { price: number; weight: number }[]
+  peak: number
+  peak_weight: number
+  avg_cost: number
+  /** 现价以下的筹码占比，即「获利盘」 */
+  profit_ratio: number
+  /** 90% 筹码所在区间 */
+  cost90: [number, number]
+  /** 集中度 %，越小越集中 */
+  concentration: number
+}
+
+export interface Tick {
+  time: string
+  price: number
+  volume: number
+  amount: number
+  side: 'buy' | 'sell' | 'mid'
+}
+
+export interface TickResponse {
+  items: Tick[]
+  prev_close: number
+  available: boolean
+  /** true = 上游逐笔拿不到，退回分钟聚合，side 无意义 */
+  approx?: boolean
+  source?: string
 }
 
 export interface MarketOverview {
@@ -197,6 +264,37 @@ export interface IndexQuote {
   has_constituents: boolean
   spark: number[]
   ts?: string | null
+}
+
+/** 全球指数：不落库、不提供区间动量，只有「此刻的点位与当日涨跌」 */
+export interface GlobalIndex {
+  code: string
+  name: string
+  /** 地图标签用的短名（「富时100」「KOSPI」），全名放不下的位置才用得到 */
+  short: string
+  /** 美洲 / 欧洲 / 亚太 / 汇率 */
+  region: string
+  /** 「美国 · 纽约」这类交易所所在地，用于卡片副标题 */
+  place: string
+  /** 交易所坐标；美元指数没有坐标，为 null */
+  lat: number | null
+  lon: number | null
+  value: number
+  prev_close: number
+  change: number
+  change_pct: number
+  /** 这条行情自己的时刻，不是请求时刻 */
+  ts: string
+  /** 上游这次没取到，值是上一轮的 */
+  stale: boolean
+}
+
+export interface GlobalIndexBook {
+  items: GlobalIndex[]
+  /** 全部条目里最新的一条行情时刻 */
+  as_of: string
+  /** 上游本次缺失的指数数量 */
+  missing: number
 }
 
 export interface TemperaturePart {
@@ -514,7 +612,8 @@ export interface OverviewData {
   equity: Array<{ date: string; nav: number }>
   benchmark: Array<{ date: string; value: number }>
   plans: PlanCard[]
-  plan_stats: { total: number; pending: number; triggered: number }
+  plan_source?: PlanSource
+  plan_stats: { total: number; pending: number; triggered: number; dismissed?: number }
   sector_flow_top: SectorFlow[]
   sector_flow_bottom: SectorFlow[]
   industry_alloc: Array<{ name: string; value: number; weight: number }>
@@ -588,7 +687,29 @@ export interface DataStatus {
   /** 因子表是否已生成。false 时选股、温度、榜单都没得算 */
   ready: boolean
   runs: Array<{ step: string; status: string; finished: string | null; rows: number; note: string | null }>
-  sync: { running: boolean; step: string | null; result: unknown; error: string | null }
+  sync: SyncState
+}
+
+/** 同步进度：overall 画总条，done/total 说清在抓第几只，eta 是外推剩余秒数 */
+export interface SyncState {
+  running: boolean
+  only: string | null
+  workers: number | null
+  step: string | null
+  label?: string | null
+  message: string | null
+  done: number
+  total: number
+  percent: number
+  overall: number
+  steps_done: number
+  steps_total: number
+  started_at: string | null
+  finished_at: string | null
+  elapsed: number
+  eta: number | null
+  result: unknown
+  error: string | null
 }
 
 /** 数据来源与口径说明 */

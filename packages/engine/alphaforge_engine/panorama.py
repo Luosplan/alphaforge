@@ -1,4 +1,4 @@
-"""市场全景：真实指数 + 0–100 市场温度。
+"""市场全景：真实指数 + 0–100 市场温度 + 全球指数。
 
 旧版指数是「40 只成分按市值加权合成再缩放到锚点」，只能当方向性代理。
 现在指数点位直接取真实行情（腾讯指数日线与实时），涨跌、5/20/60 日动量、
@@ -8,11 +8,18 @@
 东财成分表，上证指数按定义就是全部沪市。深证成指与创业板指是抽样指数，
 没有官方成分表就不硬凑——少了「领涨股」这一块，总比把整个板块冒充成
 100 只成分股要诚实。
+
+全球指数（`GlobalBook`）走另一条链路：不落库，直接问上游并做分钟级缓存。
+理由是不该为了 16 个点位每天同步 16 × 520 根日线；而缺的「5/20 日动量」
+宁可不出，也不拿 A 股日线的交易日历去凑——各市场休市日不同，凑出来的
+区间涨跌幅是错的。
 """
 
 from __future__ import annotations
 
 import statistics
+import threading
+import time
 
 from .market import MarketEngine
 
@@ -28,6 +35,47 @@ INDEX_DEFS: list[dict] = [
 
 INDEX_MAP: dict[str, dict] = {d["code"]: d for d in INDEX_DEFS}
 
+# 全球指数：`lat` / `lon` 是交易所所在城市，前端用来在地图上定位。
+# 同一个城市的多个指数共用坐标，由前端按城市堆叠，避免三个纽约点位叠成一个。
+# 地区名按「中国香港 / 中国台湾」的国家标准写法，不要省成「香港 / 台湾」。
+GLOBAL_DEFS: list[dict] = [
+    {"code": "DJIA", "name": "道琼斯", "short": "道琼斯", "region": "美洲", "place": "美国 · 纽约",
+     "lat": 40.71, "lon": -74.01},
+    {"code": "NDX", "name": "纳斯达克", "short": "纳指", "region": "美洲", "place": "美国 · 纽约",
+     "lat": 40.71, "lon": -74.01},
+    {"code": "SPX", "name": "标普500", "short": "标普500", "region": "美洲", "place": "美国 · 纽约",
+     "lat": 40.71, "lon": -74.01},
+    {"code": "FTSE", "name": "英国富时100", "short": "富时100", "region": "欧洲", "place": "英国 · 伦敦",
+     "lat": 51.51, "lon": -0.13},
+    {"code": "FCHI", "name": "法国CAC40", "short": "CAC40", "region": "欧洲", "place": "法国 · 巴黎",
+     "lat": 48.86, "lon": 2.35},
+    {"code": "GDAXI", "name": "德国DAX30", "short": "DAX30", "region": "欧洲", "place": "德国 · 法兰克福",
+     "lat": 50.11, "lon": 8.68},
+    {"code": "RTS", "name": "俄罗斯RTS", "short": "RTS", "region": "欧洲", "place": "俄罗斯 · 莫斯科",
+     "lat": 55.76, "lon": 37.62},
+    {"code": "N225", "name": "日经225", "short": "日经225", "region": "亚太", "place": "日本 · 东京",
+     "lat": 35.68, "lon": 139.69},
+    {"code": "KS11", "name": "韩国KOSPI", "short": "KOSPI", "region": "亚太", "place": "韩国 · 首尔",
+     "lat": 37.57, "lon": 126.98},
+    {"code": "TWII", "name": "台湾加权", "short": "台湾加权", "region": "亚太", "place": "中国台湾 · 台北",
+     "lat": 25.03, "lon": 121.56},
+    {"code": "HSI", "name": "恒生指数", "short": "恒生", "region": "亚太", "place": "中国香港",
+     "lat": 22.32, "lon": 114.17},
+    {"code": "HSCEI", "name": "恒生国企", "short": "国企", "region": "亚太", "place": "中国香港",
+     "lat": 22.32, "lon": 114.17},
+    {"code": "STI", "name": "新加坡海峡时报", "short": "新加坡", "region": "亚太", "place": "新加坡",
+     "lat": 1.29, "lon": 103.85},
+    {"code": "SENSEX", "name": "印度SENSEX", "short": "SENSEX", "region": "亚太", "place": "印度 · 孟买",
+     "lat": 19.08, "lon": 72.88},
+    {"code": "AS51", "name": "澳洲标普200", "short": "澳洲200", "region": "亚太", "place": "澳大利亚 · 悉尼",
+     "lat": -33.87, "lon": 151.21},
+    # 美元指数没有交易所坐标，只作为一张卡片出现，不上地图
+    {"code": "UDI", "name": "美元指数", "short": "美元指数", "region": "汇率", "place": "",
+     "lat": None, "lon": None},
+]
+
+GLOBAL_MAP: dict[str, dict] = {d["code"]: d for d in GLOBAL_DEFS}
+
 
 class IndexBook:
     def __init__(self, engine: MarketEngine):
@@ -40,10 +88,26 @@ class IndexBook:
             return [], []
         return series.raw_close, [d.isoformat() for d in series.dates]
 
-    def quote(self, code: str, spark: int = 60) -> dict:
+    def quote(self, code: str, spark: int = 60, live_hit: dict | None = None) -> dict:
         meta = INDEX_MAP.get(code, {"code": code, "name": code, "kind": "market"})
         live = self.repo.index_quote(code) or {}
-        values, _ = self._values(code)
+        values, dates = self._values(code)
+
+        # 指数日线要等收盘后才入库，库里的序列天然缺「今天」。实时值比序列新时
+        # 就把今天并进序列：最新价、涨跌幅、5/20/60 日动量必须基于同一份价格，
+        # 否则标题写着今天的点位、曲线却停在昨天，或者反过来。
+        hit = live_hit if live_hit is not None else self._live(code)
+        day = str(hit.get("ts") or "")[:10]
+        price = float(hit.get("price") or 0)
+        if price > 0 and day and (not dates or day > dates[-1]):
+            values = [*values, price]
+            dates = [*dates, day]
+            live = {
+                **live,
+                "ts": hit.get("ts"),
+                # 实时接口给的成交额是「元」，与库里的口径一致后再折成亿元
+                "amount": round(float(hit.get("amount") or 0) / 1e8, 1) or live.get("amount"),
+            }
 
         if values:
             last = values[-1]
@@ -83,11 +147,32 @@ class IndexBook:
             "ts": live.get("ts"),
         }
 
+    @staticmethod
+    def _live(code: str) -> dict:
+        try:
+            from alphaforge_data.live import feed
+
+            return (feed().quotes([code]) or {}).get(code) or {}
+        except Exception:                                  # noqa: BLE001 - 实时链路不许炸
+            return {}
+
     def list(self, spark: int = 60) -> list[dict]:
-        return [self.quote(d["code"], spark=spark) for d in INDEX_DEFS]
+        # 7 个指数一次批量取，别在 quote() 里逐个打请求
+        try:
+            from alphaforge_data.live import feed
+
+            hits = feed().quotes([d["code"] for d in INDEX_DEFS]) or {}
+        except Exception:                                  # noqa: BLE001
+            hits = {}
+        return [
+            self.quote(d["code"], spark=spark, live_hit=hits.get(d["code"]) or {})
+            for d in INDEX_DEFS
+        ]
 
     def detail(self, code: str, days: int = 120, member_limit: int = 200) -> dict:
-        quote = self.quote(code)
+        # 实时值取一次，报价与当日那根点共用，避免同一请求里两次口径
+        hit = self._live(code)
+        quote = self.quote(code, live_hit=hit)
         series = self.engine.index_series(code)
         rows: list[dict] = []
         if series:
@@ -100,8 +185,19 @@ class IndexBook:
                     "value": round(closes[i], 2),
                     "change_pct": round((closes[i] / closes[i - 1] - 1) * 100, 2) if i else 0.0,
                 })
-        members = self.repo.index_constituent_quotes(code, limit=member_limit)
-        # 领跌单独取一次跌幅榜。成分表按涨幅倒序截断后，尾部只是「涨得少的」，
+        # 指数日线同样要等收盘后才入库，当日的缺口用实时值补一个点，
+        # 否则标题写着今天的点位、走势图却停在昨天
+        session = str(hit.get("ts") or "")[:10]
+        price = float(hit.get("price") or 0)
+        if session and price > 0 and (not rows or session > rows[-1]["date"]):
+            prev = rows[-1]["value"] if rows else float(hit.get("prev_close") or price)
+            rows.append({
+                "date": session,
+                "value": round(price, 2),
+                "change_pct": round((price / prev - 1) * 100, 2) if prev else 0.0,
+                "provisional": True,
+            })
+        members = self.repo.index_constituent_quotes(code, limit=member_limit)        # 领跌单独取一次跌幅榜。成分表按涨幅倒序截断后，尾部只是「涨得少的」，
         # 直接拿它当领跌会给出错误榜单。
         laggards = self.repo.index_constituent_quotes(code, limit=12, asc=True)
         quote["series"] = rows
@@ -116,6 +212,81 @@ def index_book(engine: MarketEngine) -> IndexBook:
     if book is None:
         book = IndexBook(engine)
         engine._index_book = book
+    return book
+
+
+# ------------------------------------------------------------------ 全球指数
+
+class GlobalBook:
+    """全球指数：上游直取 + 分钟级缓存，不落库。
+
+    缓存只做「短路」不做「兜底」——但兜底放宽了一档：北京时间白天，16 个
+    市场里有 12 个处在收盘或未开盘状态，上游偶发抽风时把上一轮的值标上
+    `stale` 返回，比整块面板空着有用。超过 `STALE_TTL` 的旧值不再返回，
+    宁可显示「—」也不给一个半小时前的点位冒充现价。
+    """
+
+    TTL = 45.0
+    STALE_TTL = 600.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rows: list[dict] = []
+        self._stamp = 0.0
+        self._failures = 0
+
+    def rows(self) -> list[dict]:
+        now = time.monotonic()
+        with self._lock:
+            if self._rows and now - self._stamp < self.TTL:
+                return self._rows
+
+        from alphaforge_data.sources import eastmoney
+
+        fetched = eastmoney.global_indices()
+        with self._lock:
+            if fetched:
+                self._rows = fetched
+                self._stamp = time.monotonic()
+            elif self._rows and time.monotonic() - self._stamp > self.STALE_TTL:
+                # 旧到不可信就清掉，让调用方走「无数据」分支
+                self._rows = []
+            self._failures = 0 if fetched else self._failures + 1
+            return self._rows
+
+    def list(self) -> dict:
+        """按 `GLOBAL_DEFS` 的顺序输出，上游没给的指数直接缺席。"""
+        fetched = {r["code"]: r for r in self.rows()}
+        stale = bool(fetched) and self._failures > 0
+        items: list[dict] = []
+        for meta in GLOBAL_DEFS:
+            hit = fetched.get(meta["code"])
+            if not hit:
+                continue
+            items.append({
+                "code": meta["code"],
+                "name": meta["name"],
+                "short": meta["short"],
+                "region": meta["region"],
+                "place": meta["place"],
+                "lat": meta["lat"],
+                "lon": meta["lon"],
+                "value": hit["value"],
+                "prev_close": hit["prev_close"],
+                "change": hit["change"],
+                "change_pct": hit["change_pct"],
+                "ts": hit["ts"],
+                "stale": stale,
+            })
+        as_of = max((i["ts"] for i in items if i["ts"]), default="")
+        return {"items": items, "as_of": as_of, "missing": len(GLOBAL_DEFS) - len(items)}
+
+
+def global_book(engine: MarketEngine) -> GlobalBook:
+    book = getattr(engine, "_global_book", None)
+    if book is None:
+        book = GlobalBook()
+        engine._global_book = book
     return book
 
 

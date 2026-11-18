@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Star, StarFilled } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { useAppStore } from '@/stores/app'
-import type { BarsResponse, MarketOverview, MinuteResponse, Quote, WatchGroup } from '@/types'
+import type {
+  BarsResponse,
+  ChipResponse,
+  MarketOverview,
+  MinuteResponse,
+  Quote,
+  TickResponse,
+  WatchGroup,
+} from '@/types'
 import { fmtAmount, fmtNum, fmtPct, toneOf } from '@/utils/format'
 import { useLiveQuotes } from '@/composables/useLiveQuotes'
 import KLineChart from '@/components/KLineChart.vue'
 import TimeShareChart from '@/components/TimeShareChart.vue'
 import MarketPanorama from '@/components/MarketPanorama.vue'
 import IndexDrawer from '@/components/IndexDrawer.vue'
+import ChipChart from '@/components/ChipChart.vue'
+import TickList from '@/components/TickList.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +37,15 @@ const minuteData = ref<MinuteResponse | null>(null)
 const flow = ref<Record<string, any> | null>(null)
 const loading = ref(false)
 
+/* 筹码分布与逐笔成交：和 K 线同属「当前标的」的观察面，
+   但两者的刷新节奏与 K 线不同（筹码本地算、逐笔走上游），所以单独管。 */
+const chipData = ref<ChipResponse | null>(null)
+const chipLoading = ref(false)
+const tickData = ref<TickResponse | null>(null)
+/* 右侧观察栏：看分时就看逐笔、看 K 线就看筹码，切 tab 时跟着走，
+   但用户可以手动改，所以只在 freq 变化时重置 */
+const sideTab = ref<'chip' | 'tick'>('chip')
+
 /* 市场全景：温度 + 7 大指数。指数详情走抽屉，不占用主图——
    主图始终是「一只票」，把指数塞进去会让点位和股价混在同一个坐标系里。 */
 const overview = ref<MarketOverview | null>(null)
@@ -42,8 +61,11 @@ const panoSummary = computed(() => {
     : `温度 ${temp.score.toFixed(0)} ${temp.label}`
 })
 
-/* 平板及以下收进折叠条：全景条在小屏会占掉首屏，主图就看不见了 */
-const panoCollapsible = computed(() => store.isMobile || store.isTablet)
+/* 平板及以下收进折叠条：全景条在小屏会占掉首屏，主图就看不见了。
+   笔记本 1366×768 这种「宽但矮」的视口同理——全景条一摊开，K 线和右侧的
+   筹码峰/分时成交就整个掉到首屏之外，得先滚一下才找得到。 */
+const shortViewport = ref(typeof window !== 'undefined' && window.innerHeight < 950)
+const panoCollapsible = computed(() => store.isMobile || store.isTablet || shortViewport.value)
 
 const groupItems = computed(() => groups.value.find((g) => g.id === activeGroup.value)?.items ?? [])
 
@@ -122,12 +144,39 @@ const indicatorOptions = [
   { label: 'KDJ', value: 'KDJ' },
 ]
 
+/* 切股票 / 切周期时，图表与面板会重建，页面高度在数据回来之前先塌一截，
+   浏览器就把滚动位置夹到新的最大高度上——表现就是「一换股票就跳回顶部」。
+   这里在发起加载前记下位置，等新布局稳定后再还回去。 */
+let keepScroll = -1
+
+function restoreScroll() {
+  if (keepScroll < 0) return
+  const target = keepScroll
+  keepScroll = -1
+  /* 新布局可能还没长回原高度，这时 scrollTo 会被浏览器夹到新的最大滚动值上；
+     隔 120ms、420ms 再补两次，等图/面板都渲染完就能落到原位。用户在这几百
+     毫秒里自己滚了就不动他了。 */
+  const apply = () => {
+    if (Math.abs(window.scrollY - target) > 2) window.scrollTo(0, target)
+  }
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      apply()
+      window.setTimeout(apply, 120)
+      window.setTimeout(apply, 420)
+    })
+  })
+}
+
 async function loadChart() {
   loading.value = true
+  // 切周期 / 切复权也会重建图表，统一在这里兜住滚动位置
+  if (keepScroll < 0) keepScroll = window.scrollY
   try {
     if (freq.value === 'min') {
       minuteData.value = await api.minute(code.value)
       barsData.value = null
+      stopBarRefresh()
       scheduleMinuteRefresh()
     } else {
       barsData.value = await api.bars({
@@ -138,10 +187,12 @@ async function loadChart() {
         indicators: indicatorKeys.value.join(','),
       })
       stopMinuteRefresh()
+      scheduleBarRefresh()
     }
     flow.value = await api.stockFlow(code.value)
   } finally {
     loading.value = false
+    restoreScroll()
   }
 }
 
@@ -169,11 +220,94 @@ function scheduleMinuteRefresh() {
   }, 20000)
 }
 
+/* 日 K 的最后一根如果是「今日实时」（后端用实时报价补的那根），它盘中还在长，
+   60 秒追一次足够——再快也是同一根柱子，只是多花请求。收盘后后端不再补
+   provisional，这根循环自然停下。 */
+let barTimer: number | undefined
+
+function stopBarRefresh() {
+  if (barTimer) window.clearTimeout(barTimer)
+  barTimer = undefined
+}
+
+function scheduleBarRefresh() {
+  stopBarRefresh()
+  const rows = barsData.value?.bars ?? []
+  if (!rows.length || !rows[rows.length - 1].provisional) return
+  barTimer = window.setTimeout(async () => {
+    if (document.visibilityState === 'visible') {
+      try {
+        barsData.value = await api.bars({
+          code: code.value,
+          freq: freq.value,
+          adjust: adjust.value,
+          limit: 260,
+          indicators: indicatorKeys.value.join(','),
+        })
+      } catch {
+        // 追不上就等下一轮，别把已画的图清掉
+      }
+    }
+    scheduleBarRefresh()
+  }, 60000)
+}
+
+/* ---------------- 筹码分布 / 逐笔成交 ---------------- */
+/* 连点自选时请求会并发：筹码要跑一遍 250 天的分布计算，先发的可能后到。
+   落地前对一下 code，避免把 A 的筹码画在 B 的头上。 */
+async function loadChips() {
+  const want = code.value
+  chipLoading.value = true
+  try {
+    const data = await api.chips(want)
+    if (code.value === want) chipData.value = data
+  } catch {
+    // 筹码算不出来不该把整页拖红：清空并让空态说明，其余模块照常
+    if (code.value === want) chipData.value = null
+  } finally {
+    if (code.value === want) chipLoading.value = false
+  }
+}
+
+async function loadTicks() {
+  const want = code.value
+  try {
+    const data = await api.ticks(want, 40)
+    if (code.value === want) tickData.value = data
+  } catch {
+    /* 逐笔丢了就保持上一屏，不闪空白 */
+  }
+}
+
+/* 逐笔 15 秒追一次（比报价慢、比分时快）；每追 4 次顺带重算一次筹码，
+   因为盘中最后一根 K 线的成交量还在长，筹码峰也会跟着挪。 */
+let tickTimer: number | undefined
+let tickSpin = 0
+
+function stopTickRefresh() {
+  if (tickTimer) window.clearTimeout(tickTimer)
+  tickTimer = undefined
+}
+
+function scheduleTickRefresh() {
+  stopTickRefresh()
+  tickTimer = window.setTimeout(async () => {
+    if (document.visibilityState === 'visible' && live.isLive.value) {
+      await loadTicks()
+      tickSpin += 1
+      if (tickSpin % 4 === 0) await loadChips()
+    }
+    scheduleTickRefresh()
+  }, 15000)
+}
+
 async function loadGroups() {
   groups.value = await api.watchlist()
 }
 
 function select(codeValue: string) {
+  if (codeValue === code.value) return
+  keepScroll = window.scrollY
   code.value = codeValue
   // 同步写回 URL：刷新、分享、浏览器前进后退都能回到同一只标的
   if (route.query.code !== codeValue) {
@@ -201,9 +335,17 @@ watch(
   () => route.query.code,
   (value) => {
     const next = typeof value === 'string' ? value : ''
-    if (next && next !== code.value) code.value = next
+    if (next && next !== code.value) {
+      keepScroll = window.scrollY
+      code.value = next
+    }
   },
 )
+
+/* 看哪个周期就默认看对应的微观结构：分时配逐笔、K 线配筹码 */
+watch(freq, (f) => {
+  sideTab.value = f === 'min' ? 'tick' : 'chip'
+})
 
 async function toggleWatch() {
   if (inWatchlist.value) {
@@ -217,12 +359,42 @@ async function toggleWatch() {
 
 watch([code, freq, adjust, indicatorKeys], loadChart, { deep: true })
 
+/* 换标的：筹码和逐笔都跟着换。K 线那边已经由 loadChart 的 watch 管了，
+   这里只补这两块，避免 freq / adjust 一变就白算一遍筹码。 */
+watch(code, () => {
+  loadChips()
+  loadTicks()
+})
+
+/* 视口高度会随窗口拉高、全屏、DevTools 开合变化，跟着重算折叠与否 */
+function syncViewportHeight() {
+  shortViewport.value = window.innerHeight < 950
+}
+
 onMounted(async () => {
-  await Promise.all([loadGroups(), loadChart(), loadOverview()])
+  window.addEventListener('resize', syncViewportHeight)
+  await Promise.all([loadGroups(), loadChart(), loadOverview(), loadChips(), loadTicks()])
+  scheduleTickRefresh()
   store.bootstrap()
 })
 
-onBeforeUnmount(stopMinuteRefresh)
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncViewportHeight)
+  stopMinuteRefresh()
+  stopBarRefresh()
+  stopTickRefresh()
+})
+
+const chipProfit = computed(() => Number(chipData.value?.profit_ratio ?? 0))
+const chipRange = computed(() => {
+  const c = chipData.value?.cost90
+  return c && c[1] ? `${c[0].toFixed(2)} – ${c[1].toFixed(2)}` : '—'
+})
+const tickSourceLabel = computed(() => {
+  const d = tickData.value
+  if (!d?.items?.length) return '暂无数据'
+  return d.approx ? '上游逐笔不可用，按分钟聚合' : '逐笔 · 东财'
+})
 
 const flowStreak = computed(() => Number(flow.value?.streak ?? 0))
 const flowMax = computed(() =>
@@ -354,20 +526,60 @@ function flowHeight(net: number) {
           </div>
         </div>
 
-        <div class="chart-body" v-loading="loading">
-          <KLineChart
-            v-if="freq !== 'min' && barsData"
-            :bars="barsData.bars"
-            :indicators="barsData.indicators"
-            :plans="barsData.plans"
-            :freq="freq"
-            :height="store.isMobile ? 330 : 430"
-          />
-          <TimeShareChart
-            v-else-if="freq === 'min' && minuteData"
-            :data="minuteData"
-            :height="store.isMobile ? 320 : 430"
-          />
+        <div class="chart-row">
+          <div class="chart-body" v-loading="loading">
+            <KLineChart
+              v-if="freq !== 'min' && barsData"
+              :bars="barsData.bars"
+              :indicators="barsData.indicators"
+              :plans="barsData.plans"
+              :freq="freq"
+              :height="store.isMobile ? 330 : 430"
+            />
+            <TimeShareChart
+              v-else-if="freq === 'min' && minuteData"
+              :data="minuteData"
+              :height="store.isMobile ? 320 : 430"
+            />
+          </div>
+
+          <!-- 右侧观察栏：筹码峰与分时成交都是「当前这只票的微观结构」，
+               挂在图上而不是压在页面最底下，否则得滚两屏才看得到 -->
+          <aside class="chart-side">
+            <div class="side-tabs">
+              <button type="button" :class="{ on: sideTab === 'chip' }" @click="sideTab = 'chip'">
+                筹码峰
+              </button>
+              <button type="button" :class="{ on: sideTab === 'tick' }" @click="sideTab = 'tick'">
+                分时成交
+              </button>
+              <span class="spacer" />
+              <span v-if="sideTab === 'chip' && chipData?.available" class="chip" :class="chipProfit >= 50 ? 'up' : 'down'">
+                {{ chipProfit.toFixed(1) }}% 获利盘
+              </span>
+              <span v-else-if="sideTab === 'tick' && tickData?.items?.length" class="muted num">
+                {{ tickData.items.length }} 笔
+              </span>
+            </div>
+
+            <div v-if="sideTab === 'chip'" class="side-body" v-loading="chipLoading">
+              <div class="side-stats">
+                <span class="ss"><i>平均成本</i><b class="num">{{ chipData?.avg_cost?.toFixed(2) ?? '—' }}</b></span>
+                <span class="ss"><i>筹码峰</i><b class="num brand">{{ chipData?.peak?.toFixed(2) ?? '—' }}</b></span>
+                <span class="ss"><i>90% 区间</i><b class="num">{{ chipRange }}</b></span>
+                <span class="ss"><i>集中度</i><b class="num">{{ chipData?.concentration != null ? `${chipData.concentration.toFixed(1)}%` : '—' }}</b></span>
+              </div>
+              <ChipChart :data="chipData" :height="store.isMobile ? 210 : 268" />
+              <div v-if="chipData && !chipData.available" class="side-empty">
+                {{ chipData.reason || '筹码数据不可用' }}
+              </div>
+            </div>
+
+            <div v-else class="side-body">
+              <TickList :data="tickData" :prev-close="quote?.prev_close ?? 0" :max-height="store.isMobile ? 240 : 330" />
+              <div class="side-note muted">{{ tickSourceLabel }}</div>
+            </div>
+          </aside>
         </div>
 
         <div v-if="freq !== 'min' && barsData?.plans?.length" class="zone-tip">
@@ -673,17 +885,21 @@ function flowHeight(net: number) {
 }
 
 .qh-stats {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 4px 16px;
-  flex: 1;
-  min-width: 0;
+  /* 6 个格子按内容自然分列：flex + max-content 下限保证「2,302.70 亿」
+     这种长值永远不会在自己的格子里折行，容器再窄也是整块换行而不是断字 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
+  flex: 1 1 320px;
+  min-width: 300px;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 88px;
+  min-width: max-content;
 }
 
 .stat .k {
@@ -694,10 +910,107 @@ function flowHeight(net: number) {
 .stat .v {
   font-size: 12.5px;
   font-weight: 600;
+  /* 数值 + 单位是一个整体，不允许在「18,034.40」和「亿」之间断行 */
+  white-space: nowrap;
 }
 
 .star {
   margin-left: auto;
+}
+
+/* 图表 + 右侧观察栏（筹码峰 / 分时成交） */
+.chart-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 272px;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.chart-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--af-border);
+}
+
+.side-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+}
+
+.side-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--af-ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.side-tabs button.on {
+  background: color-mix(in srgb, var(--af-brand) 12%, transparent);
+  color: var(--af-brand);
+  font-weight: 600;
+}
+
+.side-tabs .spacer {
+  flex: 1;
+}
+
+.side-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.side-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 10px;
+  padding-bottom: 7px;
+  border-bottom: 1px dashed var(--af-border);
+}
+
+.side-stats .ss {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.side-stats i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--af-ink-3);
+}
+
+.side-stats b {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.side-stats b.brand {
+  color: var(--af-brand);
+}
+
+.side-empty {
+  padding-top: 10px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--af-ink-3);
+}
+
+.side-note {
+  font-size: 10.5px;
+  padding-top: 2px;
 }
 
 .chart {
@@ -748,7 +1061,7 @@ function flowHeight(net: number) {
 
 .flow-nums {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 10px;
 }
 
@@ -756,6 +1069,7 @@ function flowHeight(net: number) {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
 }
 
 .fn .k {
@@ -766,6 +1080,7 @@ function flowHeight(net: number) {
 .fn .v {
   font-size: 14px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 /* 主力资金：以零轴为中心的双向柱，正负一眼可分 */
@@ -846,11 +1161,32 @@ function flowHeight(net: number) {
     border: 1px solid var(--af-border);
   }
   .qh-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px 14px;
+  }
+}
+
+@media (max-width: 1199px) {
+  .chart-row {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+
+@media (max-width: 960px) {
+  .chart-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chart-side {
+    padding-left: 0;
+    padding-top: 8px;
+    border-left: 0;
+    border-top: 1px solid var(--af-border);
   }
 }
 
 @media (max-width: 767px) {
+  .chart-body {
+    min-height: 330px;
+  }
   .quote-head {
     padding: 12px 14px;
     gap: 12px;
@@ -866,7 +1202,7 @@ function flowHeight(net: number) {
     font-size: 22px;
   }
   .qh-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* 分列交给 flex 的 max-content 下限，这里只压间距 */
     gap: 10px 10px;
     width: 100%;
     flex: none;
@@ -889,7 +1225,7 @@ function flowHeight(net: number) {
     min-height: 320px;
   }
   .flow-nums {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(88px, 1fr));
   }
   .watch-item {
     min-width: 146px;
