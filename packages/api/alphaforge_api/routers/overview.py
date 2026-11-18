@@ -8,7 +8,7 @@ from alphaforge_core.constants import RISK_LIMITS
 from alphaforge_engine.portfolio import benchmark_curve
 from alphaforge_engine.signal import active_plans
 
-from ..deps import market, ok, portfolio
+from ..deps import market, ok, portfolio, store
 
 router = APIRouter(prefix="/overview", tags=["overview"])
 
@@ -25,7 +25,10 @@ def overview(request: Request, days: int = 90):
     bench = benchmark_curve(engine, days)
     bench_base = bench[0]["value"] if bench else 1
 
-    plans = active_plans(engine, nav=nav)
+    # 计划卡与信号页共用同一套生成逻辑：候选来自选股结果，已移除的不再出现
+    board = active_plans(engine, nav=nav, holdings=pf["holdings"])
+    hidden = {r["plan_id"] for r in store().dismissed_plans()}
+    plans = [p for p in board["items"] if p["plan_id"] not in hidden]
     pending = [p for p in plans if p["status"] == "PENDING"]
     triggered = [p for p in plans if p["status"] == "TRIGGERED"]
 
@@ -64,10 +67,12 @@ def overview(request: Request, days: int = 90):
         ],
         "benchmark": [{"date": b["date"], "value": round(b["value"] / bench_base * 100, 2)} for b in bench],
         "plans": sorted(plans, key=lambda p: p["confidence"], reverse=True)[:4],
+        "plan_source": board["source"],
         "plan_stats": {
             "total": len(plans),
             "pending": len(pending),
             "triggered": len(triggered),
+            "dismissed": len(hidden),
         },
         "sector_flow_top": flow[:4],
         "sector_flow_bottom": flow[-2:],

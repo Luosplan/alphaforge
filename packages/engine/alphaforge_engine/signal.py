@@ -29,7 +29,7 @@ def _plan_id(code: str, as_of: str, salt: str) -> str:
 
 def build_plan(engine: MarketEngine, code: str, nav: float = 1_000_000,
                strategy_id: str = "multifactor", signal_type: str = "ENTRY",
-               salt: str = "") -> dict:
+               salt: str = "", strategy_name: str | None = None) -> dict:
     sym = engine.symbol(code)
     bars = engine.bars(code, limit=180)
     closes = [b["close"] for b in bars]
@@ -117,7 +117,7 @@ def build_plan(engine: MarketEngine, code: str, nav: float = 1_000_000,
         "name": sym["name"],
         "industry": sym["industry"],
         "strategy_id": strategy_id,
-        "strategy_name": STRATEGY_NAMES.get(strategy_id, strategy_id),
+        "strategy_name": strategy_name or STRATEGY_NAMES.get(strategy_id, strategy_id),
         "signal_type": signal_type,
         "signal_label": SIGNAL_LABEL.get(SignalType(signal_type), signal_type),
         "status": "PENDING",
@@ -158,23 +158,75 @@ def build_plan(engine: MarketEngine, code: str, nav: float = 1_000_000,
     }
 
 
-def active_plans(engine: MarketEngine, nav: float = 1_000_000) -> list[dict]:
-    """生成当日看板计划卡：4 只候选建仓 + 1 只加仓 + 1 只减仓，确定性。"""
-    picks = [
-        ("300750.SZ", "multifactor", "ENTRY"),
-        ("601899.SH", "momentum", "ENTRY"),
-        ("600036.SH", "lowvol", "ENTRY"),
-        ("002475.SZ", "flow", "ENTRY"),
-        ("600900.SH", "lowvol", "ADD"),
-        ("002594.SZ", "momentum", "TRIM"),
-    ]
-    plans = []
-    for code, strat, sig in picks:
-        plan = build_plan(engine, code, nav=nav, strategy_id=strat, signal_type=sig, salt=sig)
+# 浮盈到这个比例就只给「减仓」不再给「加仓」：利润已经兑现一部分，
+# 再往同一标的上加仓等于放大单票敞口，与风控的单票上限是打架的。
+TRIM_PNL_PCT = 12.0
+
+
+def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int = 6) -> dict:
+    """计划卡的候选池来自选股引擎，而不是代码里写死的名单。
+
+    选股结果本身已经是「因子打分 + 行业分散 + ST 过滤」的产物，拿它当输入，
+    卡片才会随行情和策略变化；写死名单的问题是行情早就换了，每天推的还是
+    同一批票，看起来像功能坏了。
+    """
+    from .selector import STRATEGY_MAP, execute
+
+    base = dict(spec or STRATEGY_MAP.get("multifactor") or {"id": "multifactor", "name": "多因子质量价值"})
+    base.setdefault("id", "multifactor")
+    return execute(engine, base, top_n=top_n)
+
+
+def active_plans(engine: MarketEngine, nav: float = 1_000_000,
+                 holdings: list[dict] | None = None, spec: dict | None = None,
+                 top_n: int = 6) -> dict:
+    """当日计划卡：候选取自选股 Top-N，动作由持仓状态推导。
+
+    返回 `{"items": [...], "source": {...}}`。source 记录「这批卡是从哪个策略、
+    多大的股票池、多少只匹配里选出来的」，前端据此把来源写在标题边上——
+    只说「今日计划卡」而不交代来源，用户没法判断它该不该信。
+    """
+    selection = plan_candidates(engine, spec, top_n)
+    held = {h["code"]: h for h in (holdings or [])}
+
+    plans: list[dict] = []
+    for item in selection.get("items") or []:
+        code = item["code"]
+        hold = held.get(code)
+        if hold is None:
+            signal_type = "ENTRY"
+        elif float(hold.get("pnl_pct") or 0) >= TRIM_PNL_PCT:
+            signal_type = "TRIM"
+        else:
+            signal_type = "ADD"
+
+        plan = build_plan(
+            engine, code, nav=nav,
+            strategy_id=selection.get("strategy_id") or "multifactor",
+            strategy_name=selection.get("strategy_name"),
+            signal_type=signal_type,
+            salt=signal_type,
+        )
         # 状态推导：现价进入建仓区 → 已触发
         entry = plan["zones"]["entry"]
         if entry["low"] <= plan["ref_price"] <= entry["high"]:
             plan["status"] = "TRIGGERED"
             plan["status_label"] = "已触发"
+        # 选股排名带进卡片：第 3 名选出来的和第 20 名不是一回事
+        plan["rank"] = item.get("rank")
+        plan["score"] = item.get("score")
         plans.append(plan)
-    return plans
+
+    return {
+        "items": plans,
+        "source": {
+            "strategy_id": selection.get("strategy_id"),
+            "strategy_name": selection.get("strategy_name"),
+            "as_of": selection.get("as_of"),
+            "universe": selection.get("universe"),
+            "universe_size": selection.get("universe_size"),
+            "matched_count": selection.get("matched_count"),
+            "top_n": top_n,
+            "notice": selection.get("notice"),
+        },
+    }

@@ -42,6 +42,9 @@ def _default_state() -> dict:
             {"code": "600900.SH", "shares": 5000, "cost": 28.10, "open_date": "2026-04-09"},
         ],
         "manual_trades": [],
+        # 已移除的计划卡：只存快照（plan_id / 名称 / 策略 / 移除时间），
+        # 恢复时由引擎按 plan_id 重算区间，不在这里存点位
+        "dismissed_plans": [],
         # 预置两条示例策略：让「策略库」一进来就有可运行、可对照修改的样本
         "strategies": [
             {
@@ -226,6 +229,58 @@ class Store:
                 raise KeyError(strategy_id)
             self.state["strategies"] = remain
             self.save()
+
+    # ---------------------------------------------------------------- 计划卡
+    def dismissed_plans(self) -> list[dict]:
+        with self._lock:
+            return json.loads(json.dumps(self.state.get("dismissed_plans", [])))
+
+    def dismiss_plan(self, plan: dict) -> dict:
+        """把一张计划卡记为「已移除」。
+
+        只存快照，不存整张卡：计划卡的区间每天跟着行情重算，存下来除了占地方
+        没有意义；要恢复时按 plan_id 让引擎重新算一遍即可。快照里的名称、
+        策略、档位够「已移除」列表说明它是什么。
+        """
+        with self._lock:
+            rows = [r for r in self.state.get("dismissed_plans", [])
+                    if r.get("plan_id") != plan["plan_id"]]
+            record = {
+                "plan_id": plan["plan_id"],
+                "code": plan.get("code", ""),
+                "name": plan.get("name", ""),
+                "strategy_name": plan.get("strategy_name", ""),
+                "signal_label": plan.get("signal_label", ""),
+                "status_label": plan.get("status_label", ""),
+                "as_of": plan.get("as_of", ""),
+                "removed_at": dt.datetime.now().isoformat(timespec="seconds"),
+            }
+            rows.append(record)
+            self.state["dismissed_plans"] = self._prune_plans(rows)
+            self.save()
+            return dict(record)
+
+    def restore_plan(self, plan_id: str) -> None:
+        with self._lock:
+            rows = self.state.get("dismissed_plans", [])
+            remain = [r for r in rows if r.get("plan_id") != plan_id]
+            if len(remain) == len(rows):
+                raise KeyError(plan_id)
+            self.state["dismissed_plans"] = remain
+            self.save()
+
+    def clear_dismissed_plans(self) -> int:
+        with self._lock:
+            count = len(self.state.get("dismissed_plans", []))
+            self.state["dismissed_plans"] = []
+            self.save()
+            return count
+
+    @staticmethod
+    def _prune_plans(rows: list[dict], keep_days: int = 90) -> list[dict]:
+        """只留最近 90 天：plan_id 里带日期，日积月累会把 store.json 撑大。"""
+        cutoff = (dt.datetime.now() - dt.timedelta(days=keep_days)).isoformat(timespec="seconds")
+        return [r for r in rows if (r.get("removed_at") or "") >= cutoff]
 
     def board_gate(self, code: str) -> None:
         """购买权限校验：未开通的板块直接拒绝下单（风控硬拦截的统一入口）。"""

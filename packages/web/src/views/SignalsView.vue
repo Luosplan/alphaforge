@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { RefreshLeft } from '@element-plus/icons-vue'
 import { api } from '@/api'
-import type { BarsResponse, PlanCard, RiskCheckResult } from '@/types'
+import type { BarsResponse, DismissedPlan, PlanCard, PlanSource, RiskCheckResult } from '@/types'
 import { fmtNum, fmtPct, toneOf } from '@/utils/format'
 import PlanCardItem from '@/components/PlanCardItem.vue'
 import ZoneLadder from '@/components/ZoneLadder.vue'
@@ -10,8 +12,15 @@ import KLineChart from '@/components/KLineChart.vue'
 
 const route = useRoute()
 const plans = ref<PlanCard[]>([])
+const source = ref<PlanSource | null>(null)
 const filter = ref<'ALL' | 'PENDING' | 'TRIGGERED'>('ALL')
 const loading = ref(true)
+
+/* 已移除：后端只回快照（名称 / 策略 / 移除时间），恢复时按 plan_id 重算 */
+const dismissed = ref<DismissedPlan[]>([])
+const dismissedCount = ref(0)
+const dismissedOpen = ref(false)
+const restoring = ref('')
 
 const active = ref<PlanCard | null>(null)
 const drawer = ref(false)
@@ -56,13 +65,59 @@ async function runCheck() {
   }
 }
 
+async function loadPlans() {
+  const res = await api.plans()
+  plans.value = res.items
+  source.value = res.source ?? null
+  dismissedCount.value = Number(res.stats?.dismissed ?? 0)
+}
+
+/** 移除：只是从今日列表里拿掉，区间与计划本身仍可恢复 */
+async function removePlan(plan: PlanCard) {
+  try {
+    await ElMessageBox.confirm(
+      `移除后「${plan.name}」不再出现在计划卡列表，随时可以在「已移除」里恢复。`,
+      '移除计划卡',
+      { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await api.dismissPlan(plan.plan_id)
+  plans.value = plans.value.filter((p) => p.plan_id !== plan.plan_id)
+  dismissedCount.value += 1
+  if (active.value?.plan_id === plan.plan_id) drawer.value = false
+  if (dismissedOpen.value) await loadDismissed()
+  ElMessage.success('已移除，可在「已移除」里恢复')
+}
+
+async function loadDismissed() {
+  const res = await api.dismissedPlans()
+  dismissed.value = res.items
+}
+
+async function openDismissed() {
+  dismissedOpen.value = true
+  await loadDismissed()
+}
+
+async function restore(planId: string) {
+  restoring.value = planId
+  try {
+    await api.restorePlan(planId)
+    await Promise.all([loadPlans(), loadDismissed()])
+    ElMessage.success('已恢复')
+  } finally {
+    restoring.value = ''
+  }
+}
+
 onMounted(async () => {
   try {
-    const res = await api.plans()
-    plans.value = res.items
+    await loadPlans()
     const target = route.query.plan as string | undefined
     if (target) {
-      const found = res.items.find((p) => p.plan_id === target)
+      const found = plans.value.find((p) => p.plan_id === target)
       if (found) open(found)
     }
   } finally {
@@ -96,19 +151,43 @@ onMounted(async () => {
       <div class="panel-head wrap">
         <div class="panel-title">
           区间计划
-          <span class="panel-sub">信号 T 日收盘生成，最早 T+1 开盘可执行</span>
+          <span class="panel-sub">
+            <template v-if="source">
+              候选来自 {{ source.strategy_name }} ·
+              {{ source.matched_count < source.universe_size
+                ? `命中 ${source.matched_count} 只取前 ${source.top_n}`
+                : `全池打分取前 ${source.top_n}` }}
+            </template>
+            <template v-else>信号 T 日收盘生成，最早 T+1 开盘可执行</template>
+          </span>
         </div>
-        <el-radio-group v-model="filter" size="small">
-          <el-radio-button value="ALL">全部</el-radio-button>
-          <el-radio-button value="PENDING">待触发</el-radio-button>
-          <el-radio-button value="TRIGGERED">已触发</el-radio-button>
-        </el-radio-group>
+        <div class="head-tools">
+          <el-radio-group v-model="filter" size="small">
+            <el-radio-button value="ALL">全部</el-radio-button>
+            <el-radio-button value="PENDING">待触发</el-radio-button>
+            <el-radio-button value="TRIGGERED">已触发</el-radio-button>
+          </el-radio-group>
+          <el-button text size="small" @click="openDismissed">
+            已移除{{ dismissedCount ? ` (${dismissedCount})` : '' }}
+          </el-button>
+        </div>
       </div>
       <div class="panel-body">
         <div class="plan-grid">
-          <PlanCardItem v-for="p in filtered" :key="p.plan_id" :plan="p" @open="open" />
+          <PlanCardItem
+            v-for="p in filtered"
+            :key="p.plan_id"
+            :plan="p"
+            removable
+            @open="open"
+            @remove="removePlan"
+          />
         </div>
-        <div v-if="!filtered.length" class="empty">当前筛选下没有计划卡</div>
+        <div v-if="!filtered.length" class="empty">
+          <template v-if="source?.notice">{{ source.notice }}</template>
+          <template v-else-if="filter !== 'ALL'">当前筛选下没有计划卡</template>
+          <template v-else>今日没有生成计划卡，去「选股」页调整策略或放宽条件</template>
+        </div>
 
         <div class="plan-legend" v-if="filtered.length">
           <span class="pl-title">区间色带</span>
@@ -116,10 +195,37 @@ onMounted(async () => {
           <span class="pl"><i style="background: #b54708" />加仓区</span>
           <span class="pl"><i style="background: var(--af-brand)" />建仓区</span>
           <span class="pl"><i style="background: var(--af-up)" />目标区</span>
-          <span class="pl-note">虚线为参考价（T 日收盘），点击卡片查看完整计划</span>
+          <span class="pl-note">虚线为参考价（T 日收盘），点击卡片查看完整计划，右上角 × 可移除</span>
         </div>
       </div>
     </section>
+
+    <!-- 已移除：只存快照，恢复时重算 -->
+    <el-drawer v-model="dismissedOpen" size="min(420px, 92vw)" title="已移除的计划卡">
+      <div class="dismissed">
+        <div v-if="!dismissed.length" class="empty">还没有移除过计划卡</div>
+        <div v-for="d in dismissed" :key="d.plan_id" class="d-row">
+          <div class="d-ident">
+            <div class="d-name">
+              {{ d.name }}
+              <span class="num d-code">{{ d.code }}</span>
+            </div>
+            <div class="d-meta">
+              {{ d.strategy_name }} · {{ d.signal_label }} · {{ d.as_of }} 生成
+            </div>
+            <div class="d-time num">移除于 {{ d.removed_at.replace('T', ' ') }}</div>
+          </div>
+          <el-button
+            size="small"
+            :icon="RefreshLeft"
+            :loading="restoring === d.plan_id"
+            @click="restore(d.plan_id)"
+          >
+            恢复
+          </el-button>
+        </div>
+      </div>
+    </el-drawer>
 
     <el-drawer v-model="drawer" size="min(760px, 96vw)" :title="active ? `${active.name} · 交易计划卡` : '交易计划卡'">
       <div v-if="active" class="detail">
@@ -269,6 +375,59 @@ onMounted(async () => {
   padding: 32px 0;
   text-align: center;
   color: var(--af-ink-3);
+  line-height: 1.7;
+}
+
+.head-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---------------------------------------------------------------- 已移除 */
+.dismissed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.d-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--af-border);
+  border-radius: 8px;
+  background: var(--af-surface);
+}
+
+.d-ident {
+  min-width: 0;
+}
+
+.d-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.d-code {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--af-ink-3);
+}
+
+.d-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--af-ink-3);
+}
+
+.d-time {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--af-ink-4);
 }
 
 .plan-legend {

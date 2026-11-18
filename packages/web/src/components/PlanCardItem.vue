@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Close } from '@element-plus/icons-vue'
 import type { PlanCard } from '@/types'
 import ZoneLadder from './ZoneLadder.vue'
 
-const props = defineProps<{ plan: PlanCard; compact?: boolean }>()
-const emit = defineEmits<{ (e: 'open', plan: PlanCard): void }>()
+const props = defineProps<{ plan: PlanCard; compact?: boolean; removable?: boolean }>()
+const emit = defineEmits<{
+  (e: 'open', plan: PlanCard): void
+  (e: 'remove', plan: PlanCard): void
+}>()
 
 const statusClass = computed(() =>
   props.plan.status === 'TRIGGERED' ? 'triggered' : props.plan.status === 'HOLDING' ? 'holding' : 'pending',
@@ -23,8 +27,21 @@ const signalTone = computed(() => {
       <div class="ident">
         <span class="name">{{ plan.name }}</span>
         <span class="code num">{{ plan.code }}</span>
+        <span v-if="plan.rank" class="rank num" title="在选股结果中的排名">#{{ plan.rank }}</span>
       </div>
-      <span class="pill" :class="statusClass">{{ plan.status_label }}</span>
+      <div class="head-right">
+        <span class="pill" :class="statusClass">{{ plan.status_label }}</span>
+        <button
+          v-if="removable"
+          class="del"
+          type="button"
+          title="从计划卡列表移除"
+          aria-label="移除计划卡"
+          @click.stop="emit('remove', plan)"
+        >
+          <el-icon><Close /></el-icon>
+        </button>
+      </div>
     </div>
 
     <div class="strategy">
@@ -85,6 +102,59 @@ const signalTone = computed(() => {
   align-items: baseline;
   gap: 7px;
   min-width: 0;
+}
+
+/* 选股排名：同一天里第 1 名和第 6 名的可信度不是一回事，标出来 */
+.rank {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--af-brand);
+  background: var(--af-brand-soft);
+}
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+/* 移除按钮：平时不占视觉重量，悬停卡片才显形；触屏没有 hover，常显 */
+.del {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--af-ink-4);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+
+.card:hover .del,
+.del:focus-visible {
+  opacity: 1;
+}
+
+.del:hover {
+  border-color: var(--af-border);
+  background: var(--af-surface-2);
+  color: var(--af-down);
+}
+
+@media (hover: none) {
+  .del {
+    opacity: 1;
+  }
 }
 
 .name {
