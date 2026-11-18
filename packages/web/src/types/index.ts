@@ -672,6 +672,23 @@ export interface ProfileResponse {
   defaults: UserProfile
 }
 
+// ---------------------------------------------------------------- 登录
+/** 登录态。会话本体是 HttpOnly Cookie，前端只知道「是谁、要不要改密」 */
+export interface AuthStatus {
+  authenticated: boolean
+  username: string
+  /** 首次登录（内置默认密码）时为 true，必须改密后才能进工作台 */
+  must_change: boolean
+  session_days: number
+  /** 服务端用 AF_AUTH_DISABLED 关掉了守卫（本地工装模式） */
+  auth_disabled: boolean
+}
+
+export interface LoginResult {
+  username: string
+  must_change: boolean
+}
+
 // ---------------------------------------------------------------- 数据层
 /** 本地库状态：有没有数据、同步到哪天、最近跑了哪些任务 */
 export interface DataStatus {

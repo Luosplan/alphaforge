@@ -15,12 +15,14 @@
  */
 import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import { api } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 import type { IndexQuote, MarketSession, LiveQuote } from '@/types'
 
 const LIVE_MS = 3000
 const IDLE_MS = 60_000
 
 export function useLiveQuotes(codes: Ref<string[]>, interval = LIVE_MS) {
+  const auth = useAuthStore()
   const items = ref<Record<string, LiveQuote>>({})
   const indices = ref<IndexQuote[]>([])
   const asOf = ref('')
@@ -47,6 +49,11 @@ export function useLiveQuotes(codes: Ref<string[]>, interval = LIVE_MS) {
 
   async function tick() {
     if (disposed) return
+    // 登出后不再续轮询：否则退出瞬间还会打出几个必然 401 的请求
+    if (!auth.authenticated) {
+      schedule(IDLE_MS)
+      return
+    }
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
       schedule(interval)
       return

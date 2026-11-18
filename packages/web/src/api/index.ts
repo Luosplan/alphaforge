@@ -1,6 +1,7 @@
 import http from './client'
 import type {
   AiParse,
+  AuthStatus,
   BarsResponse,
   EquityResponse,
   FieldMeta,
@@ -8,6 +9,7 @@ import type {
   IndexQuote,
   GlobalIndexBook,
   LiveResponse,
+  LoginResult,
   MarketOverview,
   MinuteResponse,
   ChipResponse,
@@ -36,6 +38,14 @@ import type {
 } from '@/types'
 
 export const api = {
+  // 登录：状态查询与登录本身是仅有的两个免登录接口
+  authStatus: () => http.get<AuthStatus>('/auth/status'),
+  login: (username: string, password: string) =>
+    http.post<LoginResult>('/auth/login', { username, password }),
+  logout: () => http.post<{ logged_out: boolean }>('/auth/logout'),
+  changePassword: (old_password: string, new_password: string) =>
+    http.post<LoginResult>('/auth/password', { old_password, new_password }),
+
   overview: () => http.get<OverviewData>('/overview'),
 
   marketOverview: () => http.get<MarketOverview>('/market/overview'),

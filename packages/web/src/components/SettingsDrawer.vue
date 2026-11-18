@@ -7,12 +7,17 @@
  * 避免出现「界面写 2.5、库里存 0.00025」这种对不上的情况。
  */
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import type { UserProfile } from '@/types'
 import { fmtNum } from '@/utils/format'
+import { errorText } from '@/utils/error'
 
 const store = useAppStore()
+const auth = useAuthStore()
+const router = useRouter()
 
 const visible = computed({
   get: () => store.settingsOpen,
@@ -120,6 +125,62 @@ async function save() {
     saving.value = false
   }
 }
+
+// ---------------------------------------------------------------- 安全
+const pwdOpen = ref(false)
+const pwdSaving = ref(false)
+const pwdError = ref('')
+const pwd = reactive({ old: '', next: '', confirm: '' })
+
+function openPassword() {
+  pwd.old = ''
+  pwd.next = ''
+  pwd.confirm = ''
+  pwdError.value = ''
+  pwdOpen.value = true
+}
+
+async function submitPassword() {
+  if (pwdSaving.value) return
+  pwdError.value = ''
+  if (!pwd.old) {
+    pwdError.value = '请输入当前密码'
+    return
+  }
+  if (pwd.next.length < 6) {
+    pwdError.value = '新密码至少 6 位'
+    return
+  }
+  if (pwd.next !== pwd.confirm) {
+    pwdError.value = '两次输入的新密码不一致'
+    return
+  }
+  pwdSaving.value = true
+  try {
+    await auth.changePassword(pwd.old, pwd.next)
+    ElMessage.success('密码已更新，其它设备上的登录已失效')
+    pwdOpen.value = false
+  } catch (e) {
+    pwdError.value = errorText(e)
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
+async function logout() {
+  try {
+    await ElMessageBox.confirm('退出后需要重新输入密码才能进入工作台。', '退出登录', {
+      confirmButtonText: '退出登录',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  visible.value = false
+  await auth.logout()
+  await router.replace({ name: 'login' })
+}
 </script>
 
 <template>
@@ -131,7 +192,7 @@ async function save() {
     <template #header>
       <div class="drawer-head">
         <span class="drawer-title">个人设置</span>
-        <span class="drawer-sub">账户 · 成本口径 · 购买权限</span>
+        <span class="drawer-sub">账户 · 成本口径 · 购买权限 · 安全</span>
       </div>
     </template>
     <div v-if="!store.profile" class="loading-tip">正在读取账户设置…</div>
@@ -272,6 +333,27 @@ async function save() {
           关闭后，该板块标的在计划卡「风控校验」中直接判为未通过，手工记账也会被拒绝。
         </p>
       </section>
+
+      <!-- 安全 -->
+      <section class="block">
+        <header class="block-head">
+          <span class="block-title">安全</span>
+          <span class="block-sub">登录凭证</span>
+        </header>
+
+        <div class="sec-row">
+          <span class="sec-text">
+            <span class="sec-label">登录账号</span>
+            <span class="sec-hint">会话有效期 {{ auth.sessionDays }} 天，改密后其它设备需重新登录</span>
+          </span>
+          <span class="sec-value num">{{ auth.username || 'admin' }}</span>
+        </div>
+
+        <div class="sec-actions">
+          <el-button @click="openPassword">修改密码</el-button>
+          <el-button class="danger-btn" @click="logout">退出登录</el-button>
+        </div>
+      </section>
     </div>
 
     <template #footer>
@@ -291,6 +373,30 @@ async function save() {
       </div>
     </template>
   </el-drawer>
+
+  <!-- 改密弹窗：与设置抽屉分开，避免长表单里再插一段凭证输入 -->
+  <el-dialog v-model="pwdOpen" title="修改密码" width="368" :close-on-click-modal="false">
+    <div class="pwd-form">
+      <label class="field acct">
+        <span class="field-label">当前密码</span>
+        <el-input v-model="pwd.old" type="password" show-password autocomplete="current-password" />
+      </label>
+      <label class="field acct">
+        <span class="field-label">新密码</span>
+        <el-input v-model="pwd.next" type="password" show-password placeholder="至少 6 位" autocomplete="new-password" />
+      </label>
+      <label class="field acct">
+        <span class="field-label">确认新密码</span>
+        <el-input v-model="pwd.confirm" type="password" show-password autocomplete="new-password" />
+      </label>
+      <p v-if="pwdError" class="pwd-error">{{ pwdError }}</p>
+      <p class="pwd-note">改密成功后，当前浏览器保持登录，其它设备上的会话全部失效。</p>
+    </div>
+    <template #footer>
+      <el-button @click="pwdOpen = false">取消</el-button>
+      <el-button type="primary" :loading="pwdSaving" @click="submitPassword">确认修改</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -500,6 +606,79 @@ async function save() {
   color: var(--af-ink-4);
   font-size: 11px;
   line-height: 1.55;
+}
+
+/* ---------------------------------------------------------------- 安全 */
+.sec-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface-2);
+}
+
+.sec-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.sec-label {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--af-ink);
+}
+
+.sec-hint {
+  font-size: 10.5px;
+  color: var(--af-ink-4);
+}
+
+.sec-value {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--af-ink);
+}
+
+.sec-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 退出登录用暖色描边而不是实心红：它不是「危险操作」，只是需要确认 */
+.danger-btn {
+  --el-button-text-color: var(--af-up);
+  --el-button-border-color: #f0cfcb;
+  --el-button-hover-text-color: var(--af-up);
+  --el-button-hover-bg-color: var(--af-up-soft);
+  --el-button-hover-border-color: #e6b7b1;
+}
+
+.pwd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pwd-error {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: var(--af-radius-sm);
+  background: var(--af-up-soft);
+  border: 1px solid #f6d3cf;
+  color: var(--af-up);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.pwd-note {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--af-ink-4);
 }
 
 .footer {

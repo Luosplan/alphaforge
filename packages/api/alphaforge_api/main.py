@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from alphaforge_api import __version__
+from alphaforge_api import __version__, auth
+from alphaforge_api.routers import auth as auth_router
 from alphaforge_api.routers import data as data_router
 from alphaforge_api.routers import market, overview, portfolio, select, signal, system, watchlist
 
@@ -42,8 +43,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (system, market, watchlist, portfolio, select, signal, overview, data_router):
+for module in (auth_router, system, market, watchlist, portfolio, select, signal, overview, data_router):
     app.include_router(module.router, prefix=API_PREFIX)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """统一登录守卫。
+
+    放在中间件而不是每个路由器上挂 `Depends`：新增接口不会被顺手漏掉，
+    「默认拒绝」比「记得加依赖」可靠。静态资源与 SPA 外壳不拦（见 auth.is_public），
+    否则未登录时连登录页都加载不出来。
+    """
+    if request.method == "OPTIONS" or auth.is_public(request.url.path):
+        return await call_next(request)
+    if auth.current_user(request.cookies.get(auth.COOKIE_NAME)):
+        return await call_next(request)
+    return JSONResponse(
+        status_code=401,
+        content={"code": 401, "msg": "未登录或登录已过期", "data": None},
+    )
 
 
 @app.on_event("startup")

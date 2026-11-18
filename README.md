@@ -98,28 +98,30 @@ alphaforge/
 │   │       └── portfolio.py        # 持仓、净值曲线、基准、风控校验、成交统计
 │   ├── api/                        # HTTP 网关（可依赖 core + data + engine）
 │   │   └── alphaforge_api/
-│   │       ├── main.py             # FastAPI 入口 + SPA 静态托管
+│   │       ├── main.py             # FastAPI 入口 + 登录守卫 + SPA 静态托管
+│   │       ├── auth.py             # 单用户登录：PBKDF2 密码、会话表、路径白名单
 │   │       ├── store.py            # JSON 持久化（原子写入）
 │   │       ├── deps.py             # 单例注入
-│   │       └── routers/            # system / market / watchlist / portfolio
+│   │       └── routers/            # auth / system / market / watchlist / portfolio
 │   │                               # select / signal / overview / data
 │   └── web/                        # 前端（只经 HTTP 访问后端）
 │       └── src/
 │           ├── styles/main.css     # 设计令牌 + 原子类 + Element 覆盖
 │           ├── constants/nav.ts    # 导航单一数据源（顶部 + 底部共用）
 │           ├── layouts/            # AppShell / SideBar / TopBar / BottomNav
-│           ├── views/              # Overview / Market / Screener / Signals / Portfolio
+│           ├── views/              # Login / Overview / Market / Screener / Signals / Portfolio
 │           ├── components/         # KLineChart / TimeShareChart / EquityChart
 │           │                       # ZoneLadder / PlanCardItem / FactorBars / MetricCard
 │           │                       # MarketPanorama / MarketGauge / Sparkline / IndexDrawer
 │           │                       # DataStatusBar / ConditionBuilder / StrategyEditor
 │           │                       # GlobalSearch / SettingsDrawer
-│           ├── composables/        # useEChart / useBreakpoint
-│           ├── api/                # axios 封装 + 端点聚合
-│           ├── stores/app.ts       # device 断点 + 全局行情 + 数据状态
-│           └── utils/format.ts     # 金额 / 百分比 / 涨跌色调
+│           ├── composables/        # useEChart / useBreakpoint / useLiveQuotes
+│           ├── api/                # axios 封装（401 广播）+ 端点聚合
+│           ├── stores/             # app（断点 + 全局行情）/ auth（登录态）
+│           └── utils/              # format（金额 / 涨跌色）/ error（错误文案提取）
 ├── data/alphaforge.db              # 行情库（SQLite，可复制备份）
 ├── data/store.json                 # 运行期持久化（自选、持仓、成交流水）
+├── data/auth.json                  # 登录凭证与会话（删掉即恢复默认密码）
 ├── scripts/                        # 截图与布局审计（playwright-core）
 ├── docs/adr/                       # 架构决策记录
 ├── deploy/                         # Dockerfile + docker-compose.yml
@@ -321,10 +323,36 @@ python -m uvicorn alphaforge_api.main:app --host 0.0.0.0 --port 8000 \
 | `AF_DB` | `data/alphaforge.db` | 行情库路径（SQLite） |
 | `AF_BARS` | `520` | 日线保留根数（同步时的默认抓取深度） |
 | `AF_STORE_PATH` | `data/store.json` | 用户数据（自选 / 持仓 / 流水）路径 |
+| `AF_AUTH_PATH` | `data/auth.json` | 登录凭证与会话存储路径 |
+| `AF_AUTH_SESSION_DAYS` | `7` | 登录有效期（天） |
+| `AF_AUTH_DISABLED` | 空 | 置 `1` 时关掉登录守卫，供本地审计 / 截图脚本使用 |
 | `AF_CORS_ORIGINS` | `localhost:5173,…` | 允许的跨域来源 |
 | `AF_LLM_BASE_URL` | 空 | AI 问股的模型兜底，不配则纯规则解析 |
 | `AF_LLM_API_KEY` | 空 | 同上 |
 | `AF_LLM_MODEL` | `gpt-4o-mini` | 同上 |
+
+### 登录与安全
+
+首次启动时自动生成 `data/auth.json`，**内置账号 `admin` / `admin`，登录后强制改密**
+（改密完成前守卫不放行，避免长期停在弱口令上）。凭证用 PBKDF2-SHA256（200k 轮 + 随机盐）
+存哈希，不存明文。
+
+| 项 | 实现 |
+| --- | --- |
+| 会话载体 | HttpOnly + SameSite=Lax 的 `af_session` Cookie，默认 7 天，前端读不到也不保存 token |
+| 会话存储 | `data/auth.json` 的 `sessions` 数组（最多 20 条，过期自动清理），重启服务不掉登录 |
+| 保护范围 | 所有 `/api` 请求（含 `/api/docs` 发起的调用）；白名单只有 `/api/health`、`/api/v1/auth/status`、`/api/v1/auth/login`、`/api/v1/sys/health` 和接口文档页本身 |
+| 改密 | 校验原密码 → 重写哈希 → **作废全部旧会话**并为当前浏览器换发新 Cookie |
+| 暴力破解 | 10 分钟内错 5 次锁 5 分钟，锁定期内不再校验密码 |
+| 前端守卫 | 路由 `beforeEach` 先问 `/auth/status`，未登录跳 `/login?redirect=…`；任意接口回 401 也会清登录态并跳转 |
+| 忘记密码 | 删除 `data/auth.json` 后重启服务，恢复内置 `admin` / `admin` 并重新要求改密 |
+
+守卫放在 **HTTP 中间件**里而不是逐个路由挂 `Depends`：新增接口默认就是受保护的，
+不会因为「忘了加依赖」漏一个。凭证与业务数据分文件，所以 `store.json` 可以随手备份分享。
+
+已知取舍：单用户、无角色权限；本地 http 部署时 Cookie 无 `Secure` 标记（回环地址上可用，
+上公网请配 HTTPS 并把 `routers/auth.py` 里的 `secure` 打开）；`AF_AUTH_DISABLED=1`
+会让所有人免密进入，只在跑审计脚本时临时用。
 
 ### 备份与迁移
 
@@ -369,6 +397,10 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| GET | `/auth/status` | 登录态：是否已登录、是否待改密、会话有效期（免登录） |
+| POST | `/auth/login` | 登录，成功即下发 HttpOnly 会话 Cookie（免登录） |
+| POST | `/auth/logout` | 登出，作废当前会话并清 Cookie |
+| POST | `/auth/password` | 改密：校验原密码后重写哈希，作废其它会话 |
 | GET | `/sys/health` | 健康检查 |
 | GET | `/sys/meta` | 版本、交易日、风控参数 |
 | GET | `/sys/tasks` | 定时任务状态 |
@@ -505,4 +537,6 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 - 分层依赖由 `make layers` 静态校验（分层层级 + `core` 的 I/O 与第三方依赖白名单）；
   它只查 import 关系，查不出「`engine` 绕过 `repo` 自己拼 SQL」这类语义越界
 - `M13 回测`、`M14 多账户` 未实现，属 V1.0 范围；账户设置已支持单账户的成本口径与购买权限
-- 用户数据仍是单文件 JSON、无鉴权，属本地单用户工具的定位；多人使用需换库并补登录
+- 登录是**单用户**的：一个账号、无角色与权限分级，多设备共用同一份自选与持仓；
+  多人使用需把 `store.json` 改为按用户分片，并补一套鉴权模型
+- 用户数据仍是单文件 JSON；登录只解决「谁能进来」，不改存储形态，换多用户需换库
