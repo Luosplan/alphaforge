@@ -158,7 +158,7 @@ core  ←  data  ←  engine  ←  api  →  web
 | M03 持仓跟踪 | `engine/portfolio.py` + `PortfolioView` | ✅ P0 完成 | 加权成本、可卖数量、浮动盈亏、权重 |
 | M04 成交记录 | `routers/portfolio.py` + 手工记账弹窗 | 🟡 P1 部分 | 手工记账可用；对账单导入为 V1.0 |
 | M05 多因子选股 | `engine/selector.py` + `ScreenerView` | ✅ P0 完成 | 三模式（多因子 / AI 问股 / 条件筛选）、34 个字段、策略 CRUD、Z-score 加权、行业分散 |
-| M06 区间计划卡 | `engine/signal.py` + `SignalsView` | ✅ P0 完成 | ATR + 布林合成四区、4:3:3 分批、R:R、置信度、失效条件 |
+| M06 区间计划卡 | `engine/signal.py` + `SignalsView` | ✅ P0 完成 | 候选取自选股 Top-N（不再写死名单）、ATR + 布林合成四区、4:3:3 分批、R:R、置信度、失效条件、可移除/恢复 |
 | M07 事前风控 | `portfolio.check_plan` | ✅ P0 完成 | 单票 15% / 行业 30% / 总仓 90% / 单笔风险 1% |
 | M08 绩效分析 | `core/metrics.py` + `PortfolioView` | ✅ P1 完成 | 年化、波动、回撤、夏普、索提诺、卡玛、回撤持续天数 |
 | M09 净值曲线 | `portfolio.equity_curve` | ✅ P1 完成 | 按建仓日回放，与「市值 − 成本」口径对齐；归一化对比沪深 300 |
@@ -410,7 +410,10 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 | POST | `/select/parse` | 只解析不执行：一句话 → 条件 + 排序 + 建议名称 |
 | POST | `/select/run` | 运行选股（按策略 id，或直接传 spec） |
 | POST | `/select/query` | 问财式：解析 + 执行，条件与结果一起返回 |
-| GET | `/signal/plans` | 当日计划卡 |
+| GET | `/signal/plans` | 当日计划卡（候选取自选股结果，过滤已移除） |
+| GET | `/signal/plans/dismissed` | 已移除的计划卡（只回快照，可恢复） |
+| DELETE | `/signal/plans/{id}` | 移除一张计划卡（写入 `store.json`，可撤回） |
+| POST | `/signal/plans/{id}/restore` | 恢复已移除的计划卡 |
 | GET | `/signal/plans/{id}` | 单张计划卡 |
 | POST | `/signal/plans/preview` | 指定标的预览计划卡 |
 | POST | `/signal/risk/check` | 事前风控校验 |
