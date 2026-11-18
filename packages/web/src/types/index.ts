@@ -734,3 +734,295 @@ export interface DataSourceInfo {
   sources: Array<{ name: string; role: string; host: string }>
   notes: string[]
 }
+
+// --------------------------------------------------------------- 策略实验室
+/** 回测指标。字段口径见 `alphaforge_core.metrics` 与 `engine.backtest._trade_stats` */
+export interface LabMetrics {
+  total_return: number
+  annual_return: number
+  volatility: number
+  max_drawdown: number
+  max_drawdown_days: number
+  sharpe: number
+  sortino: number
+  calmar: number
+  trade_count: number
+  closed_count: number
+  win_count: number
+  loss_count: number
+  win_rate: number
+  avg_win: number
+  avg_loss: number
+  profit_factor: number
+  avg_hold_days: number
+  realized_pnl: number
+  total_fee: number
+  total_tax: number
+  turnover: number
+  /** 平均仓位 = 股票市值 / 净值。Calmar 对低仓位有系统性偏袒，这个数必须露出来 */
+  avg_exposure: number
+  final_nav: number
+  trade_total: number
+  benchmark_return: number | null
+  excess_return: number | null
+  fill_rule: string
+}
+
+/** 被摘掉的权重：估值为代表的「无历史序列」字段，附原因 */
+export interface LabDroppedWeight {
+  key: string
+  label: string
+  weight: number
+  reason: string
+}
+
+export interface LabBacktest {
+  strategy_id: string
+  strategy_name: string
+  available: boolean
+  as_of: string
+  saved_at?: string
+  period: { start: string | null; end: string | null; days: number }
+  universe: { pool: number; universe_size: number; min_amount: number; note: string }
+  params: {
+    top_n: number
+    max_per_industry: number
+    stop_atr: number
+    tp1_atr: number
+    tp2_atr: number
+    time_stop: number
+    rebalance: number
+    capital: number
+  }
+  weights: Record<string, number>
+  dropped: LabDroppedWeight[]
+  metrics: LabMetrics
+  equity: Array<{ date: string; value: number; benchmark: number | null }>
+  trades: LabTrade[]
+  positions: LabPosition[]
+  notes: string[]
+}
+
+export interface LabTrade {
+  id: string
+  code: string
+  name: string
+  side: 'BUY' | 'SELL'
+  date: string
+  price: number
+  shares: number
+  amount: number
+  fee: number
+  tax: number
+  pnl: number | null
+  pnl_pct: number | null
+  hold_days: number
+  reason: string
+}
+
+export interface LabPosition {
+  code: string
+  name: string
+  industry: string
+  shares: number
+  cost: number
+  price: number
+  pnl: number
+  pnl_pct: number
+  stop: number
+  tp1: number
+  tp2: number
+  tp1_done: boolean
+  hold_days: number
+}
+
+/** 模拟盘账户摘要 */
+export interface LabPaper {
+  id: string
+  name: string
+  strategy_id: string
+  generation: number
+  params: Record<string, number>
+  last_run: string | null
+  started_at: string | null
+  is_stale: boolean
+  summary: {
+    nav: number
+    capital: number
+    cash: number
+    market_value: number
+    pnl: number
+    pnl_pct: number
+    position_ratio: number
+    holdings_count: number
+  }
+  statistics: {
+    trade_count: number
+    closed_count: number
+    win_rate: number
+    realized_pnl: number
+    total_fee: number
+  }
+  positions: Array<LabPosition & { last?: number }>
+  orders: Array<{ code: string; name: string; reason: string; created: string; atr: number }>
+  plans: LabPlanCard[]
+  equity: Array<{ date: string; value: number }>
+  trades: LabTrade[]
+  log: string[]
+}
+
+/** 实验室里的计划卡：在标准计划卡上补「现价走到哪一步」与所属策略 */
+export interface LabPlanCard extends PlanCard {
+  atr?: number
+  plan_date?: string
+  live_status?: string
+  live_price?: number | null
+  /** 现价距止损上沿的百分比（负数为下方空间），逐票变化，是这张卡的风险成本 */
+  stop_distance_pct?: number | null
+  strategy_generation?: number
+}
+
+export interface LabEvolutionBrief {
+  score: number | null
+  baseline: number | null
+  elapsed: number | null
+  saved_at: string | null
+  history: LabEvoGeneration[]
+  /** 样本外验证：最后一段没参与搜索的交易日里，进化后 vs 原始策略 */
+  holdout?: LabHoldout | null
+}
+
+/** 每一代的最优个体：得分与它那一次回测的关键指标 */
+export interface LabEvoGeneration {
+  generation: number
+  /** 这一代自己最好的个体 */
+  best_score: number
+  /** 累计最优：曲线该看这条，逐代最优会上下跳 */
+  sofar_score?: number
+  mean_score: number
+  best?: {
+    score: number
+    total_return: number | null
+    annual_return: number | null
+    max_drawdown: number | null
+    volatility: number | null
+    sharpe: number | null
+    calmar: number | null
+    win_rate: number | null
+    closed_count: number | null
+    turnover: number | null
+    avg_exposure?: number | null
+  }
+}
+
+/** 样本外验证：最后一段没参与搜索的交易日，进化后 vs 原始策略 */
+export interface LabHoldout {
+  start: string
+  end: string
+  days: number
+  baseline: NonNullable<LabEvoGeneration['best']>
+  best: NonNullable<LabEvoGeneration['best']>
+  edge: number
+  /** win / tie / loss：按分差大小分三档，不把噪声判成胜负 */
+  level?: 'win' | 'tie' | 'loss'
+  verdict?: string
+  kept: boolean
+}
+
+export interface LabStrategyRow {
+  id: string
+  name: string
+  desc: string
+  builtin: boolean
+  spec: {
+    weights: Record<string, number>
+    filters: Array<Record<string, unknown>>
+    sort: Record<string, unknown> | null
+    top_n: number
+    max_per_industry: number
+    exclude_st: boolean
+  }
+  generation: number
+  started: boolean
+  paper: {
+    summary: LabPaper['summary']
+    statistics: LabPaper['statistics']
+    last_run: string | null
+    is_stale: boolean
+    plans: number
+    orders: number
+  } | null
+  backtest: {
+    available: boolean
+    as_of: string
+    saved_at?: string
+    period: LabBacktest['period']
+    params: LabBacktest['params']
+    weights: Record<string, number>
+    dropped: LabDroppedWeight[]
+    notes: string[]
+    metrics: LabMetrics
+    equity: Array<{ date: string; value: number; benchmark: number | null }>
+  } | null
+  evolution: LabEvolutionBrief | null
+}
+
+export interface LabOverview {
+  as_of: string | null
+  ready: boolean
+  stats: {
+    strategies: number
+    started: number
+    avg_win_rate: number | null
+    best_calmar: number | null
+    paper_nav: number
+    paper_pnl: number
+    plan_count: number
+  }
+  strategies: LabStrategyRow[]
+  plans: LabPlanCard[]
+  notes: string[]
+}
+
+/** 进化任务进度（后台线程状态机） */
+export interface LabEvolveState {
+  running: boolean
+  strategy: string | null
+  name: string | null
+  generation: number
+  of: number
+  done: number
+  total: number
+  percent: number
+  best: Record<string, number | null> | null
+  started_at: string | null
+  finished_at: string | null
+  elapsed: number
+  eta: number | null
+  applied?: boolean
+  result: {
+    strategy_id: string
+    strategy_name: string
+    available: boolean
+    best: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
+    baseline: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
+    history: Array<{ generation: number; best_score: number; mean_score: number }>
+    notes: string[]
+    elapsed: number
+  } | null
+  error: string | null
+}
+
+/** 基因组：6 个因子权重 + 6 个结构参数 */
+export interface LabGenome {
+  weights: Record<string, number>
+  top_n: number
+  max_per_industry: number
+  stop_atr: number
+  tp1_atr: number
+  tp2_atr: number
+  time_stop: number
+  /** 已废弃：进场改成每天补空缺仓位后不再是可调项。留着是为了兼容旧存档。 */
+  rebalance?: number
+}
+

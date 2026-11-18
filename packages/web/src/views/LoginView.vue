@@ -219,105 +219,139 @@ onMounted(async () => {
         <span>本地部署 · 无云端同步</span>
       </div>
 
-      <section class="form-wrap">
-        <header class="head">
-          <h1 class="title">{{ title }}</h1>
-          <p class="sub">{{ subtitle }}</p>
-        </header>
+      <div class="pane-body">
+        <section class="form-wrap">
+          <header class="head">
+            <h1 class="title">{{ title }}</h1>
+            <p class="sub">{{ subtitle }}</p>
+          </header>
 
-        <div v-if="mode === 'login'" class="form">
-          <label class="field">
-            <span class="label">账号</span>
-            <el-input
-              v-model="form.username"
-              placeholder="admin"
-              maxlength="32"
-              autocomplete="username"
-              @keyup.enter="submitLogin"
-            />
-          </label>
+          <div v-if="mode === 'login'" class="form">
+            <label class="field">
+              <span class="label">账号</span>
+              <el-input
+                v-model="form.username"
+                placeholder="admin"
+                maxlength="32"
+                autocomplete="username"
+                @keyup.enter="submitLogin"
+              />
+            </label>
 
-          <label class="field">
-            <span class="label">密码</span>
-            <el-input
-              ref="passwordRef"
-              v-model="form.password"
-              type="password"
-              show-password
-              placeholder="请输入访问密码"
-              autocomplete="current-password"
-              @keyup.enter="submitLogin"
-            />
-          </label>
+            <label class="field">
+              <span class="label">密码</span>
+              <el-input
+                ref="passwordRef"
+                v-model="form.password"
+                type="password"
+                show-password
+                placeholder="请输入访问密码"
+                autocomplete="current-password"
+                @keyup.enter="submitLogin"
+              />
+            </label>
 
-          <p v-if="error" class="error">{{ error }}</p>
+            <p v-if="error" class="error">{{ error }}</p>
 
-          <el-button type="primary" class="submit" :loading="loading" @click="submitLogin">
-            进入工作台
-          </el-button>
+            <el-button type="primary" class="submit" :loading="loading" @click="submitLogin">
+              进入工作台
+            </el-button>
 
-          <p class="hint">
-            首次使用请用内置账号 <code>admin</code> / <code>admin</code> 登录，
-            登录后会要求立即修改密码。凭证仅保存在本机 <code>data/auth.json</code>。
-          </p>
-        </div>
-
-        <div v-else class="form">
-          <div class="notice">
-            <span class="notice-dot" />
-            <span>当前使用的是内置默认密码，为防他人直接打开这台机器上的工作台，必须先设置新密码。</span>
+            <p class="hint">
+              首次使用请用内置账号 <code>admin</code> / <code>admin</code> 登录，
+              登录后会要求立即修改密码。凭证仅保存在本机 <code>data/auth.json</code>。
+            </p>
           </div>
 
-          <label v-if="needOld" class="field">
-            <span class="label">当前密码</span>
-            <el-input
-              ref="oldPasswordRef"
-              v-model="form.oldPassword"
-              type="password"
-              show-password
-              placeholder="登录时使用的密码"
-              autocomplete="current-password"
-              @keyup.enter="submitChange"
-            />
-          </label>
+          <div v-else class="form">
+            <div class="notice">
+              <span class="notice-dot" />
+              <span>当前使用的是内置默认密码，为防他人直接打开这台机器上的工作台，必须先设置新密码。</span>
+            </div>
 
-          <label class="field">
-            <span class="label">新密码</span>
-            <el-input
-              ref="newPasswordRef"
-              v-model="form.newPassword"
-              type="password"
-              show-password
-              placeholder="至少 6 位"
-              autocomplete="new-password"
-              @keyup.enter="submitChange"
-            />
-          </label>
+            <label v-if="needOld" class="field">
+              <span class="label">当前密码</span>
+              <el-input
+                ref="oldPasswordRef"
+                v-model="form.oldPassword"
+                type="password"
+                show-password
+                placeholder="登录时使用的密码"
+                autocomplete="current-password"
+                @keyup.enter="submitChange"
+              />
+            </label>
 
-          <label class="field">
-            <span class="label">确认新密码</span>
-            <el-input
-              v-model="form.confirmPassword"
-              type="password"
-              show-password
-              placeholder="再输入一次"
-              autocomplete="new-password"
-              @keyup.enter="submitChange"
-            />
-          </label>
+            <label class="field">
+              <span class="label">新密码</span>
+              <el-input
+                ref="newPasswordRef"
+                v-model="form.newPassword"
+                type="password"
+                show-password
+                placeholder="至少 6 位"
+                autocomplete="new-password"
+                @keyup.enter="submitChange"
+              />
+            </label>
 
-          <p v-if="error" class="error">{{ error }}</p>
+            <label class="field">
+              <span class="label">确认新密码</span>
+              <el-input
+                v-model="form.confirmPassword"
+                type="password"
+                show-password
+                placeholder="再输入一次"
+                autocomplete="new-password"
+                @keyup.enter="submitChange"
+              />
+            </label>
 
-          <el-button type="primary" class="submit" :loading="loading" @click="submitChange">
-            保存并进入工作台
-          </el-button>
+            <p v-if="error" class="error">{{ error }}</p>
 
-          <p class="hint">
-            账号为 <code>{{ auth.username || 'admin' }}</code>，密码修改后无法找回；
-            忘记密码可删除 <code>data/auth.json</code> 后重启服务，恢复内置默认密码。
-          </p>
-        </div>
-      </section>
+            <el-button type="primary" class="submit" :loading="loading" @click="submitChange">
+              保存并进入工作台
+            </el-button>
+
+            <p class="hint">
+              账号为 <code>{{ auth.username || 'admin' }}</code>，密码修改后无法找回；
+              忘记密码可删除 <code>data/auth.json</code> 后重启服务，恢复内置默认密码。
+            </p>
+          </div>
+        </section>
+
+        <!-- 宽屏右侧信息栏：把「上手三步」铺出来，避免 1440 下右半屏是一整片白 -->
+        <aside class="rail">
+          <span class="rail-title">上手三步</span>
+          <ol class="steps">
+            <li>
+              <span class="step-no num">01</span>
+              <span class="step-text">
+                <span class="step-k">同步行情</span>
+                <span class="step-v">首次全量约 19 分钟，之后增量 1~2 分钟</span>
+              </span>
+            </li>
+            <li>
+              <span class="step-no num">02</span>
+              <span class="step-text">
+                <span class="step-k">构造条件选股</span>
+                <span class="step-v">一句话或表单式条件，逐条可删可改</span>
+              </span>
+            </li>
+            <li>
+              <span class="step-no num">03</span>
+              <span class="step-text">
+                <span class="step-k">读区间计划卡</span>
+                <span class="step-v">建仓 / 加仓 / 止损 / 目标四区，附仓位与赔率</span>
+              </span>
+            </li>
+          </ol>
+          <div class="rail-note">
+            <span class="rail-dot" />
+            <span>数据全部落在本机，登录只决定谁能打开它</span>
+          </div>
+        </aside>
+      </div>
 
       <footer class="pane-foot">
         <span>新浪财经 / 东方财富公开接口</span>
@@ -612,11 +646,107 @@ onMounted(async () => {
   background: var(--af-down);
 }
 
+/* 表单 + 信息栏：两块一起在右半区居中，信息栏在窄屏隐藏后表单自然居中 */
+.pane-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  width: 100%;
+}
+
 .form-wrap {
   width: min(348px, 100%);
   display: flex;
   flex-direction: column;
   gap: 22px;
+}
+
+/* ------------------------------------------------------------ 右侧信息栏 */
+/* 只在 ≥1280 出现：1080 这类窗口右半区本来就不宽，再加一栏会把表单挤成窄条 */
+.rail {
+  display: none;
+  width: 208px;
+  flex: 0 0 208px;
+  flex-direction: column;
+  gap: 14px;
+  padding-left: 26px;
+  border-left: 1px solid var(--af-border);
+}
+
+@media (min-width: 1280px) {
+  .rail {
+    display: flex;
+  }
+}
+
+.rail-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--af-ink-3);
+  text-transform: uppercase;
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.steps li {
+  display: flex;
+  gap: 9px;
+}
+
+.step-no {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--af-ink-4);
+  line-height: 1.6;
+}
+
+.step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.step-k {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--af-ink);
+}
+
+.step-v {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--af-ink-3);
+}
+
+.rail-note {
+  display: flex;
+  gap: 7px;
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--af-border);
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--af-ink-4);
+}
+
+.rail-dot {
+  flex: 0 0 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--af-brand);
+  margin-top: 5px;
 }
 
 .head {

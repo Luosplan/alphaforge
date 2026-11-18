@@ -95,21 +95,26 @@ alphaforge/
 │   │       ├── selector.py         # 三态执行：多因子 / 条件 / 混合 + 行业分散
 │   │       ├── panorama.py         # 7 大指数走势 + 市场温度 0–100
 │   │       ├── signal.py           # 区间计划卡生成（ATR + 布林 + 分批 + R:R）
-│   │       └── portfolio.py        # 持仓、净值曲线、基准、风控校验、成交统计
+│   │       ├── portfolio.py        # 持仓、净值曲线、基准、风控校验、成交统计
+│   │       ├── backtest.py         # 回测内核：面板 + 次日开盘撮合 + ATR 止盈止损
+│   │       ├── harness.py          # 策略自进化（遗传搜索 + 样本外验证）
+│   │       └── paper.py            # 模拟盘：逐日推进、每条策略一个独立账户
 │   ├── api/                        # HTTP 网关（可依赖 core + data + engine）
 │   │   └── alphaforge_api/
 │   │       ├── main.py             # FastAPI 入口 + 登录守卫 + SPA 静态托管
 │   │       ├── auth.py             # 单用户登录：PBKDF2 密码、会话表、路径白名单
 │   │       ├── store.py            # JSON 持久化（原子写入）
+│   │       ├── lab_store.py        # 实验室产物：模拟账户 / 回测 / 进化（可重算，与 store 分开）
 │   │       ├── deps.py             # 单例注入
 │   │       └── routers/            # auth / system / market / watchlist / portfolio
-│   │                               # select / signal / overview / data
+│   │                               # select / signal / overview / lab / data
 │   └── web/                        # 前端（只经 HTTP 访问后端）
 │       └── src/
 │           ├── styles/main.css     # 设计令牌 + 原子类 + Element 覆盖
 │           ├── constants/nav.ts    # 导航单一数据源（顶部 + 底部共用）
 │           ├── layouts/            # AppShell / SideBar / TopBar / BottomNav
-│           ├── views/              # Login / Overview / Market / Screener / Signals / Portfolio
+│           ├── views/              # Login / Overview / Market / Screener / Signals
+│           │                       # Portfolio / Lab
 │           ├── components/         # KLineChart / TimeShareChart / EquityChart
 │           │                       # ZoneLadder / PlanCardItem / FactorBars / MetricCard
 │           │                       # MarketPanorama / MarketGauge / Sparkline / IndexDrawer
@@ -121,6 +126,7 @@ alphaforge/
 │           └── utils/              # format（金额 / 涨跌色）/ error（错误文案提取）
 ├── data/alphaforge.db              # 行情库（SQLite，可复制备份）
 ├── data/store.json                 # 运行期持久化（自选、持仓、成交流水）
+├── data/lab.json                   # 实验室产物（模拟账户 / 回测 / 进化，可删可重算）
 ├── data/auth.json                  # 登录凭证与会话（删掉即恢复默认密码）
 ├── scripts/                        # 截图与布局审计（playwright-core）
 ├── docs/adr/                       # 架构决策记录
@@ -167,7 +173,7 @@ core  ←  data  ←  engine  ←  api  →  web
 | M10 板块资金 | `market.sector_flow` / `stock_flow` | ✅ P1 完成 | 近似口径（超大单 + 大单），日 / 5 / 10 / 20 日 |
 | M11 全局搜索 | `market.search` + `GlobalSearch.vue` | ✅ P1 完成 | 代码 / 名称 / 拼音首字母 / 全拼 / 行业，相关度排序，⌘K 唤起 |
 | M12 消息与告警 | `OverviewView` 风控提示区 | 🟡 P2 简化 | 仅页面内提示，无推送通道 |
-| M13 回测 | — | ⬜ 未实现 | V1.0 范围 |
+| M13 回测 | `engine/backtest.py` + `LabView` | ✅ P1 完成 | 250 日面板重放、次日开盘成交、ATR 三档止盈止损、净值/交易/持仓明细；口径见「实验室」一节 |
 | M14 多账户 | `routers/system.py` + `SettingsDrawer.vue` | 🟡 P2 部分 | 单账户；账户设置已可配成本口径与购买权限 |
 
 ### 个人设置（账户口径）
@@ -250,6 +256,52 @@ core  ←  data  ←  engine  ←  api  →  web
 6. **分批**：4 : 3 : 3，按 `单笔风险 R ÷ (建仓均价 − 止损中值)` 反推股数并取整到 100 股
 7. **置信度**：趋势一致性、量能配合、因子排名、距布林上轨距离加权，0–100
 
+### 实验室：回测 / 自进化 / 模拟盘
+
+三块内容共用一份「回测面板」，因果顺序是固定的：回测看这条策略历史上什么水平 →
+进化搜一组更好的参数 → 模拟盘按当前参数一格一格往前走。
+
+**回测口径（先读这段，再看数字）**
+
+| 项 | 口径 |
+| --- | --- |
+| 因子 | **只用价量**。`factor` 表只有当前截面、`flow` 只有三十来天，所以估值为代表的权重会被摘掉、剩余权重重归一，摘了什么逐条写在 `dropped` 里并显示在界面上 |
+| 成交价 | 信号次日**开盘价**（含 5‱ 滑点）。用当日收盘价成交是最容易骗过自己的未来函数 |
+| 进场 | **每天**扫描空缺仓位、补足到 `top_n`；已持有的标的不会因为排名下滑被卖，只会被止损 / 止盈 / 时间止损带走 |
+| 结构参数 | 先读策略自己声明的 `top_n` / `max_per_industry`，再让显式 `params` 覆盖。**回测、模拟盘、进化基线三处必须同口径**，否则抽屉里「回测」和「进化原始策略」会并排放着两个用不同持仓数跑出来的数字 |
+| 不撮合 | 开盘一字涨停买不进、一字跌停卖不出（用开盘跳空判断，不看当日涨跌幅） |
+| 同一根 K 线两边都碰到 | 按**止损**结算（保守） |
+| 股票池 | 按最新成交额取前 600 只。这是唯一承认的轻微未来函数——全市场 5579 只 × 340 天装一次面板要几分钟，144 次遗传评估直接不可用 |
+| 成本 | 佣金 / 印花税 / 过户费按个人设置，滑点单列 |
+
+`backtest.MODEL_VERSION` 跟着撮合规则走。规则一改就加一，API 层把旧版本的回测判为过期
+**直接不返回**——两套口径的数字同时挂在卡片上，比没有数字更危险（实测改成每日补仓后，
+同一条动量策略从 -12.75% 变成 -40.08%）。
+
+- `v2`：进场改为每天补空缺仓位，删除 `rebalance` 基因
+- `v3`：结构参数改为「先读 spec 再让 params 覆盖」。此前一律用 `DEFAULTS`（`top_n=8`），
+  而策略声明的是 10、进化基线也按 10 跑，两个数字并排显示却不可比。修完 6 条策略里有
+  5 条数字变了，动量 `-40.08% → -39.29%`、低波红利 `-24.19% → -15.49%`
+
+**自进化（遗传搜索）**
+
+- 搜索空间：6 个因子权重 + 6 个结构参数（持仓数 / 行业上限 / 止损与两档止盈的 ATR 倍数 / 时间止损）
+- 目标函数：`min(Calmar, 4) + 0.6×(胜率−50%) + 0.2×(平均仓位−50%) − 0.02×换手`，
+  已了结交易少于 8 笔额外压分。Calmar 封顶和仓位项都是必需的：不封顶时「把回撤压到 1%」
+  就能刷到 5.3 分，而压低回撤最简单的办法是让账户少买点——那是拿「钱没买满」换分数
+- 撒点：初代一半贴种子、一半全空间随机；每代固定掺 15% 外来移民。少了后两条，种群会
+  收敛到一个盆地就不动（实测 6 代最优分数一动不带动）
+- 整数基因的变异步长按区间宽度定标，不按固定 ±1 走
+- 跑完做一次**样本外验证**：最后 30% 的交易日没参与搜索，只在这里各跑一次，
+  比较「进化后」与「原始策略」。分差在 ±0.2 内判「打平」，不硬判胜负
+
+**模拟盘**
+
+每条策略一个独立账户（各 100 万），只吃真实落库的下一根 K 线，一天一格。
+程序停几天再打开会按交易日历逐格补齐（上限 30 格），不会错位。
+`POST /lab/paper/tick?force=true` 只重算计划卡与委托，不重复撮合——否则会把今天的
+止损/止盈按同一根 K 线再执行一次，持仓被卖两遍。
+
 ---
 
 ## 4. 快速开始
@@ -323,6 +375,7 @@ python -m uvicorn alphaforge_api.main:app --host 0.0.0.0 --port 8000 \
 | `AF_DB` | `data/alphaforge.db` | 行情库路径（SQLite） |
 | `AF_BARS` | `520` | 日线保留根数（同步时的默认抓取深度） |
 | `AF_STORE_PATH` | `data/store.json` | 用户数据（自选 / 持仓 / 流水）路径 |
+| `AF_LAB_PATH` | `data/lab.json` | 实验室产物（模拟账户 / 回测 / 进化）路径 |
 | `AF_AUTH_PATH` | `data/auth.json` | 登录凭证与会话存储路径 |
 | `AF_AUTH_SESSION_DAYS` | `7` | 登录有效期（天） |
 | `AF_AUTH_DISABLED` | 空 | 置 `1` 时关掉登录守卫，供本地审计 / 截图脚本使用 |
@@ -449,6 +502,16 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 | GET | `/signal/plans/{id}` | 单张计划卡 |
 | POST | `/signal/plans/preview` | 指定标的预览计划卡 |
 | POST | `/signal/risk/check` | 事前风控校验 |
+| GET | `/lab/overview` | 实验室聚合：每条策略的回测精简、模拟盘快照、进化结论 + 今日全部计划卡 |
+| GET | `/lab/strategies/{id}` | 单策略详情：账户快照 + 完整回测（含净值与成交）+ 进化结果 |
+| POST | `/lab/backtest` | 跑回测并落盘（同步，250 天 / 600 只约 0.1 秒） |
+| GET | `/lab/backtest/{id}` | 取存档回测（旧撮合模型算的会被判为过期，返回 404） |
+| POST | `/lab/evolve` | 启动自进化（后台线程，重复发起 409） |
+| GET | `/lab/evolve/status` | 进化进度：当前代 / 已完成评估 / 累计最优 / 结果 |
+| POST | `/lab/evolve/apply` | 采纳进化结果：写回策略权重与参数，代次 +1 |
+| POST | `/lab/paper/tick` | 模拟盘推进一格；`force=true` 只重算计划卡与委托，不重复撮合 |
+| POST | `/lab/paper/reset` | 重置模拟账户（重新开 100 万） |
+| GET | `/lab/plans` | 跨策略的今日计划卡汇总 |
 
 交互式文档：`/api/docs`
 

@@ -52,6 +52,13 @@ withDefaults(defineProps<{ name: string; collapsed?: boolean }>(), { collapsed: 
       <path d="M12 12V3.5A8.5 8.5 0 0 1 20.5 12Z" fill="currentColor" stroke="none" />
     </template>
 
+    <!-- 实验室：锥形瓶 + 内部液面 -->
+    <template v-else-if="name === 'lab'">
+      <path d="M9.4 3.4h5.2" />
+      <path d="M10.6 3.4v5.5L5.1 18.1A2 2 0 0 0 6.8 21h10.4a2 2 0 0 0 1.7-2.9L13.4 8.9V3.4" />
+      <path d="M8.1 15.2h7.8" />
+    </template>
+
     <!-- 侧栏开关：面板 + 分栏线 + 方向箭头 -->
     <template v-else-if="name === 'sidebar'">
       <rect x="3.2" y="3.6" width="17.6" height="16.8" rx="2.6" />

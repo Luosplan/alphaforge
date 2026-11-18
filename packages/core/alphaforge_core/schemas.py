@@ -132,3 +132,37 @@ class TradeRequest(BaseModel):
     shares: int
     trade_date: str | None = None
     note: str | None = None
+
+
+# ------------------------------------------------------------ 策略实验室
+class LabBacktestRequest(BaseModel):
+    """单条策略回测。`spec` 可内联一条还没保存的策略（编辑器里试参数用）。"""
+
+    strategy: str = "multifactor"
+    spec: dict | None = None
+    days: int = Field(default=250, ge=60, le=520)
+    capital: float = Field(default=1_000_000, gt=0, le=100_000_000)
+    # 覆盖 ATR 档位 / 调仓周期等结构参数，留空用 `backtest.DEFAULTS`
+    params: dict | None = None
+
+
+class LabEvolveRequest(BaseModel):
+    strategy: str = "multifactor"
+    spec: dict | None = None
+    population: int = Field(default=24, ge=6, le=64)
+    generations: int = Field(default=6, ge=1, le=20)
+    days: int = Field(default=250, ge=60, le=520)
+    capital: float = Field(default=1_000_000, gt=0, le=100_000_000)
+    max_codes: int = Field(default=600, ge=100, le=1200)
+    seed: int = Field(default=20261118, ge=0, le=2**31 - 1)
+    # 搜完直接采纳到模拟盘账户（前端默认给用户自己点，不默认自动覆盖）
+    apply: bool = False
+
+
+class LabPaperRequest(BaseModel):
+    """推进模拟盘。`strategy` 留空 = 全部策略都推一格。"""
+
+    strategy: str | None = None
+    force: bool = False
+    capital: float | None = Field(default=None, gt=0, le=100_000_000)
+    reset: bool = False

@@ -13,7 +13,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        // 后端地址可覆盖：跑第二套实例（免鉴权 / 另一份数据）做对比时，
+        // 不用改文件再改回来
+        target: process.env.AF_API_TARGET || 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

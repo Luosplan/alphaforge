@@ -35,6 +35,14 @@ import type {
   WatchGroup,
   DataStatus,
   DataSourceInfo,
+  LabBacktest,
+  LabEvolveState,
+  LabEvoGeneration,
+  LabHoldout,
+  LabGenome,
+  LabOverview,
+  LabPaper,
+  LabPlanCard,
 } from '@/types'
 
 export const api = {
@@ -127,4 +135,62 @@ export const api = {
   dataSources: () => http.get<DataSourceInfo>('/data/sources'),
   dataSync: (only = 'all', workers = 10) =>
     http.post<{ accepted: boolean }>('/data/sync', null, { params: { only, workers } }),
+
+  // 策略实验室：回测 / 自进化 / 模拟盘
+  labOverview: () => http.get<LabOverview>('/lab/overview'),
+  labStrategy: (id: string) => http.get<LabStrategyDetail>(`/lab/strategies/${id}`),
+  labBacktest: (payload: {
+    strategy: string
+    spec?: Record<string, unknown>
+    days?: number
+    capital?: number
+    params?: Record<string, number>
+  }) => http.post<LabBacktest>('/lab/backtest', payload),
+  labEvolve: (payload: {
+    strategy: string
+    population?: number
+    generations?: number
+    days?: number
+    max_codes?: number
+    apply?: boolean
+  }) => http.post<{ accepted: boolean; strategy: string; evaluations: number }>('/lab/evolve', payload),
+  labEvolveStatus: () => http.get<LabEvolveState>('/lab/evolve/status'),
+  labEvolveApply: (strategy: string) =>
+    http.post<{ applied: string; generation: number; score: number }>('/lab/evolve/apply', { strategy }),
+  labTick: (payload: { strategy?: string; force?: boolean; capital?: number } = {}) =>
+    http.post<{ as_of: string | null; results: Record<string, unknown> }>('/lab/paper/tick', payload),
+  labReset: (strategy?: string) =>
+    http.post<{ cleared: number }>('/lab/paper/reset', { strategy }),
+  labPlans: () =>
+    http.get<{
+      as_of: string | null
+      total: number
+      groups: Array<{
+        strategy_id: string
+        strategy_name: string
+        generation: number
+        last_run: string | null
+        items: LabPlanCard[]
+      }>
+    }>('/lab/plans'),
 }
+
+/** 单策略详情：账户快照 + 完整回测 + 进化结果 */
+export interface LabStrategyDetail {
+  id: string
+  name: string
+  spec: Record<string, unknown>
+  paper: LabPaper | null
+  backtest: LabBacktest | null
+  evolution: {
+    best: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
+    baseline: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
+    history: LabEvoGeneration[]
+    /** 样本外验证：最后一段没参与搜索的交易日，进化后 vs 原始策略 */
+    holdout?: LabHoldout | null
+    notes: string[]
+    elapsed: number
+    config: Record<string, number | string>
+  } | null
+}
+

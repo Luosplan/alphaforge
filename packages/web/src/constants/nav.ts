@@ -13,4 +13,5 @@ export const NAV_ITEMS: NavItem[] = [
   { name: 'screener', to: '/screener', label: '选股', icon: 'screener' },
   { name: 'signals', to: '/signals', label: '计划卡', icon: 'signals' },
   { name: 'portfolio', to: '/portfolio', label: '持仓', icon: 'portfolio' },
+  { name: 'lab', to: '/lab', label: '实验室', icon: 'lab' },
 ]

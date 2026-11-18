@@ -29,7 +29,9 @@ const route = useRoute()
   bottom: 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  /* 按实际 tab 数均分，而不是写死 5 列：加一个「实验室」就掉到第二行去了 */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(14px) saturate(180%);
   border-top: 1px solid var(--af-border);

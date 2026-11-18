@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from alphaforge_api import __version__, auth
 from alphaforge_api.routers import auth as auth_router
 from alphaforge_api.routers import data as data_router
+from alphaforge_api.routers import lab as lab_router
 from alphaforge_api.routers import market, overview, portfolio, select, signal, system, watchlist
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -43,7 +44,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (auth_router, system, market, watchlist, portfolio, select, signal, overview, data_router):
+for module in (auth_router, system, market, watchlist, portfolio, select, signal,
+               overview, lab_router, data_router):
     app.include_router(module.router, prefix=API_PREFIX)
 
 
@@ -91,7 +93,9 @@ def api_health():
     return {"code": 0, "msg": "ok", "data": {"status": "UP", "version": __version__}}
 
 
-if WEB_DIST.exists():
+# 判断用 assets 目录而不是 dist 本身：`vite build` 会先清空 dist 再写产物，
+# 这中间重启服务的话 dist 存在但 assets 还没生成，StaticFiles 会直接抛异常把启动打断。
+if (WEB_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
