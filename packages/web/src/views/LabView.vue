@@ -326,11 +326,17 @@ const holdoutTone = (level?: string): string => {
   return ''
 }
 
-const planStatusTone = (status?: string): string => {
-  if (!status) return 'flat'
-  if (status.includes('进入')) return 'up'
-  if (status.includes('跌破')) return 'down'
-  return 'flat'
+/** 计划卡状态列：以「有没有真的挂委托」为主，停牌/跌破止损才顶上来 */
+const planStateLabel = (p: LabPlanCard): string => {
+  if (p.live_status === '停牌') return '停牌'
+  if (p.live_status === '已跌破止损区') return '已跌破止损区'
+  return p.order_state ?? p.live_status ?? p.status_label
+}
+
+const planStateTone = (p: LabPlanCard): string => {
+  if (p.live_status === '停牌') return 'flat'
+  if (p.live_status === '已跌破止损区') return 'down'
+  return p.order_tone ?? 'flat'
 }
 
 onMounted(async () => {
@@ -549,7 +555,7 @@ onBeforeUnmount(stopPoll)
         <div class="panel-title">
           今日计划卡 · 全策略
           <span class="panel-sub">
-            每条策略各出 Top-N，按 T+1 开盘执行；现价状态取最近一个交易日收盘
+            每条策略各出 Top-N；只有「待明日开盘成交」才真挂单，次日开盘价成交
           </span>
         </div>
         <div class="head-tools">
@@ -576,7 +582,7 @@ onBeforeUnmount(stopPoll)
                   <th>类型</th>
                   <th class="ta-r">建仓区</th>
                   <th class="ta-r">现价</th>
-                  <th>状态</th>
+                  <th>委托</th>
                   <th class="ta-r">距止损</th>
                   <th class="ta-r">止损</th>
                   <th class="ta-r">TP1 / TP2</th>
@@ -602,8 +608,8 @@ onBeforeUnmount(stopPoll)
                   <td class="ta-r num">{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</td>
                   <td class="ta-r num">{{ px(p.live_price ?? p.ref_price) }}</td>
                   <td>
-                    <span class="p-status" :class="planStatusTone(p.live_status)">
-                      {{ p.live_status ?? p.status_label }}
+                    <span class="p-status" :class="planStateTone(p)">
+                      {{ planStateLabel(p) }}
                     </span>
                   </td>
                   <td class="ta-r num down">
@@ -631,7 +637,7 @@ onBeforeUnmount(stopPoll)
         <span class="pl-title">口径</span>
         <span>建仓区与止损由 ATR(14) 定标尺</span>
         <span class="dot">·</span>
-        <span>「已进入建仓区」是扫描色块：建仓区以现价为中心生成，当日新卡必然落在区间内</span>
+        <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘成交」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
         <span class="dot">·</span>
         <span>「距止损」才是这张卡的风险成本，逐票不同</span>
         <span class="dot">·</span>
@@ -922,8 +928,8 @@ onBeforeUnmount(stopPoll)
                     <div class="mp-head">
                       <b>{{ p.name }}</b>
                       <span class="num muted">{{ p.code }}</span>
-                      <span class="p-status" :class="planStatusTone(p.live_status)">
-                        {{ p.live_status }}
+                      <span class="p-status" :class="planStateTone(p)">
+                        {{ planStateLabel(p) }}
                       </span>
                     </div>
                     <div class="mp-zones num">
@@ -1106,6 +1112,31 @@ onBeforeUnmount(stopPoll)
                   >{{ holdoutLabel(detail.evolution.holdout.level) }}</span>
                   这一栏才算数：上面的逐代曲线是在 250 天里挑出来的最优，好看是必然的；
                   只有这段没参与搜索的交易日，才能看出参数是真有效还是拟合了噪声。
+                </p>
+              </template>
+
+              <template v-if="detail.evolution.adoption">
+                <div class="block-title">
+                  该不该采纳
+                  <span class="muted">决定「进化后」那组参数要不要真的换上去</span>
+                </div>
+                <div class="adopt-box" :class="detail.evolution.adoption.action">
+                  <span class="chip" :class="detail.evolution.adoption.action === 'adopt' ? 'brand' : 'flat'">
+                    {{ detail.evolution.adoption.action === 'adopt' ? '建议采纳' : '暂不采纳' }}
+                  </span>
+                  <span class="adopt-reason">{{ detail.evolution.adoption.reason }}</span>
+                </div>
+                <ul class="adopt-checks">
+                  <li v-for="c in detail.evolution.adoption.checks" :key="c.key">
+                    <span class="tick" :class="c.pass ? 'ok' : 'no'">{{ c.pass ? '✓' : '✗' }}</span>
+                    <span>{{ c.label }}</span>
+                    <span class="muted num">实际 {{ c.value }}</span>
+                  </li>
+                </ul>
+                <p class="dt-hint">
+                  搜索每次都必然给出「比基线分高」的结果——它就是在训练集上挑最好的。
+                  所以分数不能当采纳依据，只能看样本外；而且要求连续两次都赢，
+                  因为样本外只跑一遍，单次的 edge 里有一半是噪声。
                 </p>
               </template>
 
@@ -1505,6 +1536,10 @@ onBeforeUnmount(stopPoll)
   color: var(--af-ink-2);
 }
 
+.p-status.brand {
+  color: var(--af-brand);
+}
+
 .ta-r {
   text-align: right;
 }
@@ -1750,6 +1785,57 @@ onBeforeUnmount(stopPoll)
 .dt-hint .chip {
   flex: none;
   margin-top: 2px;
+}
+
+.adopt-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--af-surface-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.adopt-box.adopt {
+  background: var(--af-brand-soft);
+}
+
+.adopt-reason {
+  color: var(--af-ink-2);
+}
+
+.adopt-checks {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+.adopt-checks li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--af-ink-2);
+}
+
+.adopt-checks .tick {
+  width: 12px;
+  flex: none;
+  font-weight: 700;
+}
+
+/* 通过/未通过不用红绿——那两色在这个系统里只表示涨跌。
+   蓝=通过、橙=需要注意，语义清楚且不跟行情撞色。 */
+.adopt-checks .tick.ok {
+  color: var(--af-brand);
+}
+
+.adopt-checks .tick.no {
+  color: var(--af-warn);
 }
 
 .orders {

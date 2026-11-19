@@ -194,6 +194,8 @@ def overview(request: Request):
                 "history": _thin((evo or {}).get("history") or [], 20),
                 # 样本外验证：没参与搜索的那段交易日，进化后还打不打得赢原始策略
                 "holdout": (evo or {}).get("holdout"),
+                # 该不该真换参数：edge + 连续两次一致 + 风控门槛
+                "adoption": (evo or {}).get("adoption"),
             } if evo else None,
         })
 
@@ -266,6 +268,9 @@ _EVOLVE: dict = {
     "generation": 0, "of": 0, "done": 0, "total": 0, "percent": 0.0,
     "best": None, "started_at": None, "finished_at": None,
     "elapsed": 0.0, "result": None, "error": None,
+    # 请求了 apply 但被采纳门槛挡下时，把原因留在状态里给前端显示——
+    # 否则用户只看到「没换上」却不知道是 edge 不够还是风控不合格。
+    "apply_blocked": None,
 }
 
 
@@ -309,10 +314,32 @@ def _run_evolve(payload: dict) -> None:
         )
         _EVOLVE["result"] = result
         if result.get("available"):
+            # 采纳与否要在落盘**之前**算：put_evolution 会把上一条覆盖掉，
+            # 之后就再也拿不到「上一次的样本外结论」来做一致性判断了。
+            prev_raw = get_lab().evolution(sid) or {}
+            # 跨版本的上一次当不存在：撮合规则或搜索区间变了之后，上一条的
+            # 「win/edge」是在另一套规则下得出的，拿它做「连续两次一致」的确认
+            # 等于用旧尺子量新布。与回测的 `_saved_backtest` 同一套处理，
+            # 连 `adoption_runs` 的历史也一起归零——那条曲线的每一格都该同口径。
+            same_version = prev_raw.get("model_version") == bt.MODEL_VERSION
+            prev = prev_raw if same_version else None
+            result["adoption"] = harness.adopt_verdict(result, prev)
+            runs = list(prev_raw.get("adoption_runs") or []) if same_version else []
+            runs.append({
+                "at": dt.datetime.now().isoformat(timespec="seconds"),
+                "action": result["adoption"]["action"],
+                "level": result["holdout"].get("level") if result.get("holdout") else None,
+                "edge": result["adoption"]["edge"],
+            })
+            result["adoption_runs"] = runs[-8:]
             get_lab().put_evolution(sid, result)
-            if payload.get("apply"):
+            # `apply` 只在门槛通过时才真的换参数：以前是「跑完就换上」，
+            # 等于把每一次拟合噪声的结果都当成改进。
+            if payload.get("apply") and result["adoption"]["action"] == "adopt":
                 _apply_evolution(sid, result)
                 _EVOLVE["applied"] = True
+            elif payload.get("apply"):
+                _EVOLVE["apply_blocked"] = result["adoption"]["reason"]
     except Exception as exc:                            # noqa: BLE001
         _EVOLVE["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -321,6 +348,55 @@ def _run_evolve(payload: dict) -> None:
         _EVOLVE["elapsed"] = round(time.monotonic() - t0, 1)
         _EVOLVE["percent"] = 100.0 if not _EVOLVE.get("error") else _EVOLVE["percent"]
         _EVOLVE["eta"] = 0
+
+
+def _begin_evolve(sid: str, spec: dict, *, population: int, generations: int,
+                  days: int, max_codes: int, capital: float, seed: int,
+                  apply: bool) -> dict:
+    """把状态机置成「正在跑」并组装 `_run_evolve` 的参数。HTTP 与收盘任务共用。"""
+    _EVOLVE.update({
+        "running": True, "strategy": sid, "name": spec.get("name") or sid,
+        "generation": 0, "of": generations, "done": 0,
+        "total": population * generations,
+        "percent": 0.0, "best": None, "applied": False,
+        "started_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "finished_at": None, "elapsed": 0.0, "eta": None,
+        "result": None, "error": None, "apply_blocked": None,
+    })
+    return {
+        "strategy_id": sid, "spec": spec,
+        "population": population, "generations": generations,
+        "days": days, "max_codes": max_codes,
+        "capital": capital, "seed": seed, "apply": apply,
+    }
+
+
+def run_evolve_blocking(strategy_id: str, *, apply: bool = True) -> dict:
+    """同步跑一轮进化，返回采纳结论。给收盘自动驾驶调用。
+
+    与 HTTP 入口共用 `_EVOLVE_LOCK`：两边同时跑会各搜一遍、互相覆盖结果，
+    进度条也会来回跳。拿不到锁就跳过这一轮——**收盘任务不该因为
+    「用户刚好手点了一次进化」而整体失败**，明天还有一轮。
+    """
+    if not _EVOLVE_LOCK.acquire(blocking=False):
+        return {"action": "busy", "reason": "已有进化任务在跑，本轮跳过",
+                "edge": None, "applied": False}
+    try:
+        spec = _spec_of(strategy_id)
+        args = _begin_evolve(spec["id"], spec, population=24, generations=6,
+                             days=250, max_codes=600, capital=1_000_000,
+                             seed=20261118, apply=apply)
+        _run_evolve(args)
+        res = _EVOLVE.get("result") or {}
+        adoption = res.get("adoption") or {}
+        return {
+            "action": adoption.get("action") or "hold",
+            "reason": adoption.get("reason") or _EVOLVE.get("error") or "",
+            "edge": adoption.get("edge"),
+            "applied": bool(_EVOLVE.get("applied")),
+        }
+    finally:
+        _EVOLVE_LOCK.release()
 
 
 @router.post("/evolve")
@@ -333,22 +409,10 @@ def evolve(request: Request, payload: LabEvolveRequest):
             raise HTTPException(status_code=409, detail="已有进化任务在跑")
         spec = _spec_of(payload.strategy, payload.spec)
         sid = spec["id"]
-        _EVOLVE.update({
-            "running": True, "strategy": sid, "name": spec.get("name") or sid,
-            "generation": 0, "of": payload.generations, "done": 0,
-            "total": payload.population * payload.generations,
-            "percent": 0.0, "best": None, "applied": False,
-            "started_at": dt.datetime.now().isoformat(timespec="seconds"),
-            "finished_at": None, "elapsed": 0.0, "eta": None,
-            "result": None, "error": None,
-        })
-        args = {
-            "strategy_id": sid, "spec": spec,
-            "population": payload.population, "generations": payload.generations,
-            "days": payload.days, "max_codes": payload.max_codes,
-            "capital": payload.capital, "seed": payload.seed,
-            "apply": payload.apply,
-        }
+        args = _begin_evolve(
+            sid, spec, population=payload.population, generations=payload.generations,
+            days=payload.days, max_codes=payload.max_codes,
+            capital=payload.capital, seed=payload.seed, apply=payload.apply)
         threading.Thread(target=_run_evolve, args=(args,), daemon=True).start()
     finally:
         _EVOLVE_LOCK.release()
@@ -421,7 +485,9 @@ def all_plans(request: Request):
         acc = accounts.get(item["id"])
         if not acc:
             continue
-        plans = acc.get("plans") or []
+        plans = paper.ensure_order_state(acc.get("plans") or [],
+                                         acc.get("positions") or [],
+                                         acc.get("params") or {})
         groups.append({
             "strategy_id": item["id"],
             "strategy_name": item["name"],
@@ -434,3 +500,73 @@ def all_plans(request: Request):
         "groups": groups,
         "total": sum(len(g["items"]) for g in groups),
     })
+
+
+# ---------------------------------------------------------------- 自动驾驶
+@router.get("/autopilot")
+def autopilot_status(request: Request):
+    """盘中盯盘 + 收盘复盘的最新状态。前端 30 秒轮询一次。"""
+    from ..autopilot import get_pilot
+    from alphaforge_engine import llm
+
+    pilot = get_pilot()
+    return ok({**pilot.status(), "llm_enabled": llm.enabled(), "llm": llm.status()})
+
+
+@router.post("/llm/test")
+def llm_test(request: Request):
+    """验一下模型接入通不通，返回失败原因而不是静默降级。
+
+    页面上「规则判断」有两种可能：没配 key，或者配了但调不通。不把失败原因
+    透出来，用户填完 key 发现结论没变只会以为功能坏了。
+    """
+    from alphaforge_engine import llm
+
+    result = llm.ping()
+    return ok(result)
+
+
+@router.post("/autopilot/toggle")
+def autopilot_toggle(request: Request, payload: dict | None = None):
+    """开/关自动驾驶。开了之后进程活着就一直在跑，重启后自动恢复。"""
+    from ..autopilot import get_pilot
+
+    pilot = get_pilot()
+    want = bool((payload or {}).get("enabled", True))
+    pilot.start() if want else pilot.stop()
+    return ok(pilot.status())
+
+
+@router.post("/autopilot/run")
+def autopilot_run(request: Request, payload: dict | None = None):
+    """手动触发一轮：`mode=intraday` 立刻盯一次盘，`mode=eod` 补跑收盘任务。
+
+    收盘任务会同步日线 + 进化，几十秒起步，所以放在后台线程里跑，
+    接口立刻返回——前端看 GET /lab/autopilot 的 running 字段。
+    """
+    from ..autopilot import get_pilot
+
+    pilot = get_pilot()
+    mode = str((payload or {}).get("mode") or "intraday")
+    if mode == "eod":
+        force = bool((payload or {}).get("force"))
+        try:
+            pilot.eod_gate(force)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        pilot.reset_eod()
+        # 补跑要同步日线 + 跑两轮进化，几十秒到几分钟，不能同步等
+        threading.Thread(target=pilot.run_eod, kwargs={"force": force},
+                         daemon=True).start()
+        return ok({"accepted": True, "mode": "eod"})
+    doc = pilot.run_intraday()
+    return ok({"accepted": True, "mode": "intraday", "watch": doc})
+
+
+@router.get("/autopilot/history")
+def autopilot_history(request: Request, limit: int = 30):
+    """盘中分析历史，最新的在前。"""
+    from ..autopilot import get_pilot
+
+    rows = list(get_pilot().status().get("history") or [])
+    return ok({"items": list(reversed(rows))[:max(1, min(limit, 60))]})

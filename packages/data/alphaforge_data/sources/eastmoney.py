@@ -19,7 +19,7 @@ from __future__ import annotations
 import datetime as dt
 from urllib.parse import quote
 
-from .base import fetch_json
+from .base import FetchError, fetch_json
 
 DATACENTER = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
@@ -384,3 +384,128 @@ def ticks(code: str, limit: int = 30) -> dict:
         })
     items = items[-limit:]
     return {"items": items, "prev_close": prev, "available": bool(items)}
+
+
+# ------------------------------------------------------------------ 涨停板池
+#
+# 这是「龙头」唯一靠谱的来源。本地能判出「谁涨停了」，但判不出「几连板」
+# 「封单多大」「炸过几次」——这些只有东财的涨停板池给。字段口径已核对：
+#
+# - `p` 是价格 **×1000**（7370 → 7.37 元）。不是东财行情接口惯用的 ×100，
+#   用错会把价格放大十倍，而且看起来还挺像真的。
+# - `tshare` 名字是「总股本」，实际给的是**总市值（元）**，别拿它当股本用。
+# - `fbt` / `lbt` 是 HHMMSS 整数（92500 = 09:25:00）。
+# - `zttj` = `{days, ct}`，`days` 天里涨停 `ct` 次——比连板数更能看出成色。
+#
+# 与 `push2his` 不同，这个接口没有出现过整机拉黑，一天问一次是安全的。
+
+ZT_URL = "https://push2ex.eastmoney.com/getTopicZTPool"
+DT_URL = "https://push2ex.eastmoney.com/getTopicDTPool"
+_POOL_UT = "7eea3edcaed734bea9cbfc24409ed989"
+
+
+def _pool(url: str, date: str, page_size: int = 200,
+          sort: str = "fbt%3Aasc") -> list[dict]:
+    """涨停池按「首次封板时间」排，跌停池没有 `fbt` 字段，要按封单资金排。"""
+    out: list[dict] = []
+    page = 0
+    while page < 8:                      # 安全阀：极端行情也就 200 多只
+        q = (f"{url}?ut={_POOL_UT}&dpt=wz.ztzt&Pageindex={page}"
+             f"&pagesize={page_size}&sort={sort}&date={date}")
+        try:
+            doc = fetch_json(q, interval=0.3, retries=1, timeout=10.0)
+        except FetchError:
+            break
+        data = doc.get("data") or {}
+        rows = data.get("pool") or []
+        if not rows:
+            break
+        out.extend(rows)
+        if len(out) >= int(data.get("tc") or 0):
+            break
+        page += 1
+    return out
+
+
+def _num(raw: object) -> float:
+    """安全转 float。东财对缺失字段给 `"-"` 或 `None`，不能直接 float()。"""
+    if raw is None or raw == "" or raw == "-":
+        return 0.0
+    try:
+        return float(raw)                # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _clock(raw: object) -> str:
+    """92500 → '09:25:00'。"""
+    try:
+        n = int(raw)                     # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    s = f"{n:06d}"
+    return f"{s[0:2]}:{s[2:4]}:{s[4:6]}"
+
+
+def limit_up_pool(date: str) -> list[dict]:
+    """某日涨停板池。`date` 形如 `2026-11-18` 或 `20261118`。
+
+    返回 `[{code, name, price, change_pct, amount, float_mv, turnover,
+    boards, first_seal, last_seal, seal_fund, broken, industry, stat_days,
+    stat_count}]`。`boards` 就是连板数，1 = 首板。
+    """
+    day = str(date).replace("-", "")
+    out: list[dict] = []
+    for r in _pool(ZT_URL, day):
+        try:
+            code = str(r.get("c") or "")
+            if not code:
+                continue
+            stat = r.get("zttj") or {}
+            out.append({
+                "code": f"{code}.{'SH' if int(r.get('m') or 0) == 1 else 'SZ'}",
+                "name": str(r.get("n") or "").strip(),
+                "price": round(_num(r.get("p")) / 1000, 2),
+                "change_pct": round(_num(r.get("zdp")), 2),
+                "amount": _num(r.get("amount")),
+                "float_mv": round(_num(r.get("ltsz")) / 1e8, 2),
+                "turnover": round(_num(r.get("hs")), 2),
+                "boards": int(_num(r.get("lbc"))) or 1,
+                "first_seal": _clock(r.get("fbt")),
+                "last_seal": _clock(r.get("lbt")),
+                "seal_fund": _num(r.get("fund")),
+                "broken": int(_num(r.get("zbc"))),
+                "industry": str(r.get("hybk") or "").strip(),
+                "stat_days": int(_num(stat.get("days"))),
+                "stat_count": int(_num(stat.get("ct"))),
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def limit_down_pool(date: str) -> list[dict]:
+    """某日跌停板池，字段比涨停少（没有连板数），够用即可。"""
+    day = str(date).replace("-", "")
+    out: list[dict] = []
+    for r in _pool(DT_URL, day, sort="fund%3Aasc"):
+        try:
+            code = str(r.get("c") or "")
+            if not code:
+                continue
+            out.append({
+                "code": f"{code}.{'SH' if int(r.get('m') or 0) == 1 else 'SZ'}",
+                "name": str(r.get("n") or "").strip(),
+                "price": round(_num(r.get("p")) / 1000, 2),
+                "change_pct": round(_num(r.get("zdp")), 2),
+                "amount": _num(r.get("amount")),
+                "float_mv": round(_num(r.get("ltsz")) / 1e8, 2),
+                "turnover": round(_num(r.get("hs")), 2),
+                "seal_fund": _num(r.get("fund")),
+                "last_seal": _clock(r.get("lbt")),
+                "industry": str(r.get("hybk") or "").strip(),
+                "days": int(_num(r.get("days"))),
+            })
+        except (TypeError, ValueError):
+            continue
+    return out

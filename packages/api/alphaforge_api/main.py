@@ -5,20 +5,57 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-
-from alphaforge_api import __version__, auth
-from alphaforge_api.routers import auth as auth_router
-from alphaforge_api.routers import data as data_router
-from alphaforge_api.routers import lab as lab_router
-from alphaforge_api.routers import market, overview, portfolio, select, signal, system, watchlist
-
 ROOT = Path(__file__).resolve().parents[3]
 WEB_DIST = ROOT / "packages" / "web" / "dist"
 API_PREFIX = "/api/v1"
+
+
+def _load_dotenv() -> None:
+    """把仓库根目录的 `.env` 读进环境变量。
+
+    为什么必须自己读：`python -m uvicorn` 不会加载 `.env`，而 `.env.example`
+    又明写着「复制为 .env 后按需修改」——用户照着做、填好 `AF_LLM_API_KEY`，
+    结果 AI 分析一直走规则版，还找不到原因。缺的是这一小段胶水，不是文档。
+
+    规则两条：
+    - **已存在的环境变量优先**。命令行 `export` 的临时覆盖要能压过文件，
+      否则排查问题时改不回来。
+    - 解析失败一律忽略。一个手写的配置文件不该有能力让服务起不来。
+    """
+    path = ROOT / ".env"
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
+# 必须在下面这些 import 之前调用：`store.py` / `lab_store.py` / `db.py` 里的
+# `AF_STORE_PATH` / `AF_LAB_PATH` / `AF_DB` 都是在**导入那一刻**读环境变量的，
+# 放到 import 之后再加载 `.env`，这些路径配置会被静默忽略。
+_load_dotenv()
+
+from fastapi import FastAPI, Request                          # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware            # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse      # noqa: E402
+from fastapi.staticfiles import StaticFiles                   # noqa: E402
+
+from alphaforge_api import __version__, auth                  # noqa: E402
+from alphaforge_api.routers import auth as auth_router        # noqa: E402
+from alphaforge_api.routers import data as data_router        # noqa: E402
+from alphaforge_api.routers import lab as lab_router          # noqa: E402
+from alphaforge_api.routers import (                          # noqa: E402
+    market, overview, portfolio, select, signal, system, watchlist,
+)
+
 CORS_ORIGINS = [
     o.strip()
     for o in os.environ.get(
@@ -80,6 +117,17 @@ def _load_reference_data():
 
         set_industries(_market().repo.industries())
     except Exception:                       # noqa: BLE001 - 数据没同步也要能起服务
+        pass
+
+    # 上次关掉服务时如果是开着的，重启后接着跑——否则「自动驾驶」会被一次
+    # 重启静默关停，而用户第二天打开页面才发现今天一天没盯盘。
+    try:
+        from alphaforge_api.autopilot import get_pilot
+
+        pilot = get_pilot()
+        if pilot.status().get("enabled"):
+            pilot.start()
+    except Exception:                       # noqa: BLE001
         pass
 
 

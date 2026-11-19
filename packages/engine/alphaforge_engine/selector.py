@@ -28,40 +28,43 @@ from .conditions import matches, normalize_all
 from .factor_board import get_board
 from .market import MarketEngine
 
-# 内置策略：只给了权重，条件留空。用户可「复制为自定义」再加条件
+# 内置策略：只给了权重，条件留空。用户可「复制为自定义」再加条件。
+#
+# 只留两条，理由不是「少好看」，而是**方向不同、不能混在一起评**：
+#   trend    —— 波段：顺着中期趋势持有三五天，赚的是延续；
+#   limitup  —— 打板：从昨日涨停池里选，赚的是次日溢价，亏起来也最狠。
+# 之前那四条（多因子质量价值 / 动量趋势突破 / 主力资金跟随 / 低波红利）
+# 都在 2025-11~2026-11 这段回测里亏钱（−7% ~ −45%，基准 −14.8%），
+# 而且彼此高度重合——同涨同跌，分散不了。与其留六条曲线互相解释，
+# 不如留两条能把「趋势」和「情绪」分开看的。
 STRATEGIES: list[dict] = [
     {
-        "id": "multifactor",
-        "name": "多因子质量价值",
-        "desc": "低估值 + 高 ROE + 动量确认，行业分散后取 Top-N",
-        "weights": {"ep": 0.22, "roe": 0.22, "mom60": 0.16, "vol20": 0.12,
-                    "mainflow": 0.12, "dividend": 0.08, "dist_high": 0.08},
+        "id": "trend",
+        "name": "趋势波段",
+        "desc": "中期动量 + 量能放大 + 贴近 52 周高点，持有 3~8 天吃趋势延续",
+        "weights": {"mom20": 0.34, "mom60": 0.26, "dist_high": 0.22,
+                    "volratio": 0.12, "vol20": 0.06},
         "filters": [],
-        "max_per_industry": 2,
+        "top_n": 3,
+        "max_per_industry": 1,
+        # 大盘在 20 日线下方不做新仓——实测这条对趋势类策略是净收益，
+        # 而且它管的是「该不该做」，不参与选股打分。
+        "market_ma": 20,
     },
     {
-        "id": "momentum",
-        "name": "动量趋势突破",
-        "desc": "中期动量 + 逼近 52 周高点 + 量能放大",
-        "weights": {"mom60": 0.32, "mom20": 0.22, "dist_high": 0.20, "volratio": 0.16, "vol20": 0.10},
+        "id": "limitup",
+        "name": "打板",
+        "desc": "昨日涨停池里选，按连板数与封成色排序，赚次日溢价",
+        "weights": {"limit_cnt": 0.55, "volratio": 0.25, "mom5": 0.20},
         "filters": [],
-        "max_per_industry": 3,
-    },
-    {
-        "id": "flow",
-        "name": "主力资金跟随",
-        "desc": "连续净流入 + 价量配合，回避高位滞涨",
-        "weights": {"mainflow": 0.40, "volratio": 0.20, "mom20": 0.18, "dist_high": 0.12, "vol20": 0.10},
-        "filters": [],
-        "max_per_industry": 2,
-    },
-    {
-        "id": "lowvol",
-        "name": "低波红利",
-        "desc": "低波动 + 高股息 + 稳定现金流，防御型底仓",
-        "weights": {"vol20": 0.34, "dividend": 0.30, "roe": 0.16, "ep": 0.12, "mom60": 0.08},
-        "filters": [],
-        "max_per_industry": 2,
+        "top_n": 3,
+        "max_per_industry": 1,
+        # 硬门槛：连板数 ≥ 1，只在昨日涨停的票里选。
+        # 没有它，涨停家数少于 top_n 的日子会补进普通股，那不是打板。
+        "pool_limit_min": 1,
+        # 打板不进择时：涨停潮本来就是情绪最热的时候，
+        # 用大盘均线挡它，等于在情绪起点把它关掉。
+        "market_ma": 0,
     },
 ]
 
@@ -103,6 +106,10 @@ def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
         "sort": merged.get("sort") or None,
         "top_n": max(1, min(int(top_n or merged.get("top_n") or 10), 40)),
         "max_per_industry": max(1, min(int(merged.get("max_per_industry") or 2), 20)),
+        # 两条撮合开关：池门槛（打板用）与择时（趋势用）。
+        # 不进 `weights`，也不参与打分，只是往下传给回测/模拟盘。
+        "pool_limit_min": max(0, min(int(merged.get("pool_limit_min") or 0), 5)),
+        "market_ma": max(0, min(int(merged.get("market_ma") or 0), 250)),
         "exclude_st": bool(merged.get("exclude_st", True)),
         "builtin": spec.get("id", "") in STRATEGY_MAP,
     }
@@ -310,7 +317,12 @@ def _rank_hint(sort_cfg: dict, implied: bool) -> str:
 
 
 def strategy_list(custom: list[dict] | None = None) -> list[dict]:
-    """内置 + 自定义。自定义带上完整 spec，前端编辑器直接可用。"""
+    """内置 + 自定义。自定义带上完整 spec，前端编辑器直接可用。
+
+    `top_n` 与两条撮合开关（`pool_limit_min` / `market_ma`）必须从策略定义里读，
+    不能写死 10——打板策略的 top_n=3 和「只在涨停池里选」是它成立的前提，
+    在这里被抹平成默认值，跑出来的就不是打板了。
+    """
     rows = [
         {
             "id": s["id"],
@@ -319,8 +331,10 @@ def strategy_list(custom: list[dict] | None = None) -> list[dict]:
             "weights": s["weights"],
             "filters": [],
             "sort": None,
-            "top_n": 10,
+            "top_n": s.get("top_n", 10),
             "max_per_industry": s.get("max_per_industry", 2),
+            "pool_limit_min": s.get("pool_limit_min", 0),
+            "market_ma": s.get("market_ma", 0),
             "exclude_st": True,
             "builtin": True,
         }

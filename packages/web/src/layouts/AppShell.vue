@@ -24,7 +24,7 @@ const store = useAppStore()
           </transition>
         </router-view>
         <footer class="foot">
-          <span>AlphaForge 0.6.0</span>
+          <span>AlphaForge 0.8.0</span>
           <span>行情来自新浪财经 / 腾讯行情 / 东方财富公开接口，本地 SQLite 缓存</span>
           <span>仅供研究，不构成投资建议</span>
         </footer>

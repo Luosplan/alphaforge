@@ -4,10 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 const routes = [
   { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { title: '总览', icon: 'DataBoard' } },
   { path: '/market', name: 'market', component: () => import('@/views/MarketView.vue'), meta: { title: '行情', icon: 'TrendCharts' } },
+  { path: '/hotspot', name: 'hotspot', component: () => import('@/views/HotspotView.vue'), meta: { title: '热点', icon: 'Sunny' } },
   { path: '/screener', name: 'screener', component: () => import('@/views/ScreenerView.vue'), meta: { title: '选股', icon: 'Filter' } },
   { path: '/signals', name: 'signals', component: () => import('@/views/SignalsView.vue'), meta: { title: '计划卡', icon: 'Tickets' } },
   { path: '/portfolio', name: 'portfolio', component: () => import('@/views/PortfolioView.vue'), meta: { title: '持仓', icon: 'Wallet' } },
   { path: '/lab', name: 'lab', component: () => import('@/views/LabView.vue'), meta: { title: '实验室', icon: 'MagicStick' } },
+  { path: '/watch', name: 'watch', component: () => import('@/views/WatchView.vue'), meta: { title: '盯盘', icon: 'View' } },
   // public：不需要登录；shell:false：不套侧栏与顶栏，整屏就一张登录卡
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { title: '登录', public: true, shell: false } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

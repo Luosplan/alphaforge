@@ -10,8 +10,10 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { name: 'overview', to: '/', label: '总览', icon: 'overview' },
   { name: 'market', to: '/market', label: '行情', icon: 'market' },
+  { name: 'hotspot', to: '/hotspot', label: '热点', icon: 'hotspot' },
   { name: 'screener', to: '/screener', label: '选股', icon: 'screener' },
   { name: 'signals', to: '/signals', label: '计划卡', icon: 'signals' },
   { name: 'portfolio', to: '/portfolio', label: '持仓', icon: 'portfolio' },
   { name: 'lab', to: '/lab', label: '实验室', icon: 'lab' },
+  { name: 'watch', to: '/watch', label: '盯盘', icon: 'watch' },
 ]

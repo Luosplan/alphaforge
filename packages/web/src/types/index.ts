@@ -879,6 +879,10 @@ export interface LabPlanCard extends PlanCard {
   live_price?: number | null
   /** 现价距止损上沿的百分比（负数为下方空间），逐票变化，是这张卡的风险成本 */
   stop_distance_pct?: number | null
+  /** 这张卡到底有没有真的挂出委托：待明日开盘成交 / 已持有 / 仅备选 */
+  order_state?: string
+  /** 与 order_state 配套的配色：brand 表示真挂了单，flat 表示没挂 */
+  order_tone?: string
   strategy_generation?: number
 }
 
@@ -890,6 +894,25 @@ export interface LabEvolutionBrief {
   history: LabEvoGeneration[]
   /** 样本外验证：最后一段没参与搜索的交易日里，进化后 vs 原始策略 */
   holdout?: LabHoldout | null
+  /** 该不该真把参数换上去：样本外 edge + 连续两次一致 + 风控门槛 */
+  adoption?: LabAdoption | null
+}
+
+/** 采纳门槛的一项判定 */
+export interface LabAdoptionCheck {
+  key: string
+  label: string
+  pass: boolean
+  value: string | number
+}
+
+/** 进化结果该不该采纳 */
+export interface LabAdoption {
+  action: 'adopt' | 'hold'
+  reason: string
+  checks: LabAdoptionCheck[]
+  edge: number
+  level: string
 }
 
 /** 每一代的最优个体：得分与它那一次回测的关键指标 */
@@ -1026,3 +1049,205 @@ export interface LabGenome {
   rebalance?: number
 }
 
+
+/* ---------------------------------------------------------------- 市场热点 */
+
+/** 热点板块。行业与概念共用同一形状，`kind` 区分来源。 */
+export interface HotSector {
+  code: string
+  name: string
+  kind: 'industry' | 'concept'
+  /** 综合热度 0–100，退潮相位的已经被扣过分 */
+  heat: number
+  /** 启动 / 加速 / 高潮 / 退潮 / 震荡 */
+  phase: string
+  /** 连涨天数 */
+  streak: number
+  /** 近 5 日阳线占比 % */
+  win_rate: number
+  /** 当前窗口涨幅（绝对值，用户看的就是这个） */
+  window_pct: number | null
+  /** 相对同类板块中位数的超额，排序真正用的是它 */
+  rel_pct?: number | null
+  pct_1d: number | null
+  pct_3d?: number | null
+  pct_5d?: number | null
+  pct_10d?: number | null
+  pct_20d?: number | null
+  /** 概念板块没有这几项，是 null 而不是 0 */
+  limit_up?: number | null
+  main_net?: number | null
+  volratio?: number | null
+  adv_ratio: number
+  /** 板块内上涨家数 */
+  up: number
+  count: number
+  lead?: string
+  lead_code?: string
+  leaders?: Array<{ name: string; code: string; boards: number; seal_fund: number }>
+}
+
+/** 涨停板池里的一只龙头股 */
+export interface HotLeader {
+  code: string
+  name: string
+  price: number
+  change_pct: number
+  amount: number
+  float_mv: number
+  turnover: number
+  /** 连板数，1 = 首板 */
+  boards: number
+  first_seal: string
+  last_seal: string
+  seal_fund: number
+  broken: number
+  industry: string
+  stat_days: number
+  stat_count: number
+  score: number
+}
+
+/** 炒作主线：一个题材词根 + 命中它的板块 */
+export interface HotTheme {
+  theme: string
+  /** 共振板块数，越多说明这条线越被认可 */
+  count: number
+  heat: number
+  avg_heat: number
+  score: number
+  /** 命中板块的窗口涨幅均值 */
+  pct: number
+  best_phase: string
+  sectors: Array<{
+    name: string
+    kind: 'industry' | 'concept'
+    heat: number | null
+    pct: number | null
+    phase: string | null
+    lead: string | null
+  }>
+  leaders: string[]
+}
+
+export interface HotspotData {
+  trade_date: string | null
+  window: number
+  sectors: HotSector[]
+  industry: HotSector[]
+  concept: HotSector[]
+  /** 概念板块已经攒了几个交易日的快照，1 表示还没有历史 */
+  concept_days: number
+  themes: HotTheme[]
+  leaders: {
+    date: string
+    total: number
+    top: HotLeader[]
+    by_sector: Record<string, HotLeader[]>
+    /** 炸板率 %，越高说明封板越不结实 */
+    broken_rate: number
+    max_boards: number
+    available: boolean
+    down_total: number
+    /** true 表示上游取不到，改用日线回溯：没有封单资金与首封时间 */
+    local?: boolean
+  }
+  breadth: {
+    up: number | null
+    down: number | null
+    limit_up: number | null
+    limit_down: number | null
+    amount: number | null
+  }
+  advice?: string
+}
+
+/** 盘中盯盘的一条标的判定 */
+export interface WatchItem {
+  code: string
+  stance: '持有' | '减仓' | '观察' | '放弃'
+  note: string
+}
+
+/** 一轮盘中分析的完整结果 */
+export interface WatchDoc {
+  at: string
+  as_of: string
+  snapshot_rows: number
+  fresh: boolean
+  market: {
+    上涨: number
+    下跌: number
+    涨停: number
+    跌停: number
+    涨幅中位数: number
+    成交额亿: number
+    沪深300: number | null
+  }
+  analysis: {
+    source: 'llm' | 'rule'
+    mood: string
+    summary: string
+    items: WatchItem[]
+    note?: string
+  }
+  holdings: Array<Record<string, unknown>>
+  candidates: Array<Record<string, unknown>>
+}
+
+/** 收盘复盘 */
+export interface ReviewDoc {
+  at: string
+  as_of: string
+  text: {
+    source: 'llm' | 'rule'
+    headline: string
+    points: string[]
+    tomorrow: string[]
+    note?: string
+  }
+  market: Record<string, number>
+  account: Record<string, number>
+}
+
+/** 模型接入状态。`last_error` 是「配了 key 但调不通」的唯一线索 */
+export interface LlmStatus {
+  enabled: boolean
+  base_url: string
+  model: string
+  key_tail: string
+  last_error: string | null
+  last_error_at: string | null
+  last_ok_at: string | null
+}
+
+/** 模型连通性自测结果 */
+export interface LlmTestResult {
+  ok: boolean
+  reply: string | null
+  status: LlmStatus
+  error: string | null
+}
+
+/** 自动驾驶状态 */
+export interface AutopilotState {
+  enabled: boolean
+  llm_enabled: boolean
+  llm?: LlmStatus
+  started_at: string | null
+  last_tick: string | null
+  last_intraday: string | null
+  last_eod_date: string | null
+  running: string | null
+  watch: WatchDoc | null
+  review: ReviewDoc | null
+  eod: {
+    at: string
+    date: string
+    steps: Array<Record<string, unknown>>
+    evolved?: Array<Record<string, unknown>>
+    error?: string
+  } | null
+  history: Array<{ at: string; mood: string; summary: string; source: string }>
+  error: string | null
+}

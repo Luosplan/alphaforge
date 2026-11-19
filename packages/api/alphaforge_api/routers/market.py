@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from alphaforge_core.indicators import compute_all
+from alphaforge_engine import hotspot as hotspot_engine
 from alphaforge_engine.panorama import global_book, index_book, market_temperature
 from alphaforge_engine.signal import active_plans
 
@@ -172,6 +173,20 @@ def ranking(request: Request, kind: str = Query("gainers", pattern="^(gainers|lo
 @router.get("/sector-flow")
 def sector_flow(request: Request, limit: int = Query(12, ge=1, le=30)):
     return ok(market().sector_flow()[:limit])
+
+
+@router.get("/hotspot")
+def hotspot(request: Request,
+            window: int = Query(5, description="涨幅窗口：1/3/5/10/20 日"),
+            limit: int = Query(12, ge=3, le=40)):
+    """今日热点：板块榜、龙头、周期相位、炒作主线。
+
+    概念板块的历史是逐日累积的，刚建库时多窗口涨幅为 `null`（不是 0），
+    `concept_days` 会告诉前端实际攒了几天。
+    """
+    if window not in hotspot_engine.WINDOWS:
+        window = 5
+    return ok(hotspot_engine.build(market(), window=window, limit=limit))
 
 
 @router.get("/stock-flow")

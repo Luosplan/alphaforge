@@ -47,7 +47,12 @@ TRADING_DAYS = 252
 # 于是声明 top_n=10 的策略实际按 8 回测，而进化基线按 10 跑——两个数字
 # 并排显示却不可比。这是**成交规则**的变化（直接改变持仓数与单票仓位），
 # 必须算新版本。
-MODEL_VERSION = 3
+# v4：TP1 减半后剩余仓位止损上移到成本价（此前止损一动不动）。
+# 这直接改变每笔交易的盈亏分布，不是显示层的调整，必须算新版本——
+# 否则 v3 存下来的回测结果会和 v4 并排显示却不可比。
+# v5：单票上限随持股数放宽（`single_cap`）。持股 < 6 只时单笔能买更多，
+# 总仓位、每笔盈亏、回撤全部改变——同样是成交规则变化，必须算新版本。
+MODEL_VERSION = 5
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -64,6 +69,7 @@ FACTORS: dict[str, tuple[str, int]] = {
     "volratio": ("量比", 1),
     "mainflow": ("主力净流入占比", 1),
     "main_net": ("主力净流入", 1),
+    "limit_cnt": ("连板数", 1),
 }
 
 # 只有当前值、没有历史序列的字段。写清原因是这个模块的义务：
@@ -90,6 +96,17 @@ DEFAULTS: dict = {
     "tp1_atr": 2.6,       # 第一目标 = 成交价 + 2.6 × ATR，减半
     "tp2_atr": 5.0,       # 第二目标 = 成交价 + 5.0 × ATR，清剩余
     "time_stop": 20,      # 持有 20 个交易日仍未触发任何一档 → 时间止损
+    # TP1 减半后是否把剩余仓位的止损上移到成本价。默认开。
+    # 它不是可搜索项（不在 `paper.PARAM_KEYS` / `harness.BOUNDS` 里）——
+    # 这是修正一处撮合缺陷，不是又一个待调参数。留这个键是为了 A/B 对照。
+    "breakeven_after_tp1": 1,
+    # 择时：0 = 一直满仓（历史口径）；20 = 沪深300 在 20 日线之上才开新仓。
+    # 同样不进基因组——它管的是「该不该做」而不是「做什么」，和选股参数
+    # 混在一起搜，等于让搜索去挑一段行情的运气。
+    "market_ma": 0,
+    # 选股池硬门槛：连板数 ≥ 该值才进候选。0 = 不设门槛（默认）。
+    # 打板类策略靠它把「涨停池之外」的票挡在外面，否则涨停股不够量时会凑数。
+    "pool_limit_min": 0,
     # 已废弃：调仓周期。回测现在**每天**扫描空缺仓位，与模拟盘（`paper.py`
     # 的 `_next_plans` 每天跑一次）保持同一套进场规则。保留这个键只是为了让
     # 早先落盘的 params 还能被读进来，不参与撮合、也不再进搜索基因组。
@@ -103,6 +120,26 @@ MAX_AMOUNT_SHARE = 0.02
 # 目标仓位。单票上限与「等权 1/top_n」取小，避免 top_n=3 时一把梭到 33%
 MAX_SINGLE = RISK_LIMITS["max_single_weight"]
 MAX_GROSS = RISK_LIMITS["max_gross_exposure"]
+
+
+def single_cap(top_n: int) -> float:
+    """单票权重上限，随持股数放宽到「打满总仓位刚好够用」。
+
+    15% 的固定单票上限是给 10 只以上的组合用的。放到 2~3 只的组合上，它会
+    变成总仓位的隐形天花板：`top_n=3` 最多只能买到 45%，剩下 55% 永远躺现金——
+    这不是「风险控制」，是把策略的收益和回撤同时腰斩，而且「平均仓位 ≥ 50%」
+    的采纳门槛从此再也过不去。
+
+    这不是推测，是实测出来的：放开 `top_n` 让进化自己选，它把趋势波段从 3
+    只顶到 7 只——7 × 15% ≈ 105% 刚好打满。搜索没在作弊，它在解「怎么才
+    能把钱投出去」这道题。真正该修的是单票上限，不是把 top_n 钉死。
+
+    `MAX_GROSS / top_n` 就是「top_n 只等权时刚好用满总仓位」的单票权重；
+    持股数 ≥ 6 时它已经 ≤ 15%，与原来的固定上限**完全一致**——所以这个改动
+    只影响集中持仓（< 6 只），常规策略的每个数字都不变。
+    """
+    n = max(1, int(top_n))
+    return max(MAX_SINGLE, min(1.0, MAX_GROSS / n))
 
 
 # --------------------------------------------------------------------- 面板
@@ -120,7 +157,8 @@ class Panel:
 
     __slots__ = ("trade_date", "dates", "codes", "names", "industries", "st",
                  "limit", "bars", "bar", "z", "eligible", "coverage",
-                 "pool_size", "universe_size", "min_amount", "dropped_flow")
+                 "pool_size", "universe_size", "min_amount", "dropped_flow",
+                 "bench")
 
     def __init__(self) -> None:
         self.trade_date: str = ""
@@ -137,6 +175,10 @@ class Panel:
         self.coverage: dict[str, float] = {}
         self.pool_size: int = 0
         self.universe_size: int = 0
+        # 沪深300 的 (日期, 收盘) 序列，比 `dates` 多取 60 根做均线预热。
+        # 只存价格、不存「是否在均线之上」——均线周期是回测参数，
+        # 面板是所有基因组共用的，把判断提前固化进面板会让 market_ma 变成摆设。
+        self.bench: list[tuple[str, float]] = []
         self.min_amount: float = 0.0
         self.dropped_flow: list[str] = []
 
@@ -251,7 +293,7 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
 
     for ci, code in enumerate(codes):
         s = raw.get(code)
-        bars = _code_bars(s, pos, n_cal) if s else None
+        bars = _code_bars(s, pos, n_cal, panel.limit[ci]) if s else None
         if bars is None:
             panel.bars.append(_empty_bars())
             continue
@@ -276,7 +318,41 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
         panel.eligible.append(row)
 
     _cross_section(panel)
+    panel.bench = _bench_series(engine, len(panel.dates))
     return panel
+
+
+def _bench_series(engine, days: int) -> list[tuple[str, float]]:
+    """沪深300 的 (日期, 收盘)，比回测区间多取 60 根供均线预热。
+
+    为什么要有这个：`avg_exposure` 一直在 73~80%，意味着策略全年满仓做多。
+    基准这一年 −14.8%，满仓多头必然跟着亏——这跟选股好坏无关。得把
+    「选股有没有超额」和「该不该满仓」拆开看：multifactor 满仓时超额 +6.6%
+    却年化 −8.3%，问题在仓位，不在因子。
+
+    取不到指数时返回空列表，上层据此不做干预，避免因为缺数据把回测变成空仓。
+    """
+    try:
+        rows = engine.repo.index_daily("000300.SH", days + 60)
+    except Exception:                                    # noqa: BLE001
+        return []
+    out = [(b["date"], float(b["close"])) for b in (rows or []) if b.get("close")]
+    out.sort(key=lambda r: r[0])
+    return out
+
+
+def _regime_ok(panel, ma: int) -> list[bool] | None:
+    """每个交易日「沪深300 是否在 `ma` 日线之上」。`ma<=0` 或没有指数数据返回 None。"""
+    if ma <= 0 or not panel.bench:
+        return None
+    ok_by_date, window, acc = {}, [], 0.0
+    for day, px in panel.bench:
+        window.append(px)
+        acc += px
+        if len(window) > ma:
+            acc -= window.pop(0)
+        ok_by_date[day] = px >= acc / len(window)
+    return [ok_by_date.get(d, True) for d in panel.dates]
 
 
 def _empty_bars() -> dict:
@@ -284,8 +360,15 @@ def _empty_bars() -> dict:
             "pct": [], "atr": [], "f": {}}
 
 
-def _code_bars(s: dict, pos: dict[str, int], n_cal: int) -> dict | None:
-    """把一只票的日线摊到公共日历上，算好复权价、涨跌幅、ATR 与因子。"""
+def _code_bars(s: dict, pos: dict[str, int], n_cal: int,
+               limit: float = 0.10) -> dict | None:
+    """把一只票的日线摊到公共日历上，算好复权价、涨跌幅、ATR 与因子。
+
+    `limit` 是该票的涨跌停幅度（主板 10% / 创业板·科创 20% / 北交所 30% /
+    ST 5%），用来判断涨停与连板。复权价算出来的 pct 有零点几个百分点的偏差，
+    所以判涨停用 `pct >= limit * 0.997` 而不是 `>= limit`——不留这点容差，
+    除权日附近的涨停会被漏掉，连板数跟着断。
+    """
     rows: list[tuple[int, float, float, float, float, float, float]] = []
     for i, day in enumerate(s["dates"]):
         j = pos.get(day.isoformat())
@@ -327,6 +410,14 @@ def _code_bars(s: dict, pos: dict[str, int], n_cal: int) -> dict | None:
         round(main[i] / amt[i] * 100, 4) if amt[i] > 0 else 0.0 for i in range(m)
     ]
     f["main_net"] = [round(main[i] / 1e8, 4) for i in range(m)]
+    # 连板数：当日及之前连续涨停的天数。打板策略的唯一硬门槛——
+    # 没有它，涨停股不够时策略会退化成「随便买几只普通股」。
+    thr = limit * 0.997
+    f["limit_cnt"] = [0.0] * m
+    run = 0
+    for i in range(m):
+        run = run + 1 if pct[i] >= thr else 0
+        f["limit_cnt"][i] = float(run)
 
     return {"date_idx": idx, "o": o, "h": h, "l": l, "c": c, "amt": amt,
             "pct": pct, "atr": _atr(h, l, c, 14), "f": f}
@@ -474,7 +565,7 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # `spec.get("top_n") or DEFAULTS["top_n"]`（这条策略声明的是 10），
     # 而这里原来只看 DEFAULTS（8）。结果同一条策略的「回测」和
     # 「进化原始策略」两个数字并排挂在同一个抽屉里，用的却是两套参数。
-    for key in ("top_n", "max_per_industry"):
+    for key in ("top_n", "max_per_industry", "pool_limit_min"):
         value = spec.get(key)
         if value is not None:
             cfg[key] = value
@@ -548,6 +639,7 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
 
     prof = normalize_profile(None, profile)
     bench = _benchmark(engine, panel.dates)
+    regime = _regime_ok(panel, int(cfg.get("market_ma") or 0))
 
     cash = capital
     positions: dict[int, dict] = {}
@@ -581,7 +673,7 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
                 continue
             if (equity_now - cash) / equity_now > MAX_GROSS:
                 continue
-            weight = min(1.0 / cfg["top_n"], MAX_SINGLE)
+            weight = min(1.0 / cfg["top_n"], single_cap(cfg["top_n"]))
             budget = min(equity_now * weight, cash)
             fill = _slipped(o, "BUY", prof)
             shares = _shares(budget, fill, bars["amt"][p])
@@ -642,7 +734,10 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
 
             if lo <= pos["stop"] and _can_sell(bars, p, panel.limit[ci]):
                 fill = min(pos["stop"], o) if o < pos["stop"] else pos["stop"]
-                cash, rec = _sell(panel, ci, pos, d, fill, prof, cash, "止损", seq)
+                # TP1 之后止损已经上移到成本价，这笔记成「保本止损」而不是「止损」：
+                # 两者的盈亏含义完全不同，混在一起看会误判胜率与盈亏比。
+                reason = "保本止损" if pos["tp1_done"] and pos["stop"] >= pos["cost"] else "止损"
+                cash, rec = _sell(panel, ci, pos, d, fill, prof, cash, reason, seq)
                 seq += 1
                 turnover_amount += rec["amount"]
                 trades.append(rec)
@@ -660,6 +755,13 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
                     trades.append(rec)
                     pos["shares"] -= part
                     pos["tp1_done"] = True
+                    # TP1 减半后剩余仓位止损上移到成本价。不上移的话，「吃了 TP1
+                    # 再跌回原点」是 半仓赚 2.6ATR + 半仓亏 2.2ATR = 净赚 0.2ATR，
+                    # 而一次纯亏是 −2.2ATR——盈利被削成零头、亏损全额承担，
+                    # 盈亏比被锁死在 1 以下（实测 momentum 0.82），胜率 51% 也必亏。
+                    # 上移之后同一段行情最差是 +1.3ATR，盈亏比才可能过 1。
+                    if cfg.get("breakeven_after_tp1", 1):
+                        pos["stop"] = max(pos["stop"], pos["cost"])
                     continue
             if pos["tp1_done"] and hi >= pos["tp2"]:
                 fill = o if o >= pos["tp2"] else pos["tp2"]
@@ -678,7 +780,10 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
         # 很小、Calmar 刷到 5 以上——那不是选股好，是账户经常空着。
         # 现在按「持仓上限 − 现有持仓」算空缺，和模拟盘完全一致。
         if d < panel.n - 1:
-            slots = max(0, cfg["top_n"] - len(positions))
+            # 择时开关：大盘不在均线之上就不开新仓（已有持仓照常按止损/止盈走）。
+            # `market_ma=0` 或没有指数数据时 `regime` 为 None，完全不干预。
+            regime_ok = regime is None or (d < len(regime) and regime[d])
+            slots = max(0, cfg["top_n"] - len(positions)) if regime_ok else 0
             if slots:
                 held = set(positions)
                 picks = _select(panel, d, weights, cfg, held, slots)
@@ -763,17 +868,28 @@ def _sell(panel: Panel, ci: int, pos: dict, d: int, price: float,
 
 def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
             held: set[int], limit: int) -> list[tuple[int, float]]:
-    """当日横截面打分 → 行业分散 → 取前 `limit` 个（已持有的不重复买）。"""
+    """当日横截面打分 → 行业分散 → 取前 `limit` 个（已持有的不重复买）。
+
+    `cfg["pool_limit_min"]` > 0 时先过一道硬门槛：只在连板数 ≥ 该值的票里选。
+    打板策略必须靠这道门槛——单纯把连板数当因子加权，在涨停股少于 top_n 的
+    日子会「凑数」买进一串连板数为 0 的普通股，那不是策略跑偏，是根本没在打板。
+    """
     if limit <= 0:
         return []
     row_ok = panel.eligible[d]
     zs = {k: panel.z[k][d] for k in weights if k in panel.z}
     if not zs:
         return []
+    pool_min = float(cfg.get("pool_limit_min") or 0.0)
     scored: list[tuple[int, float]] = []
     for ci in range(panel.ncodes):
         if not row_ok[ci] or ci in held:
             continue
+        if pool_min > 0:
+            p = panel.bar[d][ci]
+            col = panel.bars[ci]["f"].get("limit_cnt") if p >= 0 else None
+            if not col or col[p] < pool_min:
+                continue
         score = 0.0
         for key, w in weights.items():
             col = zs.get(key)
@@ -899,10 +1015,11 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
     notes.append("行业分类与 ST 标记为当前值，不是历史值；现金按当日可用处理，未模拟 T+1 交收")
     if avg_exposure < 0.6:
         notes.append(
-            f"平均仓位仅 {avg_exposure:.0%}，原因有两个：一是 `top_n={cfg['top_n']}` 时"
-            f"单票被 {MAX_SINGLE:.0%} 的单票上限压住，满仓也只能到 "
-            f"{min(1.0, cfg['top_n'] * MAX_SINGLE):.0%}；二是 TP1 减半之后腾出来的现金"
-            f"不会立刻补新仓，要等某个标的整只退出才有空位。"
+            f"平均仓位仅 {avg_exposure:.0%}，主要原因有两个：一是 TP1 减半之后腾出来的"
+            f"现金不会立刻补新仓，要等某个标的整只退出才有空位（`top_n={cfg['top_n']}`，"
+            f"单票上限 {single_cap(cfg['top_n']):.0%}，理论满仓 "
+            f"{min(1.0, cfg['top_n'] * single_cap(cfg['top_n'])):.0%}）；"
+            f"二是这一段的信号数本来就不够填满仓位。"
             f"回撤浅有一部分来自「钱没买满」，不是选股更稳")
 
     return {

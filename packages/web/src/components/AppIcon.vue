@@ -34,6 +34,17 @@ withDefaults(defineProps<{ name: string; collapsed?: boolean }>(), { collapsed: 
       <path d="M7.2 15.4l4-5.1 3 2.7 4.4-5.6" />
     </template>
 
+    <!-- 热点：火苗。外轮廓一条，内焰一条，足够在 16px 下辨出「火」 -->
+    <template v-else-if="name === 'hotspot'">
+      <path d="M12 2.6c3.4 3.6 6.2 6.4 6.2 10.4a6.2 6.2 0 0 1-12.4 0c0-2.1 1-3.7 2.4-5.3.4 1.5 1.2 2.4 2.2 2.6-.5-3 .4-5.6 1.6-7.7Z" />
+      <path d="M12 20.6a2.9 2.9 0 0 0 2.9-2.9c0-1.7-1.5-3.1-2.9-4.8-1.4 1.7-2.9 3.1-2.9 4.8a2.9 2.9 0 0 0 2.9 2.9Z" />
+    </template>
+    <template v-else-if="name === 'watch'">
+      <!-- 盯盘：一只眼睛 + 瞳孔，表示「一直看着」 -->
+      <path d="M2.4 12S6 5.8 12 5.8 21.6 12 21.6 12 18 18.2 12 18.2 2.4 12 2.4 12Z" />
+      <circle cx="12" cy="12" r="2.9" />
+    </template>
+
     <!-- 选股：漏斗 -->
     <template v-else-if="name === 'screener'">
       <path d="M3.4 4.6h17.2l-6.6 7.5v6.3l-4 2.2v-8.5L3.4 4.6Z" />

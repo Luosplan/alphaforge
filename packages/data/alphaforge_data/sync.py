@@ -68,6 +68,7 @@ STEP_WEIGHT: dict[str, float] = {
     "flow": 5,
     "index": 1,
     "factor": 3,
+    "sector": 1,
 }
 
 _SUFFIX = {"6": "SH", "0": "SZ", "3": "SZ", "4": "BJ", "8": "BJ", "9": "BJ"}
@@ -153,7 +154,8 @@ class Syncer:
 
     # ------------------------------------------------------------------ 入口
     def run(self, steps: Iterable[str] | str | None = None) -> dict:
-        order = ["universe", "fundamentals", "bonus", "daily", "flow", "index", "factor"]
+        order = ["universe", "fundamentals", "bonus", "daily", "flow", "index",
+                 "factor", "sector"]
         wanted = order if not steps or steps == "all" else (
             [steps] if isinstance(steps, str) else [s for s in order if s in set(steps)]
         )
@@ -224,6 +226,37 @@ class Syncer:
         conn.execute("COMMIT")
         self._fill_pinyin(rows)
         dbm.set_meta(conn, "universe_sync", now)
+        return len(rows)
+
+    def refresh_snapshot(self) -> int:
+        """只刷实时快照，不动 `symbol` 与拼音。
+
+        盘中每 5 分钟轮询用这个：`step_universe` 会连带重算 5000+ 只票的拼音
+        （5000 次 UPDATE + 事务），跑一遍好几秒，而盘中只想要「此刻的价格」。
+        返回写入行数；上游返回空时返回 0 而不是抛错——盘中一次失败不该
+        让调度器整轮挂掉。
+        """
+        rows = sina.snapshot()
+        if not rows:
+            return 0
+        conn = self.repo.conn
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        conn.execute("BEGIN")
+        for r in rows:
+            conn.execute(
+                "INSERT INTO snapshot(code, price, prev_close, open, high, low, change, "
+                "change_pct, volume, amount, turnover, total_mv, float_mv, ts) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(code) DO UPDATE SET price=excluded.price, "
+                "prev_close=excluded.prev_close, open=excluded.open, high=excluded.high, "
+                "low=excluded.low, change=excluded.change, change_pct=excluded.change_pct, "
+                "volume=excluded.volume, amount=excluded.amount, turnover=excluded.turnover, "
+                "total_mv=excluded.total_mv, float_mv=excluded.float_mv, ts=excluded.ts",
+                (r["code"], r["price"], r["prev_close"], r["open"], r["high"], r["low"],
+                 r["change"], r["change_pct"], r["volume"], r["amount"], r["turnover"],
+                 r["total_mv"], r["float_mv"], now),
+            )
+        conn.execute("COMMIT")
         return len(rows)
 
     def _fill_pinyin(self, rows: list[dict]) -> None:
@@ -513,12 +546,21 @@ class Syncer:
                 # 具体在重建第几只用 message 说明
                 self.emit("daily", total, total, message=f"除权重建 {min(i + 120, len(rebuild))}/{len(rebuild)}")
 
-        # 最新交易日的成交额改用快照的真实值
+        # 最新交易日的成交额改用快照的真实值（`_est_amount` 是估算，
+        # 快照给的是交易所口径的真实成交额）。
+        #
+        # **必须校验日期**。原来只写了 `WHERE date=(SELECT MAX(date) FROM daily)`，
+        # 隐含假设「跑同步时最新日线就是今天」。盘中跑同步时这个假设不成立：
+        # 今天是 11-19 但最新日线还是 11-18，于是把今天开盘 8 分钟的成交额
+        # 写进了昨天的日线——涨跌家数没变，只有成交额悄悄缩水到七分之一，
+        # 极难发现（实测把 13833 亿写成 1943 亿）。
+        # 加一条「快照日期 == 日线日期」才更新，盘中跑就保留估算值。
         conn = self.repo.conn
         conn.execute(
             "UPDATE daily SET amount=COALESCE((SELECT s.amount FROM snapshot s "
             "WHERE s.code=daily.code AND s.amount>0), amount) "
-            "WHERE date=(SELECT MAX(date) FROM daily)"
+            "WHERE date=(SELECT MAX(date) FROM daily) "
+            "  AND date=(SELECT substr(MAX(ts), 1, 10) FROM snapshot)"
         )
         dbm.set_meta(conn, "daily_sync", dt.datetime.now().isoformat(timespec="seconds"))
         self.emit("daily", total, total, message="日线完成")
@@ -660,6 +702,75 @@ class Syncer:
         return written
 
     # ------------------------------------------------------------------ 因子
+    # ------------------------------------------------------------------ 板块
+    def step_sector(self, run_id: int = 0) -> int:
+        """概念板块目录 + 成分股映射。
+
+        **不抓行情**，只抓「有哪些概念」和「每个概念由哪些票组成」。拿到映射
+        之后，板块的当日表现和多周期涨幅全部由 `Repo` 用本地 604 天日线现算
+        ——这比拉板块 K 线稳得多，也不会碰到 `push2his` 的整机限频。
+
+        成分股映射变化很慢（一个概念几个月才调整几只票），所以只在明显缺失
+        时补：成员数不到应有七成的才重抓。否则每天白跑 250 次请求。
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from .sources import sina as sina_src
+
+        try:
+            cats = sina_src.concept_list()
+        except Exception as exc:                       # noqa: BLE001
+            self.log(f"[sector] 概念目录取数失败：{type(exc).__name__}: {exc}")
+            return 0
+        if not cats:
+            self.log("[sector] 概念目录返回空，本次跳过")
+            return 0
+
+        conn = self.repo.conn
+        stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.executemany(
+            "INSERT INTO sector(code, name, kind, updated) VALUES(?,?, 'concept', ?) "
+            "ON CONFLICT(code) DO UPDATE SET name=excluded.name, "
+            "kind='concept', updated=excluded.updated",
+            [(c["code"], c["name"], stamp) for c in cats])
+        conn.commit()
+
+        have = {code: n for code, n in conn.execute(
+            "SELECT sector_code, COUNT(*) FROM sector_member GROUP BY sector_code")}
+        todo = [c for c in cats
+                if have.get(c["code"], 0) < max(2, int(c["count"] * 0.7))]
+        if not todo:
+            self.log(f"[sector] {len(cats)} 个概念，成分股映射已完整")
+            return len(cats)
+
+        self.emit("sector", 0, len(todo), message=f"抓 {len(todo)} 个概念成分股")
+
+        def work(cat: dict) -> tuple[str, list[str]]:
+            try:
+                return cat["code"], sina_src.concept_members(cat["code"])
+            except Exception:                          # noqa: BLE001
+                return cat["code"], []
+
+        added = 0
+        with ThreadPoolExecutor(max_workers=max(1, self.workers)) as pool:
+            # 迭代在主线程，连接不会跨线程——Repo 是 thread-local 连接，
+            # 一旦让 worker 直接写库就会踩到「SQLite objects created in a
+            # thread can only be used in that same thread」。
+            for i, (code, members) in enumerate(pool.map(work, todo), 1):
+                if members:
+                    conn.execute("DELETE FROM sector_member WHERE sector_code=?", (code,))
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO sector_member(sector_code, code) "
+                        "VALUES(?,?)", [(code, m) for m in members])
+                    added += len(members)
+                if i % 20 == 0:
+                    conn.commit()
+                    self.emit("sector", i, len(todo), message=f"{i}/{len(todo)} 个概念")
+        conn.commit()
+        self.repo._sector_stamp = None                  # 让下一次读重新建索引
+        self.log(f"[sector] {len(cats)} 个概念，补 {len(todo)} 个成员映射，共 {added} 条")
+        return added
+
     def step_factor(self, run_id: int = 0, *, trade_date: str | None = None) -> int:
         conn = self.repo.conn
         date = trade_date or conn.execute("SELECT MAX(date) FROM daily").fetchone()[0]

@@ -43,7 +43,7 @@
    同一个窄簇里，144 次评估全落在同一片山坡上，等于把预算全花在精修一个
    从没被验证过的起点。
 2. **整数基因的变异步长要按区间宽度定标**。初版固定 ±1 步，而 `time_stop`
-   的区间是 5~60、`top_n` 是 3~15：好解的取值经常在区间的另一头，靠 ±1
+   的区间是 5~60：好解的取值经常落在区间的另一头，靠 ±1
    漂移要连着十几代都抽中同一个方向才走得到——实际走不到。现在步长 =
    区间宽度 × sigma，前期一步能跨小半段，后期自动收成 ±1 做精修。
    顺带把 `rebalance`（调仓周期）整个基因删掉了：进场改成「每天补空缺
@@ -62,6 +62,17 @@
 必然的。所以跑完之后额外做一次诊断：拿最后 30% 的交易日**只跑一次**，
 比较「进化后的基因组」和「原始策略」在这段的差距。这段数据没参与搜索，
 它才是判断「这组参数是真有效还是拟合了噪声」的唯一依据。
+
+哪些参数不许搜索动
+------------------
+仓位数量（`top_n`）和同行业上限不是调参旋钮，是策略的定义。第一轮进化把
+趋势波段的 `top_n` 从 3 推到 7、同行业上限从 1 推到 4——回测分数确实变好了，
+但那是「另一条策略」，不是用户要的那条。搜索只会优化你给它的目标函数，
+它不知道「每天只买 2~3 只」是资金规模决定的硬约束。
+
+所以区间由 `bounds_for(spec)` 按策略声明收窄：`top_n` 只能往下走（更集中），
+`max_per_industry` 最多到 `top_n - 1`。剩下的权重、ATR 三档、时间止损
+才是真正交给搜索的部分。
 """
 
 from __future__ import annotations
@@ -69,13 +80,13 @@ from __future__ import annotations
 import random
 import time
 
-from .backtest import DEFAULTS, build_panel, run_backtest, slice_panel
+from .backtest import DEFAULTS, MODEL_VERSION, build_panel, run_backtest, slice_panel
 
 # 参与搜索的基因。key 与 `backtest.FACTORS` 对齐，权重先取正数再归一化
 WEIGHT_GENES: tuple[str, ...] = ("mom5", "mom20", "mom60", "vol20", "dist_high", "volratio")
 
 BOUNDS: dict[str, tuple[float, float]] = {
-    "top_n": (3, 15),
+    "top_n": (2, 15),
     "max_per_industry": (1, 4),
     "stop_atr": (1.0, 4.0),
     "tp1_atr": (1.2, 5.0),
@@ -86,6 +97,34 @@ BOUNDS: dict[str, tuple[float, float]] = {
     # 把「钱没买满」当成降低回撤的手段，实测能把平均仓位压到 25%。
     # 一个不做事、只帮倒忙的基因不该留在搜索空间里。
 }
+
+# 上面是**兜底**区间，实际跑的时候要用 `bounds_for(spec)`：
+# `top_n` 是仓位数量，它属于「用户意图」而不是「搜索自由度」——
+# 用户说了每天只买 2~3 只，搜索就没资格把它顶到 7 只。实测第一轮进化把
+# 趋势波段的 top_n 从 3 推到 7、max_per_industry 从 1 推到 4，等于交出一条
+# 「七只票、四只押同一个行业」的策略，回测分数更好看，但那已经是另一条策略了，
+# 不是在用户要的那条策略上做优化。
+
+
+def bounds_for(spec: dict | None = None) -> dict[str, tuple[float, float]]:
+    """按策略声明收窄搜索区间。
+
+    - `top_n` 上限 = 策略声明值：进化只能把持仓变少（更集中），不能变多。
+    - `max_per_industry` 上限 = `top_n - 1`（不超过 4）：只有 2~3 个仓位时，
+      允许「全部押同一个行业」等于把行业上限这个保护整个作废——那正是小账户
+      最容易被一次板块退潮打穿的地方。
+
+    两个上限都取 `min`，所以策略声明得更严时以策略为准。
+    """
+    spec = dict(spec or {})
+    declared = int(spec.get("top_n") or DEFAULTS["top_n"])
+    top_hi = max(int(BOUNDS["top_n"][0]), declared)
+    ind_hi = max(1, min(int(BOUNDS["max_per_industry"][1]), top_hi - 1))
+    return {
+        **BOUNDS,
+        "top_n": (min(int(BOUNDS["top_n"][0]), top_hi), top_hi),
+        "max_per_industry": (int(BOUNDS["max_per_industry"][0]), ind_hi),
+    }
 
 INT_GENES = frozenset({"top_n", "max_per_industry", "time_stop"})
 
@@ -119,8 +158,8 @@ def seed_genome(spec: dict | None = None) -> dict:
     }
 
 
-def _clamp(name: str, value: float) -> float | int:
-    low, high = BOUNDS[name]
+def _clamp(name: str, value: float, bounds: dict | None = None) -> float | int:
+    low, high = (bounds or BOUNDS)[name]
     value = min(max(float(value), low), high)
     return int(round(value)) if name in INT_GENES else round(value, 2)
 
@@ -135,7 +174,7 @@ def _normalize(weights: dict[str, float]) -> dict[str, float]:
 
 
 def random_genome(rng: random.Random, base: dict, spread: float = 0.45,
-                  wide: bool = False) -> dict:
+                  wide: bool = False, bounds: dict | None = None) -> dict:
     """撒一个基因组。
 
     `wide=False`：在起点附近随机（权重乘 1±spread 的对数正态扰动）。
@@ -143,19 +182,20 @@ def random_genome(rng: random.Random, base: dict, spread: float = 0.45,
     `expovariate` 归一化。两种都要有：近种子撒点负责精修，全空间撒点
     负责「先证明起点不是最好」，缺了后者就会像初版那样在一个山坡上原地打磨。
     """
+    bounds = bounds or BOUNDS
     if wide:
         raw = {k: rng.expovariate(1.0) for k in WEIGHT_GENES}
         return _repair({
             "weights": _normalize(raw),
-            "top_n": rng.randint(int(BOUNDS["top_n"][0]), int(BOUNDS["top_n"][1])),
-            "max_per_industry": rng.randint(int(BOUNDS["max_per_industry"][0]),
-                                            int(BOUNDS["max_per_industry"][1])),
-            "stop_atr": round(rng.uniform(*BOUNDS["stop_atr"]), 2),
-            "tp1_atr": round(rng.uniform(*BOUNDS["tp1_atr"]), 2),
-            "tp2_atr": round(rng.uniform(*BOUNDS["tp2_atr"]), 2),
-            "time_stop": rng.randint(int(BOUNDS["time_stop"][0]),
-                                    int(BOUNDS["time_stop"][1])),
-        })
+            "top_n": rng.randint(int(bounds["top_n"][0]), int(bounds["top_n"][1])),
+            "max_per_industry": rng.randint(int(bounds["max_per_industry"][0]),
+                                            int(bounds["max_per_industry"][1])),
+            "stop_atr": round(rng.uniform(*bounds["stop_atr"]), 2),
+            "tp1_atr": round(rng.uniform(*bounds["tp1_atr"]), 2),
+            "tp2_atr": round(rng.uniform(*bounds["tp2_atr"]), 2),
+            "time_stop": rng.randint(int(bounds["time_stop"][0]),
+                                    int(bounds["time_stop"][1])),
+        }, bounds)
 
     weights = {}
     for key in WEIGHT_GENES:
@@ -163,18 +203,19 @@ def random_genome(rng: random.Random, base: dict, spread: float = 0.45,
         weights[key] = max(0.0, base["weights"][key] * factor)
     genome = {
         "weights": _normalize(weights),
-        "top_n": _clamp("top_n", base["top_n"] + rng.choice((-3, -1, 0, 0, 1, 3))),
+        "top_n": _clamp("top_n", base["top_n"] + rng.choice((-2, -1, 0, 0, 1, 2)), bounds),
         "max_per_industry": _clamp("max_per_industry",
-                                   base["max_per_industry"] + rng.choice((-1, 0, 0, 1))),
-        "stop_atr": _clamp("stop_atr", base["stop_atr"] * rng.uniform(0.7, 1.3)),
-        "tp1_atr": _clamp("tp1_atr", base["tp1_atr"] * rng.uniform(0.7, 1.3)),
-        "tp2_atr": _clamp("tp2_atr", base["tp2_atr"] * rng.uniform(0.7, 1.3)),
-        "time_stop": _clamp("time_stop", base["time_stop"] * rng.uniform(0.5, 1.6)),
+                                   base["max_per_industry"] + rng.choice((-1, 0, 0, 1)), bounds),
+        "stop_atr": _clamp("stop_atr", base["stop_atr"] * rng.uniform(0.7, 1.3), bounds),
+        "tp1_atr": _clamp("tp1_atr", base["tp1_atr"] * rng.uniform(0.7, 1.3), bounds),
+        "tp2_atr": _clamp("tp2_atr", base["tp2_atr"] * rng.uniform(0.7, 1.3), bounds),
+        "time_stop": _clamp("time_stop", base["time_stop"] * rng.uniform(0.5, 1.6), bounds),
     }
-    return _repair(genome)
+    return _repair(genome, bounds)
 
 
-def _jump_int(rng: random.Random, name: str, value: float, sigma: float) -> float | int:
+def _jump_int(rng: random.Random, name: str, value: float, sigma: float,
+              bounds: dict | None = None) -> float | int:
     """整数基因的变异：步长按区间宽度定标。
 
     初版是固定 ±1（`time_stop` 用 ±4），而 `time_stop` 的区间是 5~60。
@@ -183,23 +224,24 @@ def _jump_int(rng: random.Random, name: str, value: float, sigma: float) -> floa
     现在步长 = 区间宽度 × sigma × 随机系数：前期能一步跨小半段，
     sigma 衰减到 0.05 时自动退化成 ±1，正好是精修需要的粒度。
     """
-    low, high = BOUNDS[name]
+    low, high = (bounds or BOUNDS)[name]
     span = high - low
     step = max(1, int(round(span * sigma * rng.uniform(0.6, 2.4))))
-    return _clamp(name, value + rng.choice((-step, step)))
+    return _clamp(name, value + rng.choice((-step, step)), bounds)
 
 
 
-def _repair(genome: dict) -> dict:
+def _repair(genome: dict, bounds: dict | None = None) -> dict:
     """把基因组的内部约束修回来：第二目标必须明显高于第一目标。"""
+    bounds = bounds or BOUNDS
     if genome["tp2_atr"] <= genome["tp1_atr"] + 0.5:
-        genome["tp2_atr"] = _clamp("tp2_atr", genome["tp1_atr"] + 1.2)
+        genome["tp2_atr"] = _clamp("tp2_atr", genome["tp1_atr"] + 1.2, bounds)
     genome["weights"] = _normalize(genome["weights"])
     return genome
 
 
 def mutate(rng: random.Random, genome: dict, sigma: float,
-           p_sigma: float | None = None) -> dict:
+           p_sigma: float | None = None, bounds: dict | None = None) -> dict:
     """高斯变异。
 
     `sigma` 管权重（权重是归一化后的份额，0.1 已经是不小的扰动）；
@@ -208,6 +250,7 @@ def mutate(rng: random.Random, genome: dict, sigma: float,
     完全是两回事，共用一个 sigma 会让其中一边永远动不了。
     """
     p_sigma = sigma if p_sigma is None else p_sigma
+    bounds = bounds or BOUNDS
     weights = dict(genome["weights"])
     for key in WEIGHT_GENES:
         weights[key] = max(0.0, weights[key] + rng.gauss(0.0, sigma))
@@ -226,24 +269,26 @@ def mutate(rng: random.Random, genome: dict, sigma: float,
     }
     for key in ("stop_atr", "tp1_atr", "tp2_atr"):
         if rng.random() < 0.7:
-            out[key] = _clamp(key, out[key] * (1.0 + rng.gauss(0.0, p_sigma)))
+            out[key] = _clamp(key, out[key] * (1.0 + rng.gauss(0.0, p_sigma)), bounds)
     for key in ("top_n", "max_per_industry", "time_stop"):
         if rng.random() < 0.7:
-            out[key] = _jump_int(rng, key, out[key], p_sigma)
-    return _repair(out)
+            out[key] = _jump_int(rng, key, out[key], p_sigma, bounds)
+    return _repair(out, bounds)
 
 
 
-def crossover(rng: random.Random, a: dict, b: dict) -> dict:
+def crossover(rng: random.Random, a: dict, b: dict,
+              bounds: dict | None = None) -> dict:
     """逐基因均匀交叉。不做单点交叉：基因之间没有位置概念，切一刀没意义。"""
+    bounds = bounds or BOUNDS
     out: dict = {"weights": {}}
     for key in WEIGHT_GENES:
         # 权重取算术平均更稳：直接二选一会让子代权重分布变得很尖
         out["weights"][key] = (a["weights"][key] + b["weights"][key]) / 2 if rng.random() < 0.5 \
             else rng.choice((a["weights"][key], b["weights"][key]))
-    for key in BOUNDS:
+    for key in bounds:
         out[key] = rng.choice((a[key], b[key]))
-    return _repair(out)
+    return _repair(out, bounds)
 
 
 def genome_to_spec(genome: dict, base_spec: dict | None = None) -> dict:
@@ -302,6 +347,81 @@ def _evaluate(engine, genome: dict, spec: dict, panel, capital: float,
     return score_of(report), report
 
 
+def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
+    """这次进化的参数该不该真换上去。
+
+    为什么不能看分数：遗传搜索每次都会给出一个「比基线分高」的基因组——它
+    就是在训练集上挑最好的，分数上涨是**搜索本身保证的**，不是策略变好的证据。
+    所以采纳依据只有样本外 edge，绝不能是步长。
+
+    再加一条「连续两次一致」：样本外只跑一遍，edge 本身带噪声。两次独立搜索
+    都指向同一结论，才说明不是运气。没有上一次记录时一律判「待确认」——
+    宁可多等一轮，也别让一次偶然的 edge 把参数换掉。
+
+    **还有一条绝对门槛：样本外必须不亏钱。** edge 只说明「比基线好」，而基线
+    本身可能就是一条巨亏的策略——实测打板策略样本外基线 −31.2%，进化到 −8.8%
+    就拿到了 +0.69 的 edge，判 win。可一条样本外亏 8.8% 的策略换上去有什么
+    意义？「比烂」不是改进。所以样本外绝对收益 ≤ 0 的一律不采纳，哪怕 edge
+    再大。这条比 edge 更基础：先得能赚钱，再谈比原来赚得多。
+
+    频率因此可以放得很开：跑得勤没有代价，换得慢才有安全边际。
+    """
+    hold = result.get("holdout") or {}
+    metrics = ((result.get("best") or {}).get("metrics") or {})
+    edge = float(hold.get("edge") or 0.0)
+    level = hold.get("level") or "none"
+    closed = int(metrics.get("closed_count") or 0)
+    exposure = float(metrics.get("avg_exposure") or 0.0)
+    turnover = float(metrics.get("turnover") or 0.0)
+    hold_ret = (hold.get("best") or {}).get("total_return")
+    hold_ret = None if hold_ret is None else float(hold_ret)
+
+    prev_hold = (prev or {}).get("holdout") or {}
+    prev_level = prev_hold.get("level")
+    prev_metrics = (((prev or {}).get("best") or {}).get("metrics") or {})
+    prev_turnover = float(prev_metrics.get("turnover") or 0.0)
+
+    checks = [
+        {"key": "holdout_edge", "label": "样本外 edge > 0.2",
+         "pass": level == "win", "value": f"{edge:+.2f}"},
+        {"key": "holdout_positive", "label": "样本外绝对收益 > 0",
+         "pass": hold_ret is not None and hold_ret > 0,
+         "value": "无样本外" if hold_ret is None else f"{hold_ret * 100:+.1f}%"},
+        {"key": "consistency", "label": "上一次进化同为 win",
+         "pass": prev_level == "win", "value": prev_level or "无记录"},
+        {"key": "closed", "label": "了结交易 ≥ 20 笔",
+         "pass": closed >= 20, "value": closed},
+        {"key": "exposure", "label": "平均仓位 ≥ 50%",
+         "pass": exposure >= 0.5, "value": f"{exposure * 100:.0f}%"},
+        {"key": "turnover", "label": "换手不高于上次 1.5 倍",
+         "pass": (prev_turnover <= 0) or (turnover <= prev_turnover * 1.5),
+         "value": f"{turnover:.0f}x"},
+    ]
+    failed = [c for c in checks if not c["pass"]]
+
+    if not prev_level:
+        action, reason = "hold", "第一次记录，需要再跑一轮确认不是偶然"
+    elif not failed:
+        action, reason = "adopt", "样本外连续两次打赢，且样本外本身是赚的"
+    elif level != "win":
+        action, reason = "hold", f"样本外未打赢（edge {edge:+.2f}，判定 {level}）"
+    elif hold_ret is not None and hold_ret <= 0:
+        # 这条要单独说清楚：edge 为正、判定 win，但样本外照样亏钱。
+        # 用户看到「赢了」却还是亏，只有把绝对收益摆出来才不会误以为是改进。
+        action = "hold"
+        reason = (f"样本外 edge {edge:+.2f} 是「比基线好」，但绝对收益 "
+                  f"{hold_ret * 100:+.1f}% 仍在亏钱——比烂不算改进")
+    elif prev_level != "win":
+        action, reason = "hold", "样本外这次赢了，但上一次没赢，可能是这一段的运气"
+    else:
+        action = "hold"
+        reason = "样本外赢了但风控不合格：" + "、".join(
+            f"{c['label']}（{c['value']}）" for c in failed)
+
+    return {"action": action, "reason": reason, "checks": checks,
+            "edge": edge, "level": level}
+
+
 def _brief(score: float, report: dict) -> dict:
     m = report.get("metrics") or {}
     return {
@@ -342,12 +462,14 @@ def evolve(engine, spec: dict | None = None, *, population: int = 24,
         }
 
     base = seed_genome(spec)
+    bounds = bounds_for(spec)
 
     # 初代：一半贴着种子（精修起点），一半全空间随机（先证明起点不是最好）
     near = max(1, population // 2)
     pop: list[dict] = [base]
-    pop += [random_genome(rng, base) for _ in range(near - 1)]
-    pop += [random_genome(rng, base, wide=True) for _ in range(population - near)]
+    pop += [random_genome(rng, base, bounds=bounds) for _ in range(near - 1)]
+    pop += [random_genome(rng, base, wide=True, bounds=bounds)
+            for _ in range(population - near)]
 
     baseline_score, baseline_report = _evaluate(engine, base, spec, panel, capital, profile)
     history: list[dict] = []
@@ -397,20 +519,20 @@ def evolve(engine, spec: dict | None = None, *, population: int = 24,
 
         nxt: list[dict] = [scored[0][1], scored[1][1]]
         for _ in range(max(1, round(population * 0.15))):
-            nxt.append(random_genome(rng, base, wide=True))
+            nxt.append(random_genome(rng, base, wide=True, bounds=bounds))
         guard = 0
         while len(nxt) < population and guard < population * 4:
             guard += 1
             dice = rng.random()
             if dice < 0.40:
-                child = mutate(rng, scored[0][1], sigma_w * 0.8, sigma_p * 0.8)
+                child = mutate(rng, scored[0][1], sigma_w * 0.8, sigma_p * 0.8, bounds)
             elif dice < 0.55:
                 child = mutate(rng, scored[rng.randrange(len(scored))][1],
-                               sigma_w * 1.6, sigma_p * 1.6)
+                               sigma_w * 1.6, sigma_p * 1.6, bounds)
             else:
                 pa = _tournament(rng, scored)[1]
                 pb = _tournament(rng, scored)[1]
-                child = mutate(rng, crossover(rng, pa, pb), sigma_w, sigma_p)
+                child = mutate(rng, crossover(rng, pa, pb, bounds), sigma_w, sigma_p, bounds)
             nxt.append(child)
         pop = nxt[:population]
 
@@ -439,8 +561,11 @@ def evolve(engine, spec: dict | None = None, *, population: int = 24,
         }
 
     notes = [
-        f"搜索空间：{len(WEIGHT_GENES)} 个因子权重 + {len(BOUNDS)} 个结构参数，"
+        f"搜索空间：{len(WEIGHT_GENES)} 个因子权重 + {len(bounds)} 个结构参数，"
         f"评估 {done_total} 次（种群 {population} × {generations} 代）",
+        f"仓位数量锁定在 {bounds['top_n'][0]}~{bounds['top_n'][1]} 只、"
+        f"同行业上限 {bounds['max_per_industry'][1]} 只：这两个是策略定义的一部分，"
+        f"不给搜索放大——否则它会用「多买几只摊薄」换分数，交出一条不是你想要的策略",
         "目标函数 = min(Calmar, 4) + 0.6 ×（胜率 − 50%）− 0.02 × 换手 "
         "+ 0.2 ×（平均仓位 − 50%）；已了结交易少于 8 笔会额外压分",
         "初代一半在种子附近撒点、一半在全空间随机撒点；每代固定掺 15% 外来移民，"
@@ -466,12 +591,16 @@ def evolve(engine, spec: dict | None = None, *, population: int = 24,
         "strategy_id": spec.get("id") or "custom",
         "strategy_name": spec.get("name") or "自定义策略",
         "available": True,
+        # 撮合口径变了，旧进化的结论就不可比：调用方拿它判断「上一次是否为 win」
+        # 时，跨版本一律当无记录处理（与回测的 model_version 守卫同一套逻辑）。
+        "model_version": MODEL_VERSION,
         "as_of": panel.trade_date,
         "config": {
             "population": population, "generations": generations,
             "evaluations": done_total, "days": days, "capital": capital,
             "seed": seed, "objective": "calmar_plus_winrate_minus_turnover",
             "holdout": holdout,
+            "bounds": {k: list(v) for k, v in bounds.items()},
         },
         "baseline": {
             "genome": base, "score": baseline_score,

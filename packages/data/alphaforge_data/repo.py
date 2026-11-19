@@ -18,6 +18,43 @@ from pathlib import Path
 from . import db as dbm
 
 
+# 新浪把「概念」和「风格属性」混在同一个列表里：`基金重仓`、`超大盘`、
+# `含H股` 这些每天都在涨跌，但它们永远不是「今天在炒什么」的答案，
+# 留在榜上会把真正的题材挤掉（而且大盘股行情里它们必然排前面）。
+# 地域类（雄安、海南自贸）不排除——地域题材确实会被炒。
+_CONCEPT_NOISE: frozenset[str] = frozenset({
+    "QFII重仓", "保险重仓", "信托重仓", "券商重仓", "基金重仓", "社保重仓",
+    "ST板块", "准ST股", "摘帽概念",
+    "含B股", "含GDR", "含H股",
+    "央企50", "超大盘", "科创50",
+    "融资融券", "股期概念",
+    "业绩预升", "业绩预降", "本月解禁", "送转潜力", "未股改",
+    "分拆上市", "整体上市", "资产注入", "股权激励", "外资背景", "高校背景",
+    "三板精选", "预盈预增", "预亏预减", "st板块",
+})
+
+
+def _persist_tail(pcts: list[float]) -> dict:
+    """板块序列的「当前连涨天数 + 近 5 日阳线占比」。
+
+    连涨从序列末尾往前数，遇阴线即止；阳线占比只看最近 5 根，因为更早的
+    涨跌对「现在还强不强」没有解释力。
+    """
+    if not pcts:
+        return {"streak": 0, "win_rate": 0.0}
+    streak = 0
+    for v in reversed(pcts):
+        if v > 0:
+            streak += 1
+        else:
+            break
+    recent = pcts[-5:]
+    return {
+        "streak": streak,
+        "win_rate": round(sum(1 for v in recent if v > 0) / len(recent) * 100, 1),
+    }
+
+
 class Repo:
     def __init__(self, path: Path | None = None, *, create: bool = True):
         self.path = path or dbm.db_path()
@@ -317,6 +354,76 @@ class Repo:
     def index_quote(self, code: str) -> dict | None:
         return next((q for q in self.index_quotes() if q["code"] == code), None)
 
+    def snapshot_quotes(self, codes: list[str]) -> dict[str, dict]:
+        """按代码取实时快照（`snapshot` 表）。盘中组合用，缺的就不返回。"""
+        if not codes:
+            return {}
+        marks = ",".join("?" * len(codes))
+        rows = self.conn.execute(
+            f"SELECT code, price, prev_close, open, high, low, change_pct, "
+            f"volume, amount, turnover, volratio, ts FROM snapshot "
+            f"WHERE code IN ({marks})", tuple(codes)
+        ).fetchall()
+        return {
+            r[0]: {
+                "code": r[0], "price": round(float(r[1] or 0), 2),
+                "prev_close": round(float(r[2] or 0), 2),
+                "open": round(float(r[3] or 0), 2),
+                "high": round(float(r[4] or 0), 2),
+                "low": round(float(r[5] or 0), 2),
+                "change_pct": round(float(r[6] or 0), 2),
+                "volume": float(r[7] or 0),
+                "amount": round(float(r[8] or 0) / 1e8, 2),
+                "turnover": round(float(r[9] or 0), 2),
+                "volratio": round(float(r[10] or 0), 2),
+                "ts": r[11],
+            }
+            for r in rows
+        }
+
+    def market_breadth(self) -> dict:
+        """全市场实时宽度（读 `snapshot`，不是收盘的 factor 表）。
+
+        盘中要看的是「此刻多少只在涨」，而 `factor` 表的 `change_pct` 是上一
+        个交易日收盘算好的，拿它当实时宽度会把昨天的行情当成今天的。
+        没有快照时返回 `fresh=False`，调用方据此显示「数据未刷新」而不是 0。
+        """
+        rows = self.conn.execute(
+            "SELECT change_pct, amount, volratio FROM snapshot"
+        ).fetchall()
+        stamp = self.conn.execute("SELECT MAX(ts) FROM snapshot").fetchone()
+        if not rows:
+            return {"fresh": False, "total": 0, "up": 0, "down": 0, "flat": 0,
+                    "limit_up": 0, "limit_down": 0, "median_pct": 0.0,
+                    "amount": 0.0, "ts": None}
+        up = down = flat = lu = ld = 0
+        pcts: list[float] = []
+        amount = 0.0
+        for chg, amt, _vr in rows:
+            chg = float(chg or 0)
+            amount += float(amt or 0)
+            pcts.append(chg)
+            if chg > 0:
+                up += 1
+            elif chg < 0:
+                down += 1
+            else:
+                flat += 1
+            # 涨停按 9.8% 粗判：快照里没有涨跌停幅度，这个阈值对主板够用，
+            # 创业板/科创的 20% 会被漏算——宁可少算，不要虚报涨停家数。
+            if chg >= 9.8:
+                lu += 1
+            elif chg <= -9.8:
+                ld += 1
+        pcts.sort()
+        mid = pcts[len(pcts) // 2] if pcts else 0.0
+        return {
+            "fresh": True, "total": len(rows), "up": up, "down": down, "flat": flat,
+            "limit_up": lu, "limit_down": ld, "median_pct": round(mid, 2),
+            "amount": round(amount / 1e8, 1),
+            "ts": stamp[0] if stamp else None,
+        }
+
     def index_daily(self, code: str, days: int = 250) -> list[dict]:
         rows = self.conn.execute(
             "SELECT date, open, high, low, close, volume, amount FROM index_daily "
@@ -453,6 +560,221 @@ class Repo:
         out.sort(key=lambda r: r["net_inflow"], reverse=True)
         for i, r in enumerate(out, 1):
             r["rank"] = i
+        return out
+
+    # ------------------------------------------------------------------ 板块
+    #
+    # 行业与概念走两条完全不同的路，这是数据可得性决定的，不是设计偏好：
+    #
+    # - **行业板块**（129 个）有完整历史。`symbol.industry` 给了归属，`daily`
+    #   有 604 个交易日，所以多窗口涨幅、持续性、相位全部可以现算，一条 SQL
+    #   0.03 秒，不需要任何缓存或新表。
+    # - **概念板块**（554 个）只能从东财 `clist` 拿「当日」快照，历史要靠
+    #   每天落库慢慢累积（`sector_daily`）。批量拉历史 K 线会触发整机拉黑，
+    #   这条路走不通，所以 `concept_rank` 必须容忍「历史不够长」——刚建库时
+    #   只有一天数据，`pct_5d` 这些字段就是 None，前端据此显示「积累中」。
+    #
+    # 两类输出同一形状，前端不必分叉。
+
+    def sector_map(self, kind: str = "concept") -> dict[str, str]:
+        """板块目录 `{code: name}`。"""
+        rows = self.conn.execute(
+            "SELECT code, name FROM sector WHERE kind=? ORDER BY code", (kind,)
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def industry_rank(self, windows: tuple[int, ...] = (1, 3, 5, 10, 20)) -> dict:
+        """行业板块的多窗口涨幅 + 宽度 + 资金流。
+
+        **口径统一**：所有窗口都是「N 个交易日前收盘 → 今日收盘」的等权平均，
+        不混用 `factor.mom5`（那是复权口径），否则 1 日与 5 日会打架。
+        """
+        dates = self.trading_dates(max(windows) + 2)
+        if len(dates) < max(windows) + 1:
+            return {"date": dates[-1] if dates else None, "items": []}
+        date = dates[-1]
+
+        acc: dict[str, dict] = {}
+        for n in windows:
+            base = dates[-(n + 1)]
+            rows = self.conn.execute(
+                "SELECT s.industry, COUNT(*), "
+                "       AVG((d.close - p.close) / p.close * 100), "
+                "       SUM(d.amount), "
+                "       SUM(CASE WHEN d.close > p.close THEN 1 ELSE 0 END) "
+                "FROM daily d "
+                "JOIN daily p ON p.code = d.code AND p.date = ? "
+                "JOIN symbol s ON s.code = d.code "
+                "WHERE d.date = ? AND p.close > 0 AND s.industry <> '' "
+                "GROUP BY s.industry", (base, date)
+            ).fetchall()
+            for ind, cnt, pct, amount, up in rows:
+                item = acc.setdefault(ind, {
+                    "code": ind, "name": ind, "kind": "industry",
+                    "count": int(cnt or 0), "up": int(up or 0),
+                    "amount": float(amount or 0), "lead": "",
+                })
+                item[f"pct_{n}d"] = round(float(pct or 0), 2)
+                if n == 1:
+                    item["amount"] = float(amount or 0)
+                    item["up"] = int(up or 0)
+
+        # 涨停家数与主力净流入读因子表：`limit_up` 已经按板块的涨跌幅规则
+        # 判过（创业板 20%、北交所 30%、ST 5%），在 SQL 里重算一遍容易出错。
+        for ind, cnt, lim, net, vr, days_up in self.conn.execute(
+                "SELECT industry, COUNT(*), SUM(limit_up), SUM(main_net), "
+                "       AVG(volratio), AVG(up_days) "
+                "FROM factor WHERE trade_date=? GROUP BY industry", (date,)):
+            item = acc.get(ind)
+            if item is None:
+                continue
+            item["limit_up"] = int(lim or 0)
+            item["main_net"] = round(float(net or 0), 2)
+            item["volratio"] = round(float(vr or 0), 2)
+            item["up_days"] = round(float(days_up or 0), 1)
+
+        # 领涨股：当日涨幅最高的那只
+        best: dict[str, tuple[float, str, str]] = {}
+        for ind, code, name, pct in self.conn.execute(
+                "SELECT f.industry, f.code, s.name, f.change_pct FROM factor f "
+                "JOIN symbol s ON s.code = f.code "
+                "WHERE f.trade_date=? AND f.change_pct IS NOT NULL", (date,)):
+            cur = best.get(ind)
+            if cur is None or pct > cur[0]:
+                best[ind] = (float(pct), code, name)
+        for ind, (_, code, name) in best.items():
+            if ind in acc:
+                acc[ind]["lead"] = name
+                acc[ind]["lead_code"] = code
+
+        items = list(acc.values())
+        for it in items:
+            cnt = it.get("count") or 0
+            it["adv_ratio"] = round(it.get("up", 0) / cnt * 100, 1) if cnt else 0.0
+        return {"date": date, "items": items}
+
+    def industry_daily_pct(self, days: int = 25) -> dict[str, list[float]]:
+        """每个行业逐日的等权平均涨幅，正序，最长 `days` 个交易日。
+
+        「持续性」和「连涨天数」都要这条序列。用窗口函数一次算完所有行业，
+        比按行业循环查（129 次 × 25 天）快两个数量级。
+        """
+        dates = self.trading_dates(days + 1)
+        if len(dates) < 2:
+            return {}
+        rows = self.conn.execute(
+            "WITH r AS ("
+            "  SELECT s.industry AS ind, d.date AS date, d.close AS close,"
+            "         LAG(d.close) OVER (PARTITION BY d.code ORDER BY d.date) AS prev"
+            "  FROM daily d JOIN symbol s ON s.code = d.code"
+            "  WHERE d.date >= ? AND s.industry <> ''"
+            ") "
+            "SELECT ind, date, AVG((close - prev) / prev * 100) "
+            "FROM r WHERE prev > 0 GROUP BY ind, date ORDER BY ind, date", (dates[0],)
+        ).fetchall()
+        out: dict[str, list[float]] = {}
+        for ind, _date, pct in rows:
+            out.setdefault(ind, []).append(round(float(pct or 0), 2))
+        return out
+
+    def concept_rank(self, windows: tuple[int, ...] = (1, 3, 5, 10, 20)) -> dict:
+        """概念板块的多窗口涨幅，**由成分股在本地合成**。
+
+        口径与 `industry_rank` 完全一致：N 个交易日前收盘 → 今日收盘的等权
+        平均涨幅。等权而不是市值加权，是因为炒题材看的是「板块里有多少只票
+        在涨」，一只千亿权重股拉起来的板块涨幅没有代表性。
+
+        这样做的直接好处是历史完整——成分股映射只取一次，之后 604 个交易日
+        的板块涨幅全部由本地日线算出，不必去拉板块 K 线（那条通道会整机拉黑）。
+        """
+        names = {k: v for k, v in self.sector_map("concept").items()
+                 if v not in _CONCEPT_NOISE}
+        if not names:
+            return {"date": None, "days": 0, "items": [], "members": 0}
+        dates = self.trading_dates(max(windows) + 2)
+        if len(dates) < 3:
+            return {"date": dates[-1] if dates else None, "days": len(dates),
+                    "items": [], "members": 0}
+        date = dates[-1]
+
+        acc: dict[str, dict] = {}
+        for n in windows:
+            base = dates[-(n + 1)]
+            rows = self.conn.execute(
+                "SELECT m.sector_code, COUNT(*), "
+                "       AVG((d.close - p.close) / p.close * 100), "
+                "       SUM(d.amount), "
+                "       SUM(CASE WHEN d.close > p.close THEN 1 ELSE 0 END) "
+                "FROM daily d "
+                "JOIN daily p ON p.code = d.code AND p.date = ? "
+                "JOIN sector_member m ON m.code = d.code "
+                "WHERE d.date = ? AND p.close > 0 "
+                "GROUP BY m.sector_code", (base, date)
+            ).fetchall()
+            for code, cnt, pct, amount, up in rows:
+                # 必须在这里挡一道：acc 是从 sector_member 的 SQL 直接建的，
+                # 不校验名单的话，被 `_CONCEPT_NOISE` 剔掉的板块照样会进来，
+                # 只是名字退回成 `gn_xxx` 这种代码——既不报错也很难发现。
+                if code not in names:
+                    continue
+                item = acc.setdefault(code, {
+                    "code": code, "name": names.get(code) or code,
+                    "kind": "concept", "count": int(cnt or 0),
+                    "up": int(up or 0), "amount": float(amount or 0),
+                    "lead": "", "limit_up": None, "main_net": None,
+                })
+                item[f"pct_{n}d"] = round(float(pct or 0), 2)
+                if n == 1:
+                    item["amount"] = float(amount or 0)
+                    item["up"] = int(up or 0)
+
+        # 领涨股：当日涨幅最高的成分股。概念板块没有现成的「领涨股」字段，
+        # 只能从成分股里挑——好在成分股本来就在本地库里。
+        best: dict[str, tuple[float, str, str]] = {}
+        for sec, code, name, pct in self.conn.execute(
+                "SELECT m.sector_code, f.code, s.name, f.change_pct "
+                "FROM factor f JOIN sector_member m ON m.code = f.code "
+                "JOIN symbol s ON s.code = f.code "
+                "WHERE f.trade_date=? AND f.change_pct IS NOT NULL", (date,)):
+            cur = best.get(sec)
+            if cur is None or pct > cur[0]:
+                best[sec] = (float(pct), code, name)
+        for sec, (_pct, code, name) in best.items():
+            if sec in acc:
+                acc[sec]["lead"] = name
+                acc[sec]["lead_code"] = code
+
+        # 连涨天数与阳线占比：读板块自身的近 5 日合成序列
+        for sec, pcts in self.concept_daily_pct(5).items():
+            if sec in acc:
+                acc[sec].update(_persist_tail(pcts))
+
+        items = list(acc.values())
+        for it in items:
+            cnt = it.get("count") or 0
+            it["adv_ratio"] = round(it.get("up", 0) / cnt * 100, 1) if cnt else 0.0
+        members = self.conn.execute("SELECT COUNT(*) FROM sector_member").fetchone()[0]
+        return {"date": date, "days": len(dates), "items": items,
+                "members": int(members or 0)}
+
+    def concept_daily_pct(self, days: int = 25) -> dict[str, list[float]]:
+        """概念板块逐日等权涨幅，用于判连涨与持续性。"""
+        dates = self.trading_dates(days + 1)
+        if len(dates) < 2:
+            return {}
+        rows = self.conn.execute(
+            "WITH r AS ("
+            "  SELECT m.sector_code AS sec, d.date AS date, d.close AS close,"
+            "         LAG(d.close) OVER (PARTITION BY d.code ORDER BY d.date) AS prev"
+            "  FROM daily d JOIN sector_member m ON m.code = d.code"
+            "  WHERE d.date >= ?"
+            ") "
+            "SELECT sec, date, AVG((close - prev) / prev * 100) "
+            "FROM r WHERE prev > 0 GROUP BY sec, date ORDER BY sec, date", (dates[0],)
+        ).fetchall()
+        out: dict[str, list[float]] = {}
+        for sec, _date, pct in rows:
+            out.setdefault(sec, []).append(round(float(pct or 0), 2))
         return out
 
     def index_breadth(self, index_code: str, trade_date: str | None = None) -> dict:

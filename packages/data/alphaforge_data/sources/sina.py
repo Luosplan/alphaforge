@@ -385,3 +385,86 @@ def minline(code: str) -> dict | None:
         "volumes": volumes,
         "prev_close": 0.0,
     }
+
+
+# ------------------------------------------------------------------ 概念板块
+#
+# 概念板块原本打算用东财：`push2` 一次 `clist` 就能拿全 500+ 个板块的当日
+# 快照，字段还全。但那条通道是**整机级**限频——连续几十个请求之后，这台
+# 机器上所有 `push2` / `push2his` 请求会被直接断开（`Remote end closed
+# connection without response`），恢复要等几十分钟。
+#
+# 所以改走新浪。新浪的概念只有 172 个，比东财的 554 少，但都是市场真正在
+# 炒的那些（华为汽车、高压快充、创新药、钙钛矿……），噪声反而更少。
+# 更关键的是它给的是**成分股名单**：拿到映射之后，板块历史可以用本地
+# 604 天日线自己算，不用再去拉板块 K 线。
+
+CONCEPT_URL = "https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class"
+_SINA_REFERER = {"Referer": "https://finance.sina.com.cn/"}
+
+
+def _full_code(code6: str) -> str:
+    """`600519` → `600519.SH`。
+
+    交易所判定复用 `board_of`：北交所是 `920xxx` 而不是 `4/8` 开头，
+    自己写一套 `head in "48"` 会把 920 判成沪市，成分股全部对不上本地日线。
+    """
+    return f"{code6}.{board_of(code6)[0]}"
+
+
+def concept_list() -> list[dict]:
+    """概念板块目录：`[{code, name, count}]`。
+
+    上游返回的是一段 GBK 编码的 JS 变量赋值，格式为
+    `var S_Finance_bankuai_class = {"gn_xxx":"gn_xxx,名称,成分股数,..."}`。
+    用正则抠出键值对，比去 eval 一段远端 JS 安全得多。
+    """
+    import re
+
+    txt = fetch(CONCEPT_URL, interval=0.2, encoding="gbk", headers=_SINA_REFERER)
+    body = re.search(r"\{.*\}", txt, re.S)
+    if not body:
+        return []
+    out: list[dict] = []
+    for code, val in re.findall(r'"(gn_[A-Za-z0-9]+)":"([^"]*)"', body.group(0)):
+        parts = val.split(",")
+        if len(parts) < 2 or not parts[1].strip():
+            continue
+        try:
+            n = int(parts[2])
+        except (IndexError, ValueError):
+            n = 0
+        out.append({"code": code, "name": parts[1].strip(), "count": n})
+    return out
+
+
+def concept_members(node: str) -> list[str]:
+    """某个概念的全部成分股，返回 `600519.SH` 形式。
+
+    数据源就是全 A 快照用的那套 `Market_Center.getHQNodeData`，只是把
+    `node` 从 `hs_a` 换成 `gn_xxx`。**只取代码不取行情**——行情要当日
+    实时的，而历史行情本地库里已经有 604 天。
+    """
+    total = 0
+    try:
+        total = count(node)
+    except Exception:                                  # noqa: BLE001
+        total = 0
+    if total <= 0:
+        return []
+    pages = min((total + 99) // 100, 20)
+    out: list[str] = []
+    seen: set[str] = set()
+    for page in range(1, pages + 1):
+        try:
+            rows = _page(page, node)
+        except Exception:                              # noqa: BLE001
+            break
+        if not rows:
+            break
+        for r in rows:
+            code6 = str(r.get("code") or "").strip()
+            if len(code6) == 6 and code6.isdigit() and code6 not in seen:
+                seen.add(code6)
+                out.append(_full_code(code6))
+    return out

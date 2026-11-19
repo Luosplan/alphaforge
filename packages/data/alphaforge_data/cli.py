@@ -19,7 +19,8 @@ import time
 from .repo import Repo
 from .sync import Syncer
 
-STEPS = ["universe", "fundamentals", "dividend", "daily", "flow", "index", "factor"]
+STEPS = ["universe", "fundamentals", "dividend", "daily", "flow", "index",
+         "factor", "sector"]
 
 
 def _print(msg: str) -> None:

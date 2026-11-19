@@ -163,6 +163,38 @@ DDL: tuple[str, ...] = (
         PRIMARY KEY (code, date)
     ) WITHOUT ROWID
     """,
+    # ---------------------------------------------------------------- 板块
+    # 「题材」这一层本地原本没有。东财的行业字段只有二级行业（129 个），
+    # 粒度太粗，看不出「固态电池」「CPO」这类真正在炒的东西，所以单独存
+    # 一份概念板块目录。
+    #
+    # `kind` 区分两类：`concept` 是东财的 BK 概念板块（554 个，只能从
+    # `push2` 拿），`industry` 是行业板块，只为统一读取形状而存在——行业
+    # 板块的行情不落这张表，直接由 `daily` + `symbol.industry` 现算，
+    # 因为它有完整的 604 日历史，而概念板块只能从今天开始累积。
+    """
+    CREATE TABLE IF NOT EXISTS sector (
+        code    TEXT PRIMARY KEY,
+        name    TEXT NOT NULL,
+        kind    TEXT NOT NULL DEFAULT 'concept',   -- concept / industry
+        updated TEXT
+    )
+    """,
+    # 板块 → 成分股。概念板块的**历史**就靠这张映射用本地日线合成出来。
+    #
+    # 这是被逼出来的设计：`push2` 的 `clist`（板块快照）和 `push2his`（板块
+    # K 线）都是整机级限频，连续请求几十次之后这台机器连股票 K 线都取不到，
+    # 而概念板块有 500+ 个，逐个拉根本不可行。改成「拿一次映射 + 本地聚合」
+    # 之后，外部依赖只剩一次性的成分股同步，之后全部本地算——历史是完整的
+    # 604 天，而不是从今天开始攒。
+    """
+    CREATE TABLE IF NOT EXISTS sector_member (
+        sector_code TEXT NOT NULL,
+        code        TEXT NOT NULL,
+        PRIMARY KEY (sector_code, code)
+    ) WITHOUT ROWID
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_sector_member_code ON sector_member(code)",
     # ---------------------------------------------------------------- 同步日志
     """
     CREATE TABLE IF NOT EXISTS sync_run (

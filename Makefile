@@ -25,8 +25,17 @@ sync: ## 全量同步真实行情（首次约 19 分钟，之后增量约 1 分�
 status: ## 查看行情库状态（标的数 / 日线数 / 最近同步）
 	$(PY) -m alphaforge_data status
 
-api: ## 仅启动后端（热重载，:$(PORT)）
-	$(PY) -m uvicorn alphaforge_api.main:app --reload --port $(PORT) --app-dir packages/api
+# 热重载必须逐目录指定，**不能靠默认的「监视当前工作目录」**：
+# 默认会把 `data/` 也监视上，而自动驾驶每 5 分钟写一次 autopilot.json、
+# 收盘任务还写 lab.json——每次写盘都触发一次 reload，等于自己把自己重启死。
+# 这大概就是有人把手动启动命令里的 --reload 摘掉的原因；摘掉之后又变成
+# 「改了后端不生效」，两种都是坑，所以这里把四个代码目录写死。
+RELOAD := --reload \
+	--reload-dir packages/core --reload-dir packages/data \
+	--reload-dir packages/engine --reload-dir packages/api
+
+api: ## 仅启动后端（热重载 packages/*，:$(PORT)）
+	$(PY) -m uvicorn alphaforge_api.main:app --port $(PORT) --app-dir packages/api $(RELOAD)
 
 web: ## 仅启动前端（Vite，:5173，/api 代理到 :$(PORT)）
 	cd $(WEB) && npm run dev

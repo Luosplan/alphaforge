@@ -39,10 +39,15 @@ import type {
   LabEvolveState,
   LabEvoGeneration,
   LabHoldout,
+  LabAdoption,
+  AutopilotState,
+  LlmTestResult,
+  WatchDoc,
   LabGenome,
   LabOverview,
   LabPaper,
   LabPlanCard,
+  HotspotData,
 } from '@/types'
 
 export const api = {
@@ -57,6 +62,9 @@ export const api = {
   overview: () => http.get<OverviewData>('/overview'),
 
   marketOverview: () => http.get<MarketOverview>('/market/overview'),
+  /** 市场热点：板块榜 / 龙头 / 周期相位 / 炒作主线 */
+  hotspot: (window = 5, limit = 12) =>
+    http.get<HotspotData>('/market/hotspot', { params: { window, limit } }),
   quotes: (codes?: string[]) =>
     http.get<Quote[]>('/market/quote', { params: codes?.length ? { codes: codes.join(',') } : {} }),
   bars: (params: { code: string; freq?: string; adjust?: string; limit?: number; indicators?: string }) =>
@@ -155,6 +163,16 @@ export const api = {
     apply?: boolean
   }) => http.post<{ accepted: boolean; strategy: string; evaluations: number }>('/lab/evolve', payload),
   labEvolveStatus: () => http.get<LabEvolveState>('/lab/evolve/status'),
+  autopilot: () => http.get<AutopilotState>('/lab/autopilot'),
+  autopilotToggle: (enabled: boolean) =>
+    http.post<AutopilotState>('/lab/autopilot/toggle', { enabled }),
+  autopilotRun: (mode: 'intraday' | 'eod' = 'intraday') =>
+    http.post<{ accepted: boolean; mode: string; watch?: WatchDoc }>(
+      '/lab/autopilot/run', { mode }),
+  autopilotHistory: (limit = 30) =>
+    http.get<{ items: Array<{ at: string; mood: string; summary: string; source: string }> }>(
+      `/lab/autopilot/history?limit=${limit}`),
+  llmTest: () => http.post<LlmTestResult>('/lab/llm/test', {}),
   labEvolveApply: (strategy: string) =>
     http.post<{ applied: string; generation: number; score: number }>('/lab/evolve/apply', { strategy }),
   labTick: (payload: { strategy?: string; force?: boolean; capital?: number } = {}) =>
@@ -188,6 +206,8 @@ export interface LabStrategyDetail {
     history: LabEvoGeneration[]
     /** 样本外验证：最后一段没参与搜索的交易日，进化后 vs 原始策略 */
     holdout?: LabHoldout | null
+    /** 该不该真把参数换上去：样本外 edge + 连续两次一致 + 风控门槛 */
+    adoption?: LabAdoption | null
     notes: string[]
     elapsed: number
     config: Record<string, number | string>

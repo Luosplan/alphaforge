@@ -49,6 +49,14 @@ client.interceptors.response.use(
       window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
       return Promise.reject(err)
     }
+    if (status === 405) {
+      // 405 在这个项目里几乎只有一个成因：后端还是旧进程，没有这个路由。
+      // Starlette 的 SPA 兜底是 `GET /{path:path}`，POST 打到一个不存在的
+      // 路径时不是 404 而是 405，axios 原话是 "Method Not Allowed"——
+      // 看这句话根本想不到是「该重启了」。
+      ElMessage.error('这个接口后端还没有：服务大概还是旧进程，重启后重试')
+      return Promise.reject(err)
+    }
     if (!silent) {
       const text = pickMessage(err, status === 429 ? '尝试过于频繁，请稍后再试' : '请求失败')
       ElMessage.error(text)

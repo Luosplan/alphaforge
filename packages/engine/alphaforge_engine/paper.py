@@ -25,12 +25,13 @@ from __future__ import annotations
 
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
 
-from .backtest import DEFAULTS
+from .backtest import DEFAULTS, single_cap
 from .selector import execute
 from .signal import build_plan
 
 LIVE_CAPITAL = 1_000_000.0
-MAX_SINGLE = RISK_LIMITS["max_single_weight"]
+# 单票上限统一走 `backtest.single_cap(top_n)`：模拟盘和回测必须用同一个数，
+# 否则同一笔委托在两个页面上是两个仓位。这里不再单独持有 15% 的常量。
 MAX_GROSS = RISK_LIMITS["max_gross_exposure"]
 MAX_CATCHUP = 30          # 一次最多补几个交易日
 
@@ -38,6 +39,19 @@ MAX_CATCHUP = 30          # 一次最多补几个交易日
 # 回测与模拟盘都改成「每天补空缺仓位」，调仓周期不再是可调项。
 PARAM_KEYS = ("top_n", "max_per_industry", "stop_atr", "tp1_atr",
               "tp2_atr", "time_stop")
+
+# 计划卡的「委托」状态。这三句话回答的是同一个问题：这张卡到底有没有真挂单。
+# 不用 `live_status` 顶替——那是「现价落在建仓区哪一段」，当日新卡恒为区间内，
+# 跟买没买着没有关系。
+ORDER_WAITING = "待明日开盘成交"
+ORDER_HELD = "已持有 · 加仓不自动执行"
+ORDER_NOSLOT = "仅备选 · 仓位已满"
+# 持仓数已经超过 `top_n` 时不能再叫「仓位已满」：进化允许把 top_n 往下调
+# （只能变集中、不能变多），调小之后账户里可能还留着更多票。这时限的是
+# **只数**不是资金，写成「仓位已满」会让用户以为钱不够，实际是等已有票退出。
+# 行为上和 NOSLOT 一样不挂单——账户只减不增，直到持仓数回到上限以内。
+ORDER_OVER = "已超持仓上限 · 只减不增"
+ORDER_REGIME = "择时关闭 · 大盘在均线下方"
 
 
 def empty_account(strategy_id: str, name: str, spec: dict,
@@ -51,6 +65,11 @@ def empty_account(strategy_id: str, name: str, spec: dict,
     否则同一条策略在抽屉里会并排放着两个用不同 top_n 跑出来的数字。
     """
     base = {k: DEFAULTS[k] for k in PARAM_KEYS}
+    # 撮合/风控开关不进基因组（PARAM_KEYS 只放遗传搜索要动的东西），但要
+    # 跟着账户一起落盘，否则模拟盘读不到、和回测口径分叉。
+    for key in ("market_ma", "breakeven_after_tp1"):
+        value = spec.get(key)
+        base[key] = DEFAULTS[key] if value is None else value
     for key in PARAM_KEYS:
         value = spec.get(key)
         if value is not None:
@@ -158,7 +177,8 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
     cash = float(account.get("cash") or 0.0)
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
-    plans, orders = _next_plans(engine, feed, spec, params, positions, nav, date_s)
+    plans, orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
+                                regime_ok=_regime_allows(engine, date_s, params))
     equity = list(account.get("equity") or [])
     if equity:
         equity[-1] = {"date": date_s, "value": round(nav, 2)}
@@ -212,12 +232,16 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
             pos["last"] = float(bar["close"])
 
         if lo <= pos["stop"] and not stuck_down:
-            sell(pos, o if o < pos["stop"] else pos["stop"], "止损")
+            reason = ("保本止损" if pos.get("tp1_done") and pos["stop"] >= pos["cost"]
+                      else "止损")
+            sell(pos, o if o < pos["stop"] else pos["stop"], reason)
             continue
         if not pos.get("tp1_done") and hi >= pos["tp1"]:
             half = max(int(pos["shares"] * 0.5 / 100) * 100, 100)
             sell(pos, o if o >= pos["tp1"] else pos["tp1"], "TP1 减半", qty=half)
             pos["tp1_done"] = True
+            # 与回测同口径：TP1 之后剩余仓位止损上移到成本价，见 backtest.py 注释
+            pos["stop"] = max(pos["stop"], pos["cost"])
             continue
         if pos.get("tp1_done") and hi >= pos["tp2"]:
             sell(pos, o if o >= pos["tp2"] else pos["tp2"], "TP2 清仓")
@@ -247,7 +271,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
             continue
         if o <= 0:
             continue
-        weight = min(1.0 / int(params["top_n"]), MAX_SINGLE)
+        weight = min(1.0 / int(params["top_n"]), single_cap(int(params["top_n"])))
         grep = (nav_open - cash) / nav_open if nav_open else 1.0
         if grep > MAX_GROSS:
             log.append("总仓位已到上限，本次委托不执行")
@@ -288,7 +312,8 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     # ---- 3. 收盘：按今日选股生成计划卡与明日委托
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
-    plans, new_orders = _next_plans(engine, feed, spec, params, positions, nav, date_s)
+    plans, new_orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
+                                    regime_ok=_regime_allows(engine, date_s, params))
 
     # ---- 4. 记账
     equity = list(account.get("equity") or [])
@@ -316,8 +341,12 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
 
 def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
                 positions: list[dict], nav: float,
-                date_s: str) -> tuple[list[dict], list[dict]]:
-    """按今日收盘选股 → 计划卡 + 明日委托。"""
+                date_s: str, regime_ok: bool = True) -> tuple[list[dict], list[dict]]:
+    """按今日收盘选股 → 计划卡 + 明日委托。
+
+    `regime_ok=False`（大盘在均线下方）时仍然出卡——用户需要知道「今天不买是
+    因为大盘」，而不是打开页面发现一片空白——但一张委托都不挂。
+    """
     try:
         selection = execute(engine, spec, top_n=int(params["top_n"]))
     except Exception:                                   # noqa: BLE001 - 选股失败不该拖垮记账
@@ -350,8 +379,21 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         plan["atr"] = round(atr, 4)
         plan["plan_date"] = date_s
         plans.append(plan)
-        if code in held or slots <= 0:
+        # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
+        if not regime_ok:
+            plan["order_state"] = ORDER_REGIME
+            plan["order_tone"] = "flat"
             continue
+        if code in held:
+            plan["order_state"] = ORDER_HELD
+            plan["order_tone"] = "flat"
+            continue
+        if slots <= 0:
+            plan["order_state"] = ORDER_NOSLOT if len(held) <= int(params["top_n"]) else ORDER_OVER
+            plan["order_tone"] = "flat"
+            continue
+        plan["order_state"] = ORDER_WAITING
+        plan["order_tone"] = "brand"
         orders.append({"code": code, "name": item["name"], "reason": "计划建仓",
                        "created": date_s, "atr": round(atr, 4),
                        "score": item.get("score")})
@@ -368,8 +410,11 @@ def _mark_plans(plans: list[dict], feed: _Feed, date_s: str) -> None:
     注意 `build_plan` 的建仓区是**以参考价为中心**生成的
     （下沿 ref − 0.55ATR，上沿 ref + 0.15ATR），所以当日新生成的卡里，
     现价必然落在建仓区内——`live_status` 只能当扫描用的色块，不能当作
-    「该不该动手」的判断。真正逐票变化的是 `stop_distance_pct`：
-    距止损还有几个点，那才是这张卡的风险成本。
+    「该不该动手」的判断。
+
+    前端因此以 `order_state`（有没有真的挂委托）为主，`live_status` 只在
+    「停牌 / 已跌破止损区」这两种真正需要停下来看的情况下才顶到前面。
+    真正逐票变化的风险指标是 `stop_distance_pct`：距止损还有几个点。
     """
     for plan in plans:
         bar, _ = feed.bar(plan["code"], date_s)
@@ -395,6 +440,58 @@ def _mark_plans(plans: list[dict], feed: _Feed, date_s: str) -> None:
 
 def _held_days(engine, open_date: str, date_s: str) -> int:
     return sum(1 for d in engine.dates if open_date < d.isoformat() <= date_s)
+
+
+def _regime_allows(engine, date_s: str, params: dict) -> bool:
+    """今天该不该开新仓：沪深300 是否在 `market_ma` 日线之上。
+
+    与回测 `backtest._regime_ok` 同一口径。`market_ma=0`（默认）时永远返回 True，
+    保持历史行为；取不到指数数据也返回 True——宁可照常交易，也不因为缺数据
+    让模拟盘静默停摆。
+    """
+    ma = int(params.get("market_ma") or 0)
+    if ma <= 0:
+        return True
+    try:
+        rows = engine.repo.index_daily("000300.SH", ma + 40)
+    except Exception:                                    # noqa: BLE001
+        return True
+    hist = [(b["date"], float(b["close"])) for b in (rows or []) if b.get("close")]
+    hist = [r for r in hist if r[0] <= date_s]
+    if len(hist) < ma:
+        return True
+    closes = [c for _, c in hist[-ma:]]
+    return closes[-1] >= sum(closes) / len(closes)
+
+
+def ensure_order_state(plans: list[dict], positions: list[dict],
+                        params: dict) -> list[dict]:
+    """给还没有 `order_state` 的旧计划卡补一次。
+
+    页面读的是落盘的账户，老数据里没这个字段；不补的话状态列会退回
+    `live_status`，用户看到的还是那句话——要等下一次「推进模拟盘」才变。
+    同一天的 plan 与 order 是一起生成的、成交发生在下一交易日，所以事后
+    按「当前持仓 + 剩余槽位」重推一遍，结果与当时挂单的事实一致。
+    """
+    if not plans or all("order_state" in p for p in plans):
+        return plans
+    held = {p["code"] for p in positions}
+    cap = int(params.get("top_n") or 0)
+    slots = max(cap - len(held), 0)
+    for plan in plans:
+        if "order_state" in plan:
+            continue
+        if plan["code"] in held:
+            plan["order_state"] = ORDER_HELD
+            plan["order_tone"] = "flat"
+        elif slots <= 0:
+            plan["order_state"] = ORDER_NOSLOT if len(held) <= cap else ORDER_OVER
+            plan["order_tone"] = "flat"
+        else:
+            plan["order_state"] = ORDER_WAITING
+            plan["order_tone"] = "brand"
+            slots -= 1
+    return plans
 
 
 def _market_value(positions: list[dict], feed: _Feed) -> float:
@@ -468,7 +565,9 @@ def snapshot(engine, account: dict) -> dict:
         "statistics": stats,
         "positions": positions,
         "orders": account.get("orders") or [],
-        "plans": account.get("plans") or [],
+        "plans": ensure_order_state(account.get("plans") or [],
+                                     account.get("positions") or [],
+                                     account.get("params") or {}),
         "equity": (account.get("equity") or [])[-260:],
         "trades": trades[-80:],
         "log": account.get("log") or [],
