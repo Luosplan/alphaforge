@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from alphaforge_core.indicators import compute_all
 from alphaforge_engine import hotspot as hotspot_engine
 from alphaforge_engine.panorama import global_book, index_book, market_temperature
+from alphaforge_engine.profile import company_profile
 from alphaforge_engine.signal import active_plans
 
 from ..deps import market, ok
@@ -192,6 +193,23 @@ def hotspot(request: Request,
 @router.get("/stock-flow")
 def stock_flow(request: Request, code: str = Query(..., description="代码")):
     return ok(market().stock_flow(code))
+
+
+@router.get("/stock/{code}/profile")
+def stock_profile(
+    request: Request,
+    code: str,
+    refresh: bool = Query(False, description="忽略缓存，强制回上游拉一次"),
+):
+    """公司概况：上市板 / 概念板块 / 主营业务 / 公司简介。
+
+    慢接口——首次访问要回东财拉 F10，之后读本地缓存 30 天。前端在抽屉
+    打开时发起，不要放进列表循环里。
+    """
+    engine = market()
+    if not engine.symbol_valid(code):
+        raise HTTPException(status_code=404, detail=f"标的 {code} 不存在")
+    return ok(company_profile(engine, code, refresh=refresh))
 
 
 @router.get("/symbols")

@@ -153,7 +153,12 @@ class Syncer:
         )
 
     # ------------------------------------------------------------------ 入口
-    def run(self, steps: Iterable[str] | str | None = None) -> dict:
+    def run(self, steps: Iterable[str] | str | None = None, *, full: bool = False) -> dict:
+        """按步骤同步。`full=True` 时 daily 走全量重拉（补历史用）。
+
+        增量模式只补最近 12 根，对「把历史往前延到 5 年」这件事完全无效——
+        库里已有的票永远不会被要求更早的数据。所以拉长窗口必须显式全量。
+        """
         order = ["universe", "fundamentals", "bonus", "daily", "flow", "index",
                  "factor", "sector"]
         wanted = order if not steps or steps == "all" else (
@@ -175,7 +180,10 @@ class Syncer:
             self.emit(step, 0, 1, message=f"开始 {step}")
             run_id = self._run_row(step)
             try:
-                rows = getattr(self, f"step_{step}")(run_id=run_id)
+                kwargs = {"run_id": run_id}
+                if step == "daily" and full:
+                    kwargs["full"] = True
+                rows = getattr(self, f"step_{step}")(**kwargs)
                 self.emit(step, 1, 1, message=f"{step} 完成")
                 secs = round(time.time() - t0, 1)
                 done[step] = {"rows": rows, "seconds": secs}
@@ -300,12 +308,24 @@ class Syncer:
         return n
 
     # ------------------------------------------------------------------ 分红
+    def bonus_since(self) -> str:
+        """分红回看窗口的起点。**必须覆盖日线窗口**。
+
+        `_adjust_factors` 只认拿到的除权事件：漏掉某一次分红，除权日之前的
+        价格就少乘一个因子，K 线上会凭空多出一根假跌——回测里那就是一根
+        无法解释的 -X%，而且恰好落在除权日。所以窗口按 `self.bars` 反推
+        （一年约 230 个交易日），再留一年缓冲给跨年分红。
+        """
+        years = self.bars / 230.0 + 1.0
+        return (dt.date.today() - dt.timedelta(days=int(365 * years))).isoformat()
+
     def step_bonus(self, run_id: int = 0) -> int:
         """分红送配事件。同时产出两样东西：股息率、前复权因子。
 
-        一次请求（约 30 页）覆盖全市场三年，比按股票逐只查便宜三个数量级。
+        一次请求覆盖全市场，比按股票逐只查便宜三个数量级；页数随窗口线性增长，
+        默认 520 根日线约 30 页，拉到 5 年约 60 页。
         """
-        since = (dt.date.today() - dt.timedelta(days=365 * 3)).isoformat()
+        since = self.bonus_since()
         events = em.bonus_events(since)
         self._bonus = events
         if not events:
@@ -435,7 +455,7 @@ class Syncer:
             # 单独跑 --only daily 时没有 bonus 缓存，就地补一次，否则复权因子全为 1
             # 这步要抓 30 页，先报一句，否则界面上会静默半分钟
             self.emit("daily", 0, len(codes), message="取除权事件（复权因子要用）")
-            since = (dt.date.today() - dt.timedelta(days=365 * 3)).isoformat()
+            since = self.bonus_since()
             try:
                 self._bonus = em.bonus_events(since)
             except Exception:                              # noqa: BLE001
@@ -780,13 +800,16 @@ class Syncer:
         memberships = self.repo.membership()
         cols = ", ".join(FACTOR_COLUMNS)
         marks = ", ".join("?" * len(FACTOR_COLUMNS))
-        written = 0
         conn.execute("DELETE FROM factor WHERE trade_date=?", (date,))
 
+        # 必须**先算完全市场再落库**：板块联动因子是跨票聚合（同行业涨停家数），
+        # 边算边写的话每个批次只看得见自己那 200 只，行业涨停数永远在 0~1 家，
+        # 板块联动策略会静默地永远选不出东西。
+        rows: list[dict] = []
+        codes: list[str] = []
         for i in range(0, len(universe), 200):
             chunk = universe[i: i + 200]
             series = self.repo.series_bulk([s["code"] for s in chunk], days=520)
-            payload = []
             for sym in chunk:
                 s = series.get(sym["code"])
                 if not s:
@@ -794,17 +817,24 @@ class Syncer:
                 row = factor_calc.compute(sym, s, memberships.get(sym["code"], set()))
                 if not row:
                     continue
-                payload.append((date, sym["code"], *[row[c] for c in FACTOR_COLUMNS]))
-            if payload:
-                conn.execute("BEGIN")
-                conn.executemany(
-                    f"INSERT OR REPLACE INTO factor(trade_date, code, {cols}) "
-                    f"VALUES(?, ?, {marks})",
-                    payload,
-                )
-                conn.execute("COMMIT")
-                written += len(payload)
-            self.log(f"  因子 {min(i + 200, len(universe))}/{len(universe)}")
+                rows.append(row)
+                codes.append(sym["code"])
+            self.log(f"  因子计算 {min(i + 200, len(universe))}/{len(universe)}")
+
+        factor_calc.cross_section(rows)
+
+        payload = [(date, code, *[row[c] for c in FACTOR_COLUMNS])
+                   for code, row in zip(codes, rows)]
+        written = 0
+        for i in range(0, len(payload), 1000):
+            conn.execute("BEGIN")
+            conn.executemany(
+                f"INSERT OR REPLACE INTO factor(trade_date, code, {cols}) "
+                f"VALUES(?, ?, {marks})",
+                payload[i: i + 1000],
+            )
+            conn.execute("COMMIT")
+            written += len(payload[i: i + 1000])
 
         dbm.set_meta(conn, "factor_sync", dt.datetime.now().isoformat(timespec="seconds"))
         dbm.set_meta(conn, "trade_date", date)

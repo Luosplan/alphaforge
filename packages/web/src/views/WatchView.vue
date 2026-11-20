@@ -15,7 +15,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
 import type { AutopilotState } from '@/types'
-import { fmtPct, toneOf } from '@/utils/format'
+import { fmtPct, fmtStamp, toneOf } from '@/utils/format'
 
 const state = ref<AutopilotState | null>(null)
 const loading = ref(true)
@@ -75,23 +75,26 @@ const maxPct = computed(() => {
 
 /**
  * 委托状态在表格里要短。后端那串是给人读的完整句子
- * （「择时关闭 · 大盘在均线下方」135px），一列吃掉表格六分之一，
+ * （「择时关闭 · 指数在半年线下方」135px），一列吃掉表格六分之一，
  * 后面「判定/理由」全被挤扁。这里只取前半句做主标签，完整文案放 title。
+ *
+ * 用**前缀**匹配而不是整串相等：后端文案里的均线口径会随参数变
+ * （20 日线 → 半年线就换过一次），整串相等会让芯片在文案一改的同一天
+ * 静默退化成「原样显示 + 灰色」，界面上看不出报错，只是标签突然变长。
  */
-const ORDER_SHORT: Record<string, string> = {
-  '待明日开盘成交': '待成交',
-  '已持有 · 加仓不自动执行': '已持有',
-  '仅备选 · 仓位已满': '仓位已满',
-  '已超持仓上限 · 只减不增': '超上限',
-  '择时关闭 · 大盘在均线下方': '择时关闭',
-}
+const ORDER_LABELS: [string, string, string][] = [
+  ['待明日开盘成交', '待成交', 'brand'],
+  ['已持有', '已持有', 'flat'],
+  ['仅备选', '仓位已满', 'flat'],
+  ['已超持仓上限', '超上限', 'warn'],
+  ['择时关闭', '择时关闭', 'flat'],
+]
 
-const ORDER_TONE: Record<string, string> = {
-  '待明日开盘成交': 'brand',
-  '已持有 · 加仓不自动执行': 'flat',
-  '仅备选 · 仓位已满': 'flat',
-  '已超持仓上限 · 只减不增': 'warn',
-  '择时关闭 · 大盘在均线下方': 'flat',
+function orderMeta(state: string): { label: string; tone: string } {
+  for (const [prefix, label, tone] of ORDER_LABELS) {
+    if (state.startsWith(prefix)) return { label, tone }
+  }
+  return { label: state || '—', tone: 'flat' }
 }
 
 /** 股数：1 万股以上折成「x.xx 万股」，否则原样，几百股的零头也看得清 */
@@ -137,8 +140,8 @@ const rows = computed(() => {
       chg: Number(r.change_pct ?? 0),
       volratio: Number(r.volratio ?? 0),
       orderState,
-      orderLabel: ORDER_SHORT[orderState] || orderState || '—',
-      orderTone: ORDER_TONE[orderState] || 'flat',
+      orderLabel: orderMeta(orderState).label,
+      orderTone: orderMeta(orderState).tone,
       detail,
       brokeEntry,
       stance: v?.stance ?? '—',
@@ -245,8 +248,8 @@ onBeforeUnmount(() => {
             {{ state?.enabled ? '运行中' : '已暂停' }}
           </span>
           <span v-if="state?.running" class="chip warn">正在：{{ state.running }}</span>
-          <span class="muted">上次盯盘 {{ state?.last_intraday ?? '—' }}</span>
-          <span class="muted">上次收盘任务 {{ state?.last_eod_date ?? '—' }}</span>
+          <span class="muted">上次盯盘 <span class="num">{{ fmtStamp(state?.last_intraday) }}</span></span>
+          <span class="muted">上次收盘任务 <span class="num">{{ fmtStamp(state?.last_eod_date) }}</span></span>
           <span v-if="state" class="chip" :class="llmTone">{{ llmLabel }}</span>
           <span v-if="llm?.last_error" class="chip down" :title="llm.last_error">
             模型调用失败：{{ llm.last_error.slice(0, 46) }}
@@ -261,7 +264,7 @@ onBeforeUnmount(() => {
       <div class="panel-head">
         <div class="panel-title">
           市场温度
-          <span class="panel-sub">{{ watch.as_of }} 快照 · 更新于 {{ watch.at }}</span>
+          <span class="panel-sub num">{{ watch.as_of }} 快照 · 更新于 {{ fmtStamp(watch.at) }}</span>
         </div>
         <span class="chip" :class="moodTone">{{ watch.analysis.mood }}</span>
       </div>
@@ -303,6 +306,24 @@ onBeforeUnmount(() => {
         <div class="breadth-bar">
           <i class="up" :style="{ width: (watch.market.上涨 / maxPct) * 100 + '%' }" />
           <i class="down" :style="{ width: (watch.market.下跌 / maxPct) * 100 + '%' }" />
+        </div>
+        <!-- 择时状态必须写在页面上。模拟盘连续几天一单不挂，如果只有一排灰色
+             「择时关闭」，看起来就是程序坏了；把指数点位和均线摆出来，
+             「低于半年线 12.2%」本身就解释了原因，也告诉用户什么时候会恢复。 -->
+        <div
+          v-if="watch.regime?.enabled"
+          class="regime-strip"
+          :class="watch.regime.open_new ? 'ok' : 'off'"
+        >
+          <span class="chip" :class="watch.regime.open_new ? 'up' : 'flat'">
+            {{ watch.regime.label }}
+          </span>
+          <span class="regime-detail num">{{ watch.regime.detail }}</span>
+          <span class="regime-note muted">
+            {{ watch.regime.open_new
+              ? '按规则正常开新仓'
+              : `指数回到${watch.regime.ma} 日线上方即恢复，已持仓仍按止损 / 止盈走完` }}
+          </span>
         </div>
         <p class="ai-summary">
           <span class="chip" :class="watch.analysis.source === 'llm' ? 'brand' : 'flat'">
@@ -495,6 +516,33 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   line-height: 1.75;
   color: var(--af-ink-2);
+}
+
+/* 择时条：一行三段（标签 / 指数与均线 / 说明），窄屏自动换行不截断。
+   用左侧色条而不是整块底色，避免和上面的涨跌家数条抢注意力。 */
+.regime-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--af-down);
+  border-radius: 4px;
+  background: var(--af-surface-2);
+  font-size: 12px;
+}
+
+.regime-strip.ok {
+  border-left-color: var(--af-up);
+}
+
+.regime-detail {
+  color: var(--af-ink);
+}
+
+.regime-note {
+  font-size: 11.5px;
 }
 
 .wtable {

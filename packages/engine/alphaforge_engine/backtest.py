@@ -35,6 +35,8 @@ from alphaforge_core.fields import FIELD_MAP
 from alphaforge_core.metrics import summarize
 from alphaforge_core.universe import pc as price_limit
 
+from .conditions import ConditionError, matches, normalize, normalize_all
+
 TRADING_DAYS = 252
 
 # 撮合模型的版本号。**改动任何影响成交的规则都必须加一**：
@@ -52,7 +54,17 @@ TRADING_DAYS = 252
 # 否则 v3 存下来的回测结果会和 v4 并排显示却不可比。
 # v5：单票上限随持股数放宽（`single_cap`）。持股 < 6 只时单笔能买更多，
 # 总仓位、每笔盈亏、回撤全部改变——同样是成交规则变化，必须算新版本。
-MODEL_VERSION = 5
+# v6：条件过滤（filters）真正生效。此前回测只是**提示一句「条件未生效」**
+# 然后按纯因子打分跑，于是「带 6 条硬过滤的埋伏策略」在回测里跑的其实是
+# 「没有一条过滤的动量策略」——回测好看、实盘选不出票的根源就在这里。
+# 这是选股口径的变化，不是显示层的调整。
+# v7：三处口径同时改，旧数字全部不可比：
+#     ① 股票池改为「区间日均成交额」（原来按最新成交额取，含前视偏差）；
+#     ② 择时层正式生效（沪深300 在 120 日线下方不开新仓）；
+#     ③ `market_ma` 改为读 spec，与模拟盘/今日选股统一。
+#     ①让收益普遍下降、②让回撤普遍收窄，两者方向相反、幅度都不小，
+#     混在一起看只会得到一堆互相矛盾的结论。必须换版本号，让旧存档作废。
+MODEL_VERSION = 7
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -70,6 +82,17 @@ FACTORS: dict[str, tuple[str, int]] = {
     "mainflow": ("主力净流入占比", 1),
     "main_net": ("主力净流入", 1),
     "limit_cnt": ("连板数", 1),
+    # 埋伏型因子。前六个是「已经涨了多少」，这三个是「蓄势到什么程度」——
+    # 只有后者能把买点往前挪。放进 FACTORS 是为了让遗传搜索也能调它们的
+    # 权重，否则进化永远只能在追涨的方向上打转。
+    "squeeze": ("缩量收窄", -1),
+    "ma_converge": ("均线粘合", -1),
+    "pullback5": ("距 5 日高回撤", -1),
+    # 板块联动。`ind_limit_prev` 不进这里：它只用来判断「昨天还没联动」，
+    # 是布尔语义的开关，当成连续因子加权会把「刚启动」和「已经涨三天」混在一起。
+    "ind_limit_cnt": ("同行业涨停家数", 1),
+    "ind_strength": ("行业当日均涨", 1),
+    "ind_rank_pct": ("行业内排名分位", -1),
 }
 
 # 只有当前值、没有历史序列的字段。写清原因是这个模块的义务：
@@ -100,10 +123,16 @@ DEFAULTS: dict = {
     # 它不是可搜索项（不在 `paper.PARAM_KEYS` / `harness.BOUNDS` 里）——
     # 这是修正一处撮合缺陷，不是又一个待调参数。留这个键是为了 A/B 对照。
     "breakeven_after_tp1": 1,
-    # 择时：0 = 一直满仓（历史口径）；20 = 沪深300 在 20 日线之上才开新仓。
-    # 同样不进基因组——它管的是「该不该做」而不是「做什么」，和选股参数
-    # 混在一起搜，等于让搜索去挑一段行情的运气。
-    "market_ma": 0,
+    # 择时：0 = 一直满仓；120 = 沪深300 在半年线之上才开新仓。
+    #
+    # 默认从 0 改成 120 是有实测依据的，不是拍的：5 年样本（2021-09~2026-11，
+    # 沪深300 −17.7%）上，同一批策略不开择时全都在熊段亏光；加上「跌破半年线
+    # 不再开新仓」之后，缩量蓄势与趋势波段在三个子区间（两熊一牛）全部为正。
+    # 20/60 日线太短会反复穿越，200 日线太钝，120 是中间的稳妥值。
+    #
+    # 它不进基因组——择时管的是「该不该做」而不是「做什么」，和选股参数一起搜
+    # 等于让搜索去挑一段行情的运气。
+    "market_ma": 120,
     # 选股池硬门槛：连板数 ≥ 该值才进候选。0 = 不设门槛（默认）。
     # 打板类策略靠它把「涨停池之外」的票挡在外面，否则涨停股不够量时会凑数。
     "pool_limit_min": 0,
@@ -116,6 +145,16 @@ DEFAULTS: dict = {
 
 # 单日成交量占当日成交额的比例上限：模拟「你的单子不至于把票买飞」
 MAX_AMOUNT_SHARE = 0.02
+
+# 择时关闭时每笔预算的折扣。0.5 = 半仓，不是 0（停手）。
+# 取 0.5 而不是 0.7：弱势里试错的胜率本来就更低，留一半仓已经足够
+# 让「板块联动首日」这类机会有仓位可上，又不至于在普跌里满仓挨打。
+# 弱势时的建仓系数。0 = 不开新仓（只让已持仓按止损/止盈走完）。
+#
+# 曾经是 0.5「半仓」，实测明显更差：熊段半仓照样吃满跌幅，回撤 -40%+；
+# 改成 0 之后同一批策略的回撤普降 10~18 个百分点，且熊段由亏转平/转盈。
+# 多头策略在下跌趋势里的正确动作是不参与，不是「少参与」。
+REGIME_SCALE = 0.0
 
 # 目标仓位。单票上限与「等权 1/top_n」取小，避免 top_n=3 时一把梭到 33%
 MAX_SINGLE = RISK_LIMITS["max_single_weight"]
@@ -251,6 +290,10 @@ def slice_panel(panel: Panel, lo: int, hi: int) -> Panel:
     sub.universe_size = panel.universe_size
     sub.min_amount = panel.min_amount
     sub.dropped_flow = panel.dropped_flow
+    # 基准必须一起带过去：`_regime_ok` 靠它判断牛熊，不复制的话切片面板里
+    # `panel.bench` 是空列表，择时静默失效——样本外验证跑出来的就成了
+    # 「没有择时」的成绩，和全样本口径不一致。
+    sub.bench = panel.bench
     return sub
 
 
@@ -264,22 +307,6 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
     if not universe:
         return panel
 
-    # 池子按最新成交额排序取前 N。成交额在 factor 表里是「亿元」口径
-    amount_of = {s["code"]: float(s.get("amount") or 0.0) for s in universe}
-    ranked = sorted((c for c in amount_of if amount_of[c] > 0),
-                    key=lambda c: amount_of[c], reverse=True)
-    codes = ranked[:max_codes]
-    if not codes:
-        codes = [s["code"] for s in universe[:max_codes]]
-    panel.pool_size = len(codes)
-
-    sym = {s["code"]: s for s in universe}
-    panel.codes = codes
-    panel.names = [sym[c].get("name") or c for c in codes]
-    panel.industries = [sym[c].get("industry") or "其他" for c in codes]
-    panel.st = [bool(sym[c].get("is_st")) for c in codes]
-    panel.limit = [price_limit(c, bool(sym[c].get("is_st"))) for c in codes]
-
     calendar = engine.repo.trading_dates(days + WARMUP)
     if len(calendar) < WARMUP + 20:
         # 数据太短就别硬跑：算出来的指标没有统计意义，不如直接回空
@@ -288,6 +315,16 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
     start = max(0, len(calendar) - days)
     panel.dates = calendar[start:]
     n_cal = len(calendar)
+
+    codes = _pool_codes(engine, panel.dates[0], max_codes)
+    panel.pool_size = len(codes)
+
+    sym = {s["code"]: s for s in universe}
+    panel.codes = codes
+    panel.names = [sym[c].get("name") or c for c in codes]
+    panel.industries = [sym[c].get("industry") or "其他" for c in codes]
+    panel.st = [bool(sym[c].get("is_st")) for c in codes]
+    panel.limit = [price_limit(c, bool(sym[c].get("is_st"))) for c in codes]
 
     raw = engine.repo.series_bulk(codes, days + WARMUP)
 
@@ -317,9 +354,41 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
             row.append(ok)
         panel.eligible.append(row)
 
+    # 先补行业联动（跨票聚合），再算 z 值——顺序不能反：z 值要标准化
+    # 的就是联动因子本身，先算 z 会把它们当成恒为 0 的常数。
+    _fill_industry(panel)
     _cross_section(panel)
     panel.bench = _bench_series(engine, len(panel.dates))
     return panel
+
+
+def _pool_codes(engine, since: str, max_codes: int) -> list[str]:
+    """历史股票池：**区间内日均成交额**前 N。
+
+    老口径是「按最新成交额取前 N」，等于用今天的信息决定五年前能买什么：
+    最近被炒起来、成交额冲上来的票会自动进池，池子整体被前视偏差抬高，
+    回测自然好看、实盘必然落差。改成区间日均额后，这层偏差基本消掉。
+
+    严格口径应该是「当日成交额排名」，但那样每天都要在全 A 里重排，
+    面板要装 5000 多只票的历史，内存撑不住。日均额是折中：
+    池子固定，逐日的流动性门槛仍由 `eligible`（amt >= min_amount）把守。
+    """
+    try:
+        rows = engine.repo.conn.execute(
+            "SELECT code, AVG(amount) AS a FROM daily "
+            "WHERE date >= ? AND amount > 0 GROUP BY code "
+            "HAVING a > 0 ORDER BY a DESC LIMIT ?",
+            (since, int(max_codes)),
+        ).fetchall()
+    except Exception:                                       # noqa: BLE001
+        rows = []
+    if rows:
+        return [r[0] for r in rows]
+    # 兜底：daily 还没同步出历史时，退回最新快照排序（成交额是「亿元」口径）
+    amount_of = {s["code"]: float(s.get("amount") or 0.0) for s in engine.universe()}
+    ranked = sorted((c for c in amount_of if amount_of[c] > 0),
+                    key=lambda c: amount_of[c], reverse=True)
+    return ranked[:max_codes] or [s["code"] for s in engine.universe()[:max_codes]]
 
 
 def _bench_series(engine, days: int) -> list[tuple[str, float]]:
@@ -406,6 +475,14 @@ def _code_bars(s: dict, pos: dict[str, int], n_cal: int,
     f["vol20"] = [_vol(c, i, 20) for i in range(m)]
     f["dist_high"] = [_dist_high(h, c, i) for i in range(m)]
     f["volratio"] = [_volratio(amt, i, 5) for i in range(m)]
+    # 蓄势与回踩：口径与 `alphaforge_data.factors.compute` 逐列对齐。
+    # 两处必须同步改——选股读的是库里那份，回测算的是这里这份，
+    # 一旦口径分叉，同一条策略在「今日选股」和「回测」里会是两只票。
+    f["squeeze"] = [_squeeze(h, l, c, i) for i in range(m)]
+    f["ma_converge"] = [_converge(c, i) for i in range(m)]
+    f["dev_ma5"] = [_dev_ma(c, i, 5) for i in range(m)]
+    f["dev_ma10"] = [_dev_ma(c, i, 10) for i in range(m)]
+    f["pullback5"] = [_pullback(h, c, i, 5) for i in range(m)]
     f["mainflow"] = [
         round(main[i] / amt[i] * 100, 4) if amt[i] > 0 else 0.0 for i in range(m)
     ]
@@ -470,6 +547,57 @@ def _volratio(amt: list[float], i: int, n: int) -> float:
     return round(amt[i] / base, 4) if base > 0 else 1.0
 
 
+def _ma(c: list[float], i: int, n: int) -> float:
+    if i + 1 < n:
+        return 0.0
+    window = c[i - n + 1:i + 1]
+    return sum(window) / n if window else 0.0
+
+
+def _amp_mean(h: list[float], l: list[float], c: list[float],
+              i: int, window: int, offset: int = 0) -> float:
+    end = i + 1 - offset
+    start = max(end - window, 0)
+    vals = []
+    for j in range(start, end):
+        prev = c[j - 1] if j > 0 and c[j - 1] else c[j]
+        if prev > 0:
+            vals.append((h[j] - l[j]) / prev * 100)
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def _squeeze(h: list[float], l: list[float], c: list[float], i: int) -> float:
+    """近 5 日振幅 ÷ 前 20 日振幅 ×100。
+
+    分子分母都**不含当日**（offset=1 / 6）：蓄势描述的是「启动之前」的状态，
+    把启动当天算进去的话，放量突破当天振幅放大，squeeze 立刻失去信号，
+    与 `volratio ≥ 1.4` 天然互斥（实测叠加后全市场只剩 1 只）。
+    """
+    if i < 26:
+        return 100.0
+    base = _amp_mean(h, l, c, i, 20, offset=6)
+    return round(_amp_mean(h, l, c, i, 5, offset=1) / base * 100, 4) if base > 0 else 100.0
+
+
+def _converge(c: list[float], i: int) -> float:
+    """MA5/MA10/MA20 的最大间距占价格比例。低于 3 表示三线粘合。"""
+    if i < 19:
+        return 0.0
+    tripod = [_ma(c, i, n) for n in (5, 10, 20)]
+    low = min(tripod)
+    return round((max(tripod) / low - 1) * 100, 4) if low > 0 else 0.0
+
+
+def _dev_ma(c: list[float], i: int, n: int) -> float:
+    ma = _ma(c, i, n)
+    return round((c[i] / ma - 1) * 100, 4) if ma > 0 else 0.0
+
+
+def _pullback(h: list[float], c: list[float], i: int, n: int) -> float:
+    peak = max(h[max(0, i - n + 1):i + 1]) if h else c[i]
+    return round((peak - c[i]) / peak * 100, 4) if peak > 0 else 0.0
+
+
 def _atr(h: list[float], l: list[float], c: list[float], n: int = 14) -> list[float]:
     m = len(c)
     out = [0.0] * m
@@ -484,6 +612,72 @@ def _atr(h: list[float], l: list[float], c: list[float], n: int = 14) -> list[fl
         prev = (prev * (n - 1) + tr[i]) / n
         out[i] = prev
     return out
+
+
+_INDUSTRY_KEYS: tuple[str, ...] = (
+    "ind_limit_cnt", "ind_limit_prev", "ind_strength", "ind_rank_pct",
+)
+
+
+def _fill_industry(panel: Panel) -> None:
+    """按「交易日 × 行业」回填联动因子，就地写进各票的因子列。
+
+    为什么单独一遍而不是放进 `_code_bars`：那个函数只看得见一只票，
+    而「同行业有几家涨停」是跨票聚合。之前漏了这一步，`ind_limit_cnt`
+    在回测里恒为 0，板块联动策略会静默地永远选不出东西。
+
+    口径限制：这里只看得见回测池（默认成交额前 600 只），不是全市场。
+    冷门行业的涨停会被漏掉，算出来的联动强度偏低——这是**保守偏差**：
+    漏掉的联动只会少给买点，不会凭空造出买点。实盘选股读的是 `factor`
+    表，那份是全市场聚合的，不受此影响。
+    """
+    n_cal = len(panel.dates)
+    nc = panel.ncodes
+    if not n_cal or not nc:
+        return
+
+    for ci in range(nc):
+        bars = panel.bars[ci]
+        m = len(bars["c"])
+        for key in _INDUSTRY_KEYS:
+            bars["f"][key] = [0.0] * m
+
+    has = [[False] * nc for _ in range(n_cal)]
+    pct_at = [[0.0] * nc for _ in range(n_cal)]
+    limit_at = [[False] * nc for _ in range(n_cal)]
+    for ci in range(nc):
+        bars = panel.bars[ci]
+        thr = panel.limit[ci] * 0.997
+        for p, d in enumerate(bars["date_idx"]):
+            if 0 <= d < n_cal:
+                has[d][ci] = True
+                pct_at[d][ci] = bars["pct"][p]
+                limit_at[d][ci] = bars["pct"][p] >= thr
+
+    by_ind: dict[str, list[int]] = {}
+    for ci, ind in enumerate(panel.industries):
+        by_ind.setdefault(ind, []).append(ci)
+
+    for members in by_ind.values():
+        prev_cnt = 0
+        for d in range(n_cal):
+            live = [ci for ci in members if has[d][ci]]
+            if not live:
+                continue
+            cnt = sum(1 for ci in live if limit_at[d][ci])
+            strength = sum(pct_at[d][ci] for ci in live) / len(live) * 100
+            ranked = sorted(live, key=lambda ci: pct_at[d][ci], reverse=True)
+            denom = max(len(live) - 1, 1)
+            for rank, ci in enumerate(ranked):
+                p = panel.bar[d][ci]
+                if p < 0:
+                    continue
+                f = panel.bars[ci]["f"]
+                f["ind_limit_cnt"][p] = float(cnt)
+                f["ind_limit_prev"][p] = float(prev_cnt)
+                f["ind_strength"][p] = round(strength, 3)
+                f["ind_rank_pct"][p] = round(rank / denom * 100, 2)
+            prev_cnt = cnt
 
 
 def _cross_section(panel: Panel) -> None:
@@ -565,7 +759,12 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # `spec.get("top_n") or DEFAULTS["top_n"]`（这条策略声明的是 10），
     # 而这里原来只看 DEFAULTS（8）。结果同一条策略的「回测」和
     # 「进化原始策略」两个数字并排挂在同一个抽屉里，用的却是两套参数。
-    for key in ("top_n", "max_per_industry", "pool_limit_min"):
+    #
+    # `market_ma` 同理必须读 spec：模拟盘（`paper.empty_account`）与「今日选股」
+    # 都是按 spec 里的值走的，只有回测走 DEFAULTS，就会出现「回测里空仓躲过的
+    # 熊段，实盘照样满仓挨打」——这正是用户抱怨过的「回测和实盘两张皮」。
+    # 三处读同一个值，回测数字才对实盘有参考意义。
+    for key in ("top_n", "max_per_industry", "pool_limit_min", "market_ma"):
         value = spec.get(key)
         if value is not None:
             cfg[key] = value
@@ -611,26 +810,36 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
         notes.append("被摘掉的权重：" + "；".join(
             f"{d['key']} {d['weight']:.0%}（{d['reason']}）" for d in dropped))
 
-    # 条件筛选在回测里同样跑不了，但两种原因不能混为一谈：PE / ROE / 股息率
-    # 是**没有历史序列**，`above_ma20` 这类则是**算得出但回测不做条件过滤**。
-    # 静默忽略最坏——用户会以为「我那条低估值策略回测过了」，
-    # 实际回测的是「去掉所有估值条件之后的纯动量」。
-    filter_fields = list(dict.fromkeys(
-        str(f.get("field")) for f in (spec.get("filters") or [])
-        if isinstance(f, dict) and f.get("field")))
-    if filter_fields:
-        hard = [f for f in filter_fields if f in NO_HISTORY]
-        soft = [f for f in filter_fields if f not in NO_HISTORY]
-        parts: list[str] = []
-        if hard:
-            parts.append("、".join(hard) + " 没有历史序列，库里只有当前截面")
-        if soft:
-            parts.append("、".join(soft) + " 属于条件过滤，回测只按因子综合分排序")
+    # 条件筛选：v6 起真正参与回测。分两类处理——
+    # 1. `NO_HISTORY` 里的字段（PE / ROE / 股息率）库里只有当前截面，
+    #    没有历史序列可回放，只能摘掉，并在 notes 里说明摘了哪些；
+    # 2. 其余能算出历史序列的字段（含新增的蓄势 / 板块联动因子）正常生效。
+    # 以前是一律跳过，于是「带 6 条硬过滤的埋伏策略」在回测里跑的其实是
+    # 「没有一条过滤的纯动量策略」——回测好看、实盘选不出票，根源就在这里。
+    cfg["filters"] = []
+    dropped_filters: list[str] = []
+    for cond in (spec.get("filters") or []):
+        if not isinstance(cond, dict):
+            continue
+        field = str(cond.get("field") or "").strip()
+        if not field:
+            continue
+        if field in NO_HISTORY:
+            dropped_filters.append(field)
+            continue
+        try:
+            cfg["filters"].append(normalize(cond))
+        except ConditionError:
+            dropped_filters.append(field)
+    if dropped_filters:
         notes.append(
-            f"策略的 {len(filter_fields)} 条筛选条件在回测中未生效："
-            + "；".join(parts)
-            + "。回测实际跑的是「纯因子打分」版本，不是带条件过滤的那条策略"
+            "以下筛选条件在回测中被摘掉（库里只有当前截面，没有历史序列可回放）："
+            + "、".join(dict.fromkeys(dropped_filters))
+            + "；其余条件已生效"
         )
+    elif cfg["filters"]:
+        notes.append(f"{len(cfg['filters'])} 条筛选条件已在回测中生效，"
+                     f"与「今日选股」走同一套条件")
     if spec.get("sort"):
         notes.append("策略指定的排序字段在回测中不参与打分，排序一律按因子综合分")
 
@@ -674,7 +883,11 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
             if (equity_now - cash) / equity_now > MAX_GROSS:
                 continue
             weight = min(1.0 / cfg["top_n"], single_cap(cfg["top_n"]))
-            budget = min(equity_now * weight, cash)
+            # 择时降仓：大盘弱时每笔预算折半，而不是完全不开新仓。
+            # 不能用 `or 1.0`：择时把 scale 压到 0 时，`0.0 or 1.0` 会变回满仓，
+            # 「弱势空仓」这条规则就静默失效了（踩过一次）。
+            scale = order.get("scale")
+            budget = min(equity_now * weight * (1.0 if scale is None else float(scale)), cash)
             fill = _slipped(o, "BUY", prof)
             shares = _shares(budget, fill, bars["amt"][p])
             if shares < 100:
@@ -780,15 +993,20 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
         # 很小、Calmar 刷到 5 以上——那不是选股好，是账户经常空着。
         # 现在按「持仓上限 − 现有持仓」算空缺，和模拟盘完全一致。
         if d < panel.n - 1:
-            # 择时开关：大盘不在均线之上就不开新仓（已有持仓照常按止损/止盈走）。
-            # `market_ma=0` 或没有指数数据时 `regime` 为 None，完全不干预。
+            # 择时开关：大盘不在均线之上时**降半仓**，而不是停手。
+            # 原来是 `slots=0`——完全不开新仓，结果是行情一弱账户就彻底空着。
+            # 对超短恰恰相反：弱势里资金抱团、板块联动最集中，2026-11 那段
+            # 实测择时一开，模拟盘 100 万现金躺了整整两天一笔没动。
+            # 现在改成「只数不砍、每笔预算砍半」，风险控制还在，账户不至于停摆。
             regime_ok = regime is None or (d < len(regime) and regime[d])
-            slots = max(0, cfg["top_n"] - len(positions)) if regime_ok else 0
+            slots = max(0, cfg["top_n"] - len(positions))
+            scale = 1.0 if regime_ok else REGIME_SCALE
             if slots:
                 held = set(positions)
                 picks = _select(panel, d, weights, cfg, held, slots)
                 for ci, score in picks:
-                    pending.append({"ci": ci, "score": score, "reason": "信号建仓"})
+                    pending.append({"ci": ci, "score": score, "reason": "信号建仓",
+                                    "scale": scale})
 
         # ---- 5. 收盘净值
         value = cash + _market_value(positions, panel, d)
@@ -866,30 +1084,77 @@ def _sell(panel: Panel, ci: int, pos: dict, d: int, price: float,
     }
 
 
+def _filter_cell(panel: Panel, ci: int, p: int, field: str):
+    """某票某日某字段的可回测值。取不到返回 None（条件判 False）。
+
+    布尔形态字段在这里现算而不是预先存列：它们只在条件里出现，
+    占一整列（每票每天一个浮点）只为判真假不划算，而且多一列就多一处
+    与 `alphaforge_data.factors` 对齐的责任。
+    """
+    if field == "industry":
+        return panel.industries[ci]
+    bars = panel.bars[ci]
+    if field == "change_pct":
+        return round(bars["pct"][p] * 100, 4)
+    if field == "price":
+        return bars["c"][p]
+    if field == "amount":
+        return round(bars["amt"][p] / 1e8, 4) if bars["amt"][p] else 0.0
+    if field == "limit_up":
+        return bars["pct"][p] >= panel.limit[ci] * 0.997
+    if field == "above_ma20":
+        ma = _ma(bars["c"], p, 20)
+        return bool(ma > 0 and bars["c"][p] > ma)
+    if field == "ma_bull":
+        ma5, ma20, ma60 = (_ma(bars["c"], p, n) for n in (5, 20, 60))
+        return bool(ma60 > 0 and ma5 > ma20 > ma60)
+    if field == "new_high20":
+        win = bars["c"][max(0, p - 19):p + 1]
+        return bool(win and bars["c"][p] >= max(win))
+    if field == "new_high60":
+        win = bars["c"][max(0, p - 59):p + 1]
+        return bool(win and bars["c"][p] >= max(win))
+    col = bars["f"].get(field)
+    if col is None or p >= len(col):
+        return None
+    return col[p]
+
+
 def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
             held: set[int], limit: int) -> list[tuple[int, float]]:
-    """当日横截面打分 → 行业分散 → 取前 `limit` 个（已持有的不重复买）。
+    """当日横截面打分 → 条件过滤 → 行业分散 → 取前 `limit` 个（已持有的不重复买）。
 
     `cfg["pool_limit_min"]` > 0 时先过一道硬门槛：只在连板数 ≥ 该值的票里选。
     打板策略必须靠这道门槛——单纯把连板数当因子加权，在涨停股少于 top_n 的
     日子会「凑数」买进一串连板数为 0 的普通股，那不是策略跑偏，是根本没在打板。
+
+    `cfg["filters"]` 是 v6 新增的**真正生效**的条件过滤。埋伏型策略的买点
+    几乎全部由条件定义（如「回踩 5 日线不破」「行业至少 2 家涨停」），
+    只靠因子加权表达不了「区间」和「开关」这两种语义。
     """
     if limit <= 0:
         return []
     row_ok = panel.eligible[d]
     zs = {k: panel.z[k][d] for k in weights if k in panel.z}
-    if not zs:
+    filters = cfg.get("filters") or []
+    if not zs and not filters:
         return []
     pool_min = float(cfg.get("pool_limit_min") or 0.0)
     scored: list[tuple[int, float]] = []
     for ci in range(panel.ncodes):
         if not row_ok[ci] or ci in held:
             continue
+        p = panel.bar[d][ci]
+        if p < 0:
+            continue
         if pool_min > 0:
-            p = panel.bar[d][ci]
-            col = panel.bars[ci]["f"].get("limit_cnt") if p >= 0 else None
+            col = panel.bars[ci]["f"].get("limit_cnt")
             if not col or col[p] < pool_min:
                 continue
+        if filters and not all(
+                matches(cond, _filter_cell(panel, ci, p, cond["field"]))
+                for cond in filters):
+            continue
         score = 0.0
         for key, w in weights.items():
             col = zs.get(key)
@@ -898,7 +1163,13 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
         scored.append((ci, score))
     if not scored:
         return []
-    scored.sort(key=lambda r: r[1], reverse=True)
+    if zs:
+        scored.sort(key=lambda r: r[1], reverse=True)
+    else:
+        # 纯条件筛选（没有因子权重）：与 `selector.execute()` 同口径，
+        # 按当日涨幅降序兜底，不按代码顺序随便抓几只。
+        scored.sort(key=lambda r: panel.bars[r[0]]["pct"][panel.bar[d][r[0]]],
+                    reverse=True)
 
     picked: list[tuple[int, float]] = []
     count: dict[str, int] = {}
@@ -1007,20 +1278,34 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
     holdings.sort(key=lambda r: r["pnl"], reverse=True)
 
     notes = list(notes)
-    notes.append(f"股票池：按最新成交额取前 {panel.pool_size} 只（全市场 {panel.universe_size} 只）；"
+    notes.append(f"股票池：按区间日均成交额取前 {panel.pool_size} 只（全市场 {panel.universe_size} 只）；"
                  f"当日成交额低于 {panel.min_amount / 1e4:.0f} 万的不进候选")
     notes.append("成交价 = 信号次日开盘价（含 5‱ 滑点），不用收盘价成交，避免未来函数")
+    # 择时必须在备注里说清楚：仓位常年 35~45% 会让人以为是信号不够，
+    # 实际是「指数在均线下方时按规则不建仓」，两种情况的风险完全不同。
+    ma_cfg = int(cfg.get("market_ma") or 0)
+    if ma_cfg > 0:
+        notes.append(
+            f"择时：沪深300 在 {ma_cfg} 日线下方时不建新仓（已持仓仍按止损/止盈走完），"
+            f"与模拟盘同一口径。弱势系数 {REGIME_SCALE:g}"
+            f"{'（完全空仓）' if REGIME_SCALE == 0 else ''}——"
+            f"这一层的贡献在熊段最明显，撤掉它同一批策略的回撤会大一倍")
+    else:
+        notes.append("未启用择时：任何行情都满仓参与，熊段回撤会显著放大")
     notes.append(f"每天扫描空缺仓位并补足到 top_n={cfg['top_n']}，不为了换股而换股："
                  f"已持有的标的不会因为排名下滑被卖，只会被止损/止盈/时间止损带走")
     notes.append("行业分类与 ST 标记为当前值，不是历史值；现金按当日可用处理，未模拟 T+1 交收")
     if avg_exposure < 0.6:
         notes.append(
-            f"平均仓位仅 {avg_exposure:.0%}，主要原因有两个：一是 TP1 减半之后腾出来的"
-            f"现金不会立刻补新仓，要等某个标的整只退出才有空位（`top_n={cfg['top_n']}`，"
-            f"单票上限 {single_cap(cfg['top_n']):.0%}，理论满仓 "
-            f"{min(1.0, cfg['top_n'] * single_cap(cfg['top_n'])):.0%}）；"
-            f"二是这一段的信号数本来就不够填满仓位。"
-            f"回撤浅有一部分来自「钱没买满」，不是选股更稳")
+            f"平均仓位仅 {avg_exposure:.0%}，三个原因按影响从大到小："
+            + (f"① 择时在指数跌破 {int(cfg.get('market_ma') or 0)} 日线时不建新仓，"
+               f"熊段仓位是 0，这是最主要的一条；" if int(cfg.get("market_ma") or 0) > 0
+               else "")
+            + f"② TP1 减半之后腾出来的现金不会立刻补新仓，要等某个标的整只退出"
+              f"才有空位（top_n={cfg['top_n']}，单票上限 {single_cap(cfg['top_n']):.0%}，"
+              f"理论满仓 {min(1.0, cfg['top_n'] * single_cap(cfg['top_n'])):.0%}）；"
+              f"③ 这一段的信号数本来就不够填满仓位。"
+              f"回撤浅有一部分来自「钱没买满」，不是选股更稳")
 
     return {
         "strategy_id": spec.get("id") or "custom",
@@ -1033,13 +1318,16 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
         "universe": {
             "pool": panel.pool_size, "universe_size": panel.universe_size,
             "min_amount": panel.min_amount,
-            "note": f"按最新成交额取前 {panel.pool_size} 只",
+            "note": f"按区间日均成交额取前 {panel.pool_size} 只",
         },
         "params": {
             "top_n": cfg["top_n"], "max_per_industry": cfg["max_per_industry"],
             "stop_atr": cfg["stop_atr"], "tp1_atr": cfg["tp1_atr"],
             "tp2_atr": cfg["tp2_atr"], "time_stop": cfg["time_stop"],
             "rebalance": cfg["rebalance"], "capital": cfg["capital"],
+            # 择时口径必须一起回传：只看收益数字看不出「这 40% 仓位是择时压出来的」，
+            # 同样的收益在满仓和空仓切换下是完全不同的两件事。
+            "market_ma": cfg.get("market_ma") or 0,
         },
         "weights": weights,
         "dropped": dropped,

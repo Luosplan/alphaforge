@@ -232,6 +232,52 @@ def index_members(index_code: str) -> list[str]:
     return [str(r["SECURITY_CODE"]) for r in rows if r.get("SECURITY_CODE")]
 
 
+# ---------------------------------------------------------------- 公司概况
+#
+# F10 的 `RPT_F10_BASIC_ORGINFO` 走的是同一个 datacenter 通道，但必须带
+# `source=F10&client=PC`——换成 `WEB` 会返回空 `result`，而不是报错。
+#
+# 一次只认一只票（`filter=SECUCODE`），没有批量口径。所以这个方法天生是
+# 「按需触发 + 落库缓存」的用法，不要拿去遍历全市场。
+_EMPTY_PROFILE = {
+    "name": "", "em_industry": "", "csrc": "", "main_business": "",
+    "profile": "", "scope": "", "found_date": "", "reg_capital": "", "website": "",
+}
+
+
+def org_profile(code: str) -> dict:
+    """公司概况：主营业务 / 经营范围 / 公司简介 / 产业链归属。
+
+    `code` 形如 `603885.SH`。上游没这只票时返回空值字典——调用方拿不到
+    东西时的正确处理是「显示本地已有的行业与概念」，而不是把抽屉搞成错误页。
+    """
+    qs = "&".join([
+        "reportName=RPT_F10_BASIC_ORGINFO",
+        f"filter={_q(f'((SECUCODE=\"{code}\"))')}",
+        "columns=ALL",
+        "pageNumber=1",
+        "pageSize=1",
+        "source=F10",
+        "client=PC",
+    ])
+    data = fetch_json(f"{DATACENTER}?{qs}")
+    rows = (data.get("result") or {}).get("data") or []
+    if not rows:
+        return dict(_EMPTY_PROFILE)
+    r = rows[0]
+    return {
+        "name": str(r.get("SECURITY_NAME_ABBR") or ""),
+        "em_industry": str(r.get("EM2016") or ""),
+        "csrc": str(r.get("INDUSTRYCSRC1") or ""),
+        "main_business": str(r.get("MAIN_BUSINESS") or ""),
+        "profile": str(r.get("ORG_PROFILE") or ""),
+        "scope": str(r.get("BUSINESS_SCOPE") or ""),
+        "found_date": str(r.get("FOUND_DATE") or "")[:10],
+        "reg_capital": str(r.get("REG_CAPITAL") or ""),
+        "website": str(r.get("ORG_WEB") or ""),
+    }
+
+
 def raw_report(report: str, filter_expr: str, *, page_size: int = 5) -> dict:
     """调试用：直接看某个报表的原始结构，字段变更时先跑它。"""
     qs = "&".join([

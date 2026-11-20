@@ -18,6 +18,16 @@ from .schema import DDL, SCHEMA_VERSION
 # 默认落在仓库根的 data/ 下，可用 AF_DB 覆盖
 _DEFAULT_DB = Path(__file__).resolve().parents[3] / "data" / "alphaforge.db"
 
+# schema v2 往因子表追加的列。`CREATE TABLE IF NOT EXISTS` 对**已存在**的表
+# 不会补列，所以老库升级必须显式 ALTER TABLE；否则 INSERT 会直接抛
+# "table factor has no column named squeeze"，而且是在盘后同步任务里抛，
+# 那时人已经走了。
+_FACTOR_V2_COLUMNS: tuple[str, ...] = (
+    "squeeze", "ma_converge", "dev_ma5", "dev_ma10", "pullback5",
+    "ind_limit_cnt", "ind_limit_prev", "ind_strength", "ind_rank_pct",
+    "limit_cnt",
+)
+
 
 def db_path() -> Path:
     raw = os.environ.get("AF_DB", "").strip()
@@ -45,9 +55,24 @@ def connect(path: Path | None = None, *, create: bool = True) -> sqlite3.Connect
     return conn
 
 
+def _migrate_factor(conn: sqlite3.Connection) -> None:
+    """给老的 factor 表补上 v2 追加的列。表不存在时什么都不做。"""
+    try:
+        info = conn.execute("PRAGMA table_info(factor)").fetchall()
+    except sqlite3.OperationalError:
+        return
+    if not info:
+        return
+    have = {row[1] for row in info}
+    for col in _FACTOR_V2_COLUMNS:
+        if col not in have:
+            conn.execute(f"ALTER TABLE factor ADD COLUMN {col} REAL")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     for stmt in DDL:
         conn.execute(stmt)
+    _migrate_factor(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

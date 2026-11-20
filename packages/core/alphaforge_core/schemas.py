@@ -140,7 +140,9 @@ class LabBacktestRequest(BaseModel):
 
     strategy: str = "multifactor"
     spec: dict | None = None
-    days: int = Field(default=250, ge=60, le=520)
+    # 默认 3 年。250 天只能覆盖单一市场状态，牛熊一轮都走不完，
+    # 在上头挑参数等于对着一段行情过拟合。
+    days: int = Field(default=750, ge=60, le=1260)
     capital: float = Field(default=1_000_000, gt=0, le=100_000_000)
     # 覆盖 ATR 档位 / 调仓周期等结构参数，留空用 `backtest.DEFAULTS`
     params: dict | None = None
@@ -151,9 +153,11 @@ class LabEvolveRequest(BaseModel):
     spec: dict | None = None
     population: int = Field(default=24, ge=6, le=64)
     generations: int = Field(default=6, ge=1, le=20)
-    days: int = Field(default=250, ge=60, le=520)
+    # 进化比单次回测慢 N 倍（种群 × 代数），默认用 2 年；
+    # 但上限放开到 5 年，长周期验证时手动调大。
+    days: int = Field(default=500, ge=60, le=1260)
     capital: float = Field(default=1_000_000, gt=0, le=100_000_000)
-    max_codes: int = Field(default=600, ge=100, le=1200)
+    max_codes: int = Field(default=600, ge=100, le=1500)
     seed: int = Field(default=20261118, ge=0, le=2**31 - 1)
     # 搜完直接采纳到模拟盘账户（前端默认给用户自己点，不默认自动覆盖）
     apply: bool = False

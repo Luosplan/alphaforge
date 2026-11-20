@@ -82,8 +82,18 @@ import time
 
 from .backtest import DEFAULTS, MODEL_VERSION, build_panel, run_backtest, slice_panel
 
-# 参与搜索的基因。key 与 `backtest.FACTORS` 对齐，权重先取正数再归一化
-WEIGHT_GENES: tuple[str, ...] = ("mom5", "mom20", "mom60", "vol20", "dist_high", "volratio")
+# 参与搜索的基因。key 与 `backtest.FACTORS` 对齐，权重先取正数再归一化。
+#
+# 从 6 个扩到 12 个，加的是「埋伏组」：缩量收窄、均线粘合、回踩幅度、
+# 行业联动三项。这是这次改造里最重要的一处——**进化只能在你给它的
+# 搜索空间里找解**。只有 mom20/mom60/dist_high 这六项时，它跑一万轮也只能
+# 学出「买涨得最猛的那只」，永远变不出「缩量回踩 5 日线」这种买点。
+# 用户抱怨「自进化没用」，根因不在采样、不在目标函数，在这里。
+WEIGHT_GENES: tuple[str, ...] = (
+    "mom5", "mom20", "mom60", "vol20", "dist_high", "volratio",
+    "squeeze", "ma_converge", "pullback5",
+    "ind_limit_cnt", "ind_strength", "ind_rank_pct",
+)
 
 BOUNDS: dict[str, tuple[float, float]] = {
     "top_n": (2, 15),
@@ -130,6 +140,7 @@ INT_GENES = frozenset({"top_n", "max_per_industry", "time_stop"})
 
 
 MIN_CLOSED = 8           # 已了结交易少于此数 → 压分
+STRONG_EDGE = 0.35       # 样本外优势超过这个数，一次就够，不必等第二轮确认
 TURNOVER_PENALTY = 0.02  # 每 1 倍换手扣 0.02 分
 CALMAR_CAP = 4.0         # Calmar 计分封顶，避免「回撤压到 1%」的解把其它项全挤成噪声
 EXPOSURE_WEIGHT = 0.20   # 平均仓位每偏离 50% 一个单位的分差
@@ -387,22 +398,33 @@ def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
         {"key": "holdout_positive", "label": "样本外绝对收益 > 0",
          "pass": hold_ret is not None and hold_ret > 0,
          "value": "无样本外" if hold_ret is None else f"{hold_ret * 100:+.1f}%"},
-        {"key": "consistency", "label": "上一次进化同为 win",
-         "pass": prev_level == "win", "value": prev_level or "无记录"},
-        {"key": "closed", "label": "了结交易 ≥ 20 笔",
-         "pass": closed >= 20, "value": closed},
-        {"key": "exposure", "label": "平均仓位 ≥ 50%",
-         "pass": exposure >= 0.5, "value": f"{exposure * 100:.0f}%"},
+        # 「连续两次」这条原来写死成 `prev_level == "win"`，叠加下面三道门槛后
+        # 实际几乎永远不成立：要连续两天都恰好 edge>0.2、都不亏、都够 20 笔、
+        # 仓位都过 50%，四个条件串联。实测跑了 1 次就再也没换过参数，
+        # 用户看到的就是「自进化没有生效」。现在改成：优势足够大（≥0.35）
+        # 一次即可，边缘性的结论才要求第二轮确认。防偶然的目的保留了，
+        # 只是不再把「参数永远不动」当成安全。
+        {"key": "consistency",
+         "label": f"上一次同为 win，或本次 edge ≥ {STRONG_EDGE}",
+         "pass": prev_level == "win" or edge >= STRONG_EDGE,
+         "value": f"{prev_level or '无记录'} / edge {edge:+.2f}"},
+        # 超短的 time_stop 只有 4~8 天，120 天窗口里 12 笔已经能说明问题；
+        # 原来要 20 笔，配合短窗口会把所有「交易偏少但质量高」的解全判死。
+        {"key": "closed", "label": "了结交易 ≥ 12 笔",
+         "pass": closed >= 12, "value": closed},
+        # 35% 而不是 50%：超短本来就不该常年满仓，弱势降半仓是设计的一部分。
+        {"key": "exposure", "label": "平均仓位 ≥ 35%",
+         "pass": exposure >= 0.35, "value": f"{exposure * 100:.0f}%"},
         {"key": "turnover", "label": "换手不高于上次 1.5 倍",
          "pass": (prev_turnover <= 0) or (turnover <= prev_turnover * 1.5),
          "value": f"{turnover:.0f}x"},
     ]
     failed = [c for c in checks if not c["pass"]]
 
-    if not prev_level:
-        action, reason = "hold", "第一次记录，需要再跑一轮确认不是偶然"
+    if not prev_level and edge < STRONG_EDGE:
+        action, reason = "hold", "第一次记录，edge 还不够强（< 0.35），再跑一轮确认"
     elif not failed:
-        action, reason = "adopt", "样本外连续两次打赢，且样本外本身是赚的"
+        action, reason = "adopt", "样本外打赢且本身赚钱，风控全部达标"
     elif level != "win":
         action, reason = "hold", f"样本外未打赢（edge {edge:+.2f}，判定 {level}）"
     elif hold_ret is not None and hold_ret <= 0:
@@ -411,8 +433,6 @@ def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
         action = "hold"
         reason = (f"样本外 edge {edge:+.2f} 是「比基线好」，但绝对收益 "
                   f"{hold_ret * 100:+.1f}% 仍在亏钱——比烂不算改进")
-    elif prev_level != "win":
-        action, reason = "hold", "样本外这次赢了，但上一次没赢，可能是这一段的运气"
     else:
         action = "hold"
         reason = "样本外赢了但风控不合格：" + "、".join(
@@ -439,12 +459,19 @@ def _brief(score: float, report: dict) -> dict:
     }
 
 
-def evolve(engine, spec: dict | None = None, *, population: int = 24,
-           generations: int = 6, days: int = 250, max_codes: int = 600,
+def evolve(engine, spec: dict | None = None, *, population: int = 28,
+           generations: int = 8, days: int = 120, max_codes: int = 600,
            capital: float = 1_000_000.0, seed: int = 20261118,
            holdout: float = 0.3,
            profile: dict | None = None, progress=None) -> dict:
-    """跑一轮遗传搜索。`progress` 是给后台任务上报进度用的回调。"""
+    """跑一轮遗传搜索。`progress` 是给后台任务上报进度用的回调。
+
+    回放窗口从 250 天缩到 120 天：目标是**持有 4~6 天**的超短策略，
+    250 天里同一套参数早就换过两轮市场风格了，那等于拿一年的数据去优化
+    一个周级别的行为。120 天 ≈ 半年，跨一到两次风格切换，是这类策略
+    能承受的最长窗口。切窗口的直接好处是每次评估快一倍——搜索从 144 次
+    扩到 224 次（28×8）之后总耗时反而没有变长。
+    """
     spec = dict(spec or {})
     rng = random.Random(seed)
     t0 = time.monotonic()

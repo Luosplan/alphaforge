@@ -36,7 +36,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         _print(f"未知步骤 {only}，可选：all / {' / '.join(STEPS)}")
         return 2
     t0 = time.time()
-    result = syncer.run(only)
+    result = syncer.run(only, full=args.full)
     _print(f"\n总耗时 {round(time.time() - t0, 1)}s")
     _print(json.dumps(result, ensure_ascii=False, indent=2))
     status = repo.status()
@@ -82,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     p_sync.add_argument("--workers", type=int, default=8)
     p_sync.add_argument("--bars", type=int, default=520, help="每只票保留的日线根数")
     p_sync.add_argument("--flow-days", type=int, default=30, dest="flow_days")
+    p_sync.add_argument("--full", action="store_true",
+                        help="daily 全量重拉（补历史时用；增量只补最近 12 根）")
     p_sync.set_defaults(func=cmd_sync)
 
     p_status = sub.add_parser("status", help="查看库状态")

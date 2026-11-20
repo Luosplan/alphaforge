@@ -30,7 +30,17 @@ const detailTab = ref<'backtest' | 'paper' | 'evolution'>('backtest')
 const planFilter = ref<'ALL' | 'ENTRY' | 'ADD'>('ALL')
 
 const evo = ref<LabEvolveState | null>(null)
-const evoForm = ref({ population: 24, generations: 6, days: 250 })
+/* 回测区间：250 天只能覆盖一种市场状态，牛熊一轮都走不完，
+ * 在上头挑参数等于对着一段行情过拟合。默认 5 年——这一段里含两轮下跌
+ * （2021-09~2022-12 沪深300 −20%、2022-12~2024-07 −10%）和一轮上涨
+ * （+15%），是能同时看到「熊段守不守得住」和「牛段赚不赚得到」的最短窗口。 */
+const btDays = ref(1260)
+const DAY_OPTIONS = [
+  { value: 250, label: '1 年' },
+  { value: 750, label: '3 年' },
+  { value: 1260, label: '5 年' },
+]
+const evoForm = ref({ population: 24, generations: 6, days: 500 })
 let poller: number | null = null
 
 const FACTOR_LABEL: Record<string, string> = {
@@ -46,6 +56,15 @@ const FACTOR_LABEL: Record<string, string> = {
 
 const stats = computed(() => overview.value?.stats)
 const strategies = computed<LabStrategyRow[]>(() => overview.value?.strategies ?? [])
+
+/* 择时状态取任意一条已启动策略的即可：`market_ma` 目前由 DEFAULTS 统一给
+ * 120 日，五条策略口径相同。将来若按策略分别设置，这里要改成按策略展示。 */
+const regime = computed(() => {
+  for (const s of strategies.value) {
+    if (s.paper?.regime) return s.paper.regime
+  }
+  return null
+})
 
 const plans = computed<LabPlanCard[]>(() => {
   const all = overview.value?.plans ?? []
@@ -129,7 +148,7 @@ async function tick(force = false) {
 async function runBacktest(id: string, quiet = false) {
   busy.value = id
   try {
-    await api.labBacktest({ strategy: id, days: 250 })
+    await api.labBacktest({ strategy: id, days: btDays.value })
     if (!quiet) ElMessage.success('回测完成')
     await load()
   } finally {
@@ -381,6 +400,17 @@ onBeforeUnmount(stopPoll)
       </div>
     </section>
 
+    <!-- 择时状态。模拟盘一单不挂的时候，这一行是页面上唯一能解释原因的地方：
+         不是程序没跑，是大盘在均线下方、规则主动停手。 -->
+    <div v-if="regime" class="regime-line">
+      <span class="chip" :class="regime.open_new ? 'up' : 'flat'">{{ regime.label }}</span>
+      <span class="num">{{ regime.detail }}</span>
+      <span class="muted">
+        回测与模拟盘同一口径：大盘在均线下方不开新仓，这是熊段回撤能压住的
+        主要原因；已持仓仍按止损 / 止盈走完
+      </span>
+    </div>
+
     <!-- 进化进度：只在跑的时候出现，不占常驻版面 -->
     <section v-if="evo?.running || batch.running" class="panel progress">
       <div class="pg-head">
@@ -415,10 +445,16 @@ onBeforeUnmount(stopPoll)
         <div class="panel-title">
           策略矩阵
           <span class="panel-sub">
-            回测 250 个交易日 · 成交价取信号次日开盘 · 6 个价量因子 + 6 个结构参数
+            回测 {{ btDays }} 个交易日 · 成交价取信号次日开盘 · 池子按区间日均成交额取
           </span>
         </div>
         <div class="head-tools">
+          <span class="evo-cfg">
+            <span class="muted">区间</span>
+            <el-select v-model="btDays" size="small" style="width: 82px">
+              <el-option v-for="o in DAY_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
+            </el-select>
+          </span>
           <span class="evo-cfg hide-md">
             <span class="muted">种群</span>
             <el-select v-model="evoForm.population" size="small" style="width: 74px">
@@ -1226,6 +1262,22 @@ onBeforeUnmount(stopPoll)
 .s-sub {
   font-size: 11px;
   color: var(--af-ink-3);
+}
+
+/* 择时条：细一行，不抢策略矩阵的注意力，但要让人一眼看到「今天为什么不开仓」。
+   负 margin 抵掉 `.lab` 的 gap，让它贴在顶部条下面而不是自成一块。 */
+.regime-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: -6px;
+  padding: 7px 12px;
+  border-left: 2px solid var(--af-border-strong);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface-2);
+  font-size: 12px;
+  color: var(--af-ink-2);
 }
 
 /* ---------------------------------------------------------------- 进度 */

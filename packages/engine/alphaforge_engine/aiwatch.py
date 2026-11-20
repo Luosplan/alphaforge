@@ -74,6 +74,8 @@ def build_watch_context(*, breadth: dict, index: dict | None,
                 "成本": h.get("cost"), "浮动盈亏": h.get("pnl_pct"),
                 "止损价": h.get("stop"),
                 "距止损": _stop_gap(h),
+                "行业": h.get("industry"),
+                "行业昨日涨停": h.get("ind_limit_cnt"),
             }
             for h in holdings
         ],
@@ -86,6 +88,12 @@ def build_watch_context(*, breadth: dict, index: dict | None,
                 "策略": c.get("strategy_name"),
                 "计划区间": _zone(c),
                 "委托状态": c.get("order_state"),
+                # 板块背景：同一条涨跌幅，在「行业有 3 家涨停」和「行业全绿」
+                # 两种环境里的含义完全相反。不给模型这两个数，它只能对着
+                # 涨跌幅说废话——这正是「AI 没分析到点上」的成因之一。
+                "行业": c.get("industry"),
+                "行业昨日涨停": c.get("ind_limit_cnt"),
+                "行业内排名分位": c.get("ind_rank_pct"),
             }
             for c in candidates
         ],

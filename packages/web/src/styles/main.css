@@ -237,6 +237,35 @@ a {
   color: var(--af-warn);
 }
 
+/* 上市板 tag：沪 / 深 / 创 / 科 / 北。
+ * 中文单字比 SH/SZ 读得快，且一行放得下。主板只分沪深，走描边（安静）；
+ * 创业板 / 科创板 / 北交所涨跌幅是 20% / 30%，同样的 ATR 止损位含义不同，
+ * 所以用品牌色块提亮。红绿不能用来做这个区分——那是涨跌的语义。 */
+.btag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 15px;
+  padding: 1px 3px;
+  border: 1px solid var(--af-border-strong);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--af-ink-2);
+  background: transparent;
+  cursor: default;
+}
+
+.btag.gem,
+.btag.star,
+.btag.bse {
+  border-color: transparent;
+  color: var(--af-brand-ink);
+  background: var(--af-brand-soft);
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL: tuple[str, ...] = (
     # ---------------------------------------------------------------- 元信息
@@ -148,6 +148,9 @@ DDL: tuple[str, ...] = (
         is_st      INTEGER,
         industry   TEXT, board TEXT,
         in_hs300   INTEGER, in_sz50 INTEGER, in_zz500 INTEGER, in_sse INTEGER, in_szse INTEGER,
+        squeeze      REAL, ma_converge REAL, dev_ma5 REAL, dev_ma10 REAL, pullback5 REAL,
+        ind_limit_cnt REAL, ind_limit_prev REAL, ind_strength REAL, ind_rank_pct REAL,
+        limit_cnt    REAL,
         PRIMARY KEY (trade_date, code)
     ) WITHOUT ROWID
     """,
@@ -195,6 +198,28 @@ DDL: tuple[str, ...] = (
     ) WITHOUT ROWID
     """,
     "CREATE INDEX IF NOT EXISTS idx_sector_member_code ON sector_member(code)",
+    # ---------------------------------------------------------------- 公司概况
+    # F10 的公司资料一天也不会变，但上游一次只能问一只票。挂在抽屉里现问
+    # 意味着「点开一次等一次网络」，所以落库缓存，过期再刷。
+    #
+    # 只存上游文本，不存概念板块成员——后者已经在 `sector_member` 里，
+    # 而且每天都在变，复制一份进来就要同步两份。
+    """
+    CREATE TABLE IF NOT EXISTS stock_profile (
+        code          TEXT PRIMARY KEY,
+        name          TEXT,
+        em_industry   TEXT,      -- 东财产业链，形如「交通运输-航空机场-航空」
+        csrc          TEXT,      -- 证监会行业分类
+        main_business TEXT,      -- 主营业务，一句话
+        profile       TEXT,      -- 公司简介，长文
+        scope         TEXT,      -- 经营范围
+        found_date    TEXT,
+        reg_capital   TEXT,
+        website       TEXT,
+        source        TEXT NOT NULL DEFAULT 'eastmoney',
+        updated       TEXT NOT NULL
+    ) WITHOUT ROWID
+    """,
     # ---------------------------------------------------------------- 同步日志
     """
     CREATE TABLE IF NOT EXISTS sync_run (
@@ -216,6 +241,15 @@ FACTOR_NUMERIC: tuple[str, ...] = (
     "mom5", "mom20", "mom60", "up_days", "dist_high",
     "vol20", "max_dd60",
     "main_net", "mainflow", "net5d", "volratio",
+    # v2 追加：蓄势与板块联动。放在末尾而不是按语义插入中间——
+    # `FACTOR_COLUMNS` 直接拼进 INSERT 语句，顺序必须与 ALTER TABLE
+    # 的追加顺序一致，否则老库升级后写进去的列会整体错位。
+    "squeeze", "ma_converge", "dev_ma5", "dev_ma10", "pullback5",
+    "ind_limit_cnt", "ind_limit_prev", "ind_strength", "ind_rank_pct",
+    # 连板数：打板策略的硬门槛。之前只存在于回测面板里（`backtest._code_bars`），
+    # 因子表没有这一列，于是「今日选股」按 `pool_limit_min` 过滤时无从取值，
+    # 门槛静默失效——打板策略会选出今天根本没涨停的票。
+    "limit_cnt",
 )
 
 FACTOR_BOOL: tuple[str, ...] = (

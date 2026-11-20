@@ -13,6 +13,7 @@ from alphaforge_core.constants import RISK_LIMITS, SIGNAL_LABEL, SignalType
 from alphaforge_core.indicators import atr, boll
 
 from .market import MarketEngine
+from .profile import board_tag
 
 STRATEGY_NAMES = {
     "multifactor": "多因子质量价值",
@@ -116,6 +117,8 @@ def build_plan(engine: MarketEngine, code: str, nav: float = 1_000_000,
         "code": code,
         "name": sym["name"],
         "industry": sym["industry"],
+        "board": sym.get("board") or "",
+        "board_tag": board_tag(code, sym.get("board") or "", sym.get("exchange") or ""),
         "strategy_id": strategy_id,
         "strategy_name": strategy_name or STRATEGY_NAMES.get(strategy_id, strategy_id),
         "signal_type": signal_type,
@@ -163,18 +166,42 @@ def build_plan(engine: MarketEngine, code: str, nav: float = 1_000_000,
 TRIM_PNL_PCT = 12.0
 
 
+# 计划卡默认策略的尝试顺序：从信号最强的往下退。
+# 缩量蓄势最严（弱势行情可能当天一只都没有），强势回踩次之，趋势波段兜底。
+# 兜底这一层不能省——`multifactor` 在策略精简时就被删掉了，而这里原本
+# `STRATEGY_MAP.get("multifactor")` 恒为 None，于是落到一个没有 weights
+# 的空壳 spec，走「纯条件筛选」分支，排序时撞上 None 直接 500。
+PLAN_FALLBACK: tuple[str, ...] = ("squeeze", "pullback", "trend")
+
+
 def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int = 6) -> dict:
     """计划卡的候选池来自选股引擎，而不是代码里写死的名单。
 
     选股结果本身已经是「因子打分 + 行业分散 + ST 过滤」的产物，拿它当输入，
     卡片才会随行情和策略变化；写死名单的问题是行情早就换了，每天推的还是
     同一批票，看起来像功能坏了。
+
+    没指定策略时按 `PLAN_FALLBACK` 依次试，第一个凑出候选的就用：
+    缩量蓄势在普跌日可能一只都选不出，此时若直接返回空，首屏计划卡整片空白，
+    用户会以为功能坏了。
     """
     from .selector import STRATEGY_MAP, execute
 
-    base = dict(spec or STRATEGY_MAP.get("multifactor") or {"id": "multifactor", "name": "多因子质量价值"})
-    base.setdefault("id", "multifactor")
-    return execute(engine, base, top_n=top_n)
+    if spec:
+        return execute(engine, spec, top_n=top_n)
+
+    last: dict | None = None
+    for sid in PLAN_FALLBACK:
+        base = STRATEGY_MAP.get(sid)
+        if not base:
+            continue
+        got = execute(engine, base, top_n=top_n)
+        last = got
+        if got.get("items"):
+            return got
+    # 三条策略都选不出票（极端普跌或因子表未就绪）：把最后一次结果返回，
+    # 它的 notice / rank_hint 会说清为什么空，比抛异常或返回 None 有用。
+    return last or execute(engine, {"id": "plan", "name": "今日计划"}, top_n=top_n)
 
 
 def active_plans(engine: MarketEngine, nav: float = 1_000_000,

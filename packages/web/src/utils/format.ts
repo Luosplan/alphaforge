@@ -44,3 +44,38 @@ export function toneOf(value: number | null | undefined): 'up' | 'down' | 'flat'
 export function fmtDate(date: string | null | undefined): string {
   return date?.slice(5) ?? ''
 }
+
+/**
+ * 后端时间戳的展示口径。
+ *
+ * 接口给的是 ISO（`2026-11-20T11:07:01`），直接塞进模板里那个 `T` 很刺眼，
+ * 而且挤在一行状态里还占宽度。这里统一成：
+ *
+ * - 带时分秒 → `11-20 11:07:01`（省年份：状态行里「今年哪一天」是废话）
+ * - 只到天   → `2026-11-19` 原样保留（跨年对比时年份有用）
+ * - 空值     → `—`
+ */
+export function fmtStamp(value: string | null | undefined): string {
+  const raw = (value ?? '').trim()
+  if (!raw) return '—'
+  const norm = raw.replace(' ', 'T')
+  const cut = norm.indexOf('T')
+  if (cut < 0) return raw
+  const date = norm.slice(0, cut)
+  const time = norm.slice(cut + 1).replace('Z', '').split('.')[0]
+  if (!time) return date
+  return `${date.slice(5)} ${time}`
+}
+
+/**
+ * 上市板 tag → 样式类。
+ *
+ * 主板（沪 / 深）走描边、创业板 / 科创板 / 北交所走品牌色：后者涨跌幅是
+ * 20% 与 30%，同样的 ATR 止损位在两者身上的含义完全不同，值得在视觉上分开。
+ */
+export function boardClass(tag: string | null | undefined): string {
+  if (tag === '创') return 'gem'
+  if (tag === '科') return 'star'
+  if (tag === '北') return 'bse'
+  return 'main'
+}

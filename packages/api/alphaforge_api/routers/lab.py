@@ -62,9 +62,16 @@ def _roster() -> list[dict]:
 def _account(strategy: str, spec: dict, capital: float | None = None) -> dict:
     """取账户；没有就开一个。
 
-    spec 的刷新规则：账户**从未进化过**才跟着源策略走。一旦采纳过进化结果，
+    spec 的刷新规则：账户**从未进化过**、或者**从未真正开始交易**（没有任何
+    成交与持仓）时，跟着源策略走。一旦采纳过进化结果**并且已经用它交易过**，
     账户里的 spec 就是用户认可的那一版，不能被「策略库里那条原始策略」
     每次请求都覆盖掉——否则进化白跑，而且没有任何提示。
+
+    「空账户也刷新」这条是补的漏洞：trend 账户曾经采纳过一次进化，参数被
+    推到 top_n=7 / 同行业上限 4 / 时间止损 30 天，但那份参数**一笔都没成交过**。
+    它既不是用户要的策略（超短），也不代表任何已经发生的交易，却因为
+    generation=1 被永久冻结。空账户没有任何历史包袱，让它跟着当前策略走
+    才是对的。
     """
     lab = get_lab()
     acc = lab.account(strategy)
@@ -73,18 +80,33 @@ def _account(strategy: str, spec: dict, capital: float | None = None) -> dict:
                                   capital=capital or paper.LIVE_CAPITAL)
         lab.put_account(acc)
         return acc
-    if int(acc.get("generation") or 0) == 0:
+    untouched = not (acc.get("trades") or acc.get("positions"))
+    if int(acc.get("generation") or 0) == 0 or untouched:
         acc["spec"] = spec
         acc["name"] = spec.get("name") or acc["name"]
         # 结构参数也跟随 spec 刷新，但**只在账户还空着的时候**：已经按旧
-        # top_n 建过仓，中途换参数会让计划卡与账本对不上。账户一旦有成交，
-        # 参数就冻在那一刻；generation>0 的账户是用户采纳过的版本，一律不碰。
-        if not (acc.get("trades") or acc.get("positions")):
+        # top_n 建过仓，中途换参数会让计划卡与账本对不上。
+        if untouched:
             params = dict(acc.get("params") or {})
             for key in paper.PARAM_KEYS:
                 if spec.get(key) is not None:
                     params[key] = spec[key]
             acc["params"] = params
+            # 参数被换回策略定义，那一次「已采纳」就不再适用
+            acc["generation"] = 0
+    # 择时周期**不跟着上面那条规则冻结**，每次都从 spec 同步过来。
+    #
+    # 原因：它不是仓位参数。改 `market_ma` 只影响「以后还开不开新仓」，
+    # 不改变已持仓的股数、成本、止损位，所以不存在「计划卡与账本对不上」。
+    # 反过来，如果把它冻在账户里，就会出现下面这种没人看得出来的情况——
+    # 风控规则从 0 改成 120 之后，回测里熊段已经空仓躲过，而账户里还留着
+    # 老参数 `market_ma=0`，模拟盘照样满仓进场。这类「改了但没生效」比参数
+    # 本身错了更难查：代码看着是对的，数字也像是跑过的。
+    live_ma = spec.get("market_ma")
+    if live_ma is not None:
+        params = dict(acc.get("params") or {})
+        params["market_ma"] = live_ma
+        acc["params"] = params
     return acc
 
 
@@ -183,6 +205,7 @@ def overview(request: Request):
             "paper": {
                 "summary": snap["summary"], "statistics": snap["statistics"],
                 "last_run": snap["last_run"], "is_stale": snap["is_stale"],
+                "regime": snap.get("regime"),
                 "plans": len(snap["plans"]), "orders": len(snap["orders"]),
             } if snap else None,
             "backtest": rep,

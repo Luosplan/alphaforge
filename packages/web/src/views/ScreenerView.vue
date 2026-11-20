@@ -24,7 +24,7 @@ import type {
   Strategy,
   StrategyPayload,
 } from '@/types'
-import { fmtPct, toneOf } from '@/utils/format'
+import { boardClass, fmtPct, toneOf } from '@/utils/format'
 import FactorBars from '@/components/FactorBars.vue'
 import ZoneLadder from '@/components/ZoneLadder.vue'
 import ConditionBuilder from '@/components/ConditionBuilder.vue'
@@ -447,7 +447,10 @@ onMounted(async () => {
             <span class="rank num" :class="{ top: c.rank <= 3 }">{{ c.rank }}</span>
             <span class="ident">
               <span class="name">{{ c.name }}</span>
-              <span class="code num">{{ c.code }}</span>
+              <span class="meta">
+                <span class="code num">{{ c.code }}</span>
+                <span v-if="c.board_tag" class="btag" :class="boardClass(c.board_tag)">{{ c.board_tag }}</span>
+              </span>
               <span v-if="c.hits?.length" class="hits">
                 <span v-for="h in c.hits" :key="h.field" class="hit">
                   {{ h.label }} {{ h.value }}{{ h.unit }}
@@ -913,6 +916,13 @@ onMounted(async () => {
 .code {
   font-size: 10.5px;
   color: var(--af-ink-3);
+}
+
+/* 代码与上市板 tag 同行：`.ident` 是纵向排列，直接塞 tag 会另起一行 */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .hits {

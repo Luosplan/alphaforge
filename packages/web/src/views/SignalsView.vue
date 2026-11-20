@@ -1,14 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshLeft } from '@element-plus/icons-vue'
 import { api } from '@/api'
-import type { BarsResponse, DismissedPlan, PlanCard, PlanSource, RiskCheckResult } from '@/types'
+import type {
+  BarsResponse,
+  DismissedPlan,
+  MinuteResponse,
+  PlanCard,
+  PlanSource,
+  RiskCheckResult,
+  StockProfile,
+} from '@/types'
 import { fmtNum, fmtPct, toneOf } from '@/utils/format'
+import { useLiveQuotes } from '@/composables/useLiveQuotes'
 import PlanCardItem from '@/components/PlanCardItem.vue'
 import ZoneLadder from '@/components/ZoneLadder.vue'
 import KLineChart from '@/components/KLineChart.vue'
+import TimeShareChart from '@/components/TimeShareChart.vue'
 
 const route = useRoute()
 const plans = ref<PlanCard[]>([])
@@ -29,6 +39,52 @@ const risk = ref<RiskCheckResult | null>(null)
 const checkShares = ref(0)
 const checking = ref(false)
 
+/* 实时报价：整页计划卡的代码一起轮询一次，再按代码下发给每张卡。
+ * 每张卡各自轮询是 N 倍的上游请求，而 /market/live 本来就支持批量。 */
+const planCodes = computed(() => plans.value.map((p) => p.code))
+const live = useLiveQuotes(planCodes)
+const liveMap = computed(() => live.items.value)
+
+/* 分时：抽屉里看「今天走得怎么样」。和报价的 3 秒轮询分开——分时按分钟聚合，
+ * 3 秒刷还是同一根柱子，20 秒足够跟上最后一根在动的观感。 */
+const chartMode = ref<'minute' | 'day'>('minute')
+const minute = ref<MinuteResponse | null>(null)
+const minuteLoading = ref(false)
+let minuteTimer: number | undefined
+
+/* 公司概况：慢接口（首访要回上游拉 F10），所以只在抽屉打开时单独发起，
+ * 不阻塞 K 线。切卡时用 code 比对丢弃过期响应，否则快速连点多张卡会串味。 */
+const profile = ref<StockProfile | null>(null)
+const profileLoading = ref(false)
+const coOpen = ref(false)
+/* 「展开」按钮只在真的被裁掉时才出现。按字符数估算不可靠——窗口宽度、
+ * 字体渲染都会让同一段文字占的行数不同，所以直接量高度。
+ *
+ * 但 `-webkit-line-clamp` 的元素上 `scrollHeight` 只报裁剪后的高度，
+ * 直接比 `scrollHeight > clientHeight` 永远是 false（踩过一次：按钮整片
+ * 消失）。必须先摘掉裁剪类量出真实高度，再挂回去——同步完成，不会闪。 */
+const coEl = ref<HTMLElement | null>(null)
+const coOverflow = ref(false)
+
+async function measureCo() {
+  await nextTick()
+  const el = coEl.value
+  if (!el) {
+    coOverflow.value = false
+    return
+  }
+  const clamped = el.classList.contains('clamped')
+  if (clamped) el.classList.remove('clamped')
+  const full = el.scrollHeight
+  if (clamped) el.classList.add('clamped')
+  coOverflow.value = full - el.clientHeight > 2
+}
+
+async function toggleCo() {
+  coOpen.value = !coOpen.value
+  if (!coOpen.value) await measureCo()
+}
+
 const filtered = computed(() =>
   filter.value === 'ALL' ? plans.value : plans.value.filter((p) => p.status === filter.value),
 )
@@ -48,7 +104,124 @@ async function open(plan: PlanCard) {
   chart.value = null
   risk.value = null
   checkShares.value = plan.sizing.shares
+  profile.value = null
+  coOpen.value = false
+  minute.value = null
+  void loadProfile(plan.code)
+  if (chartMode.value === 'minute') {
+    void loadMinute(plan.code)
+    scheduleMinute(plan.code)
+  } else {
+    stopMinute()
+  }
   chart.value = await api.bars({ code: plan.code, limit: 150, indicators: 'MA,BOLL' })
+}
+
+async function loadMinute(code: string) {
+  minuteLoading.value = true
+  try {
+    const got = await api.minute(code)
+    if (active.value?.code === code) minute.value = got
+  } catch {
+    if (active.value?.code === code) minute.value = null
+  } finally {
+    minuteLoading.value = false
+  }
+}
+
+/* 分时追更：递归 setTimeout，上一轮结束才排下一轮，避免慢响应堆叠。
+ * 抽屉关掉就自然停——不然用户在别的页面，这里还在每分钟打接口。 */
+function stopMinute() {
+  if (minuteTimer) window.clearTimeout(minuteTimer)
+  minuteTimer = undefined
+}
+
+function scheduleMinute(code: string) {
+  stopMinute()
+  minuteTimer = window.setTimeout(async () => {
+    if (!drawer.value) return
+    if (document.visibilityState === 'visible' && live.isLive.value) {
+      try {
+        const got = await api.minute(code)
+        if (active.value?.code === code) minute.value = got
+      } catch {
+        // 追不上就算了，下一轮再来；不能因此把整张图清空
+      }
+    }
+    scheduleMinute(code)
+  }, 20000)
+}
+
+watch(drawer, (open) => {
+  if (!open) stopMinute()
+})
+
+watch(chartMode, (mode) => {
+  const code = active.value?.code
+  if (!code) return
+  if (mode === 'minute' && drawer.value) {
+    if (!minute.value) void loadMinute(code)
+    scheduleMinute(code)
+  } else {
+    stopMinute()
+  }
+})
+
+onBeforeUnmount(stopMinute)
+
+/* ------------------------------------------------------------ 抽屉实时行情 */
+const activeLive = computed(() => (active.value ? liveMap.value[active.value.code] : undefined))
+const hasLive = computed(() => {
+  const p = activeLive.value?.price
+  return typeof p === 'number' && p > 0
+})
+const px = computed(() => {
+  if (hasLive.value) return activeLive.value!.price as number
+  return active.value?.ref_price ?? 0
+})
+const pxChg = computed(() => (hasLive.value ? activeLive.value!.change_pct ?? null : null))
+const pxTone = computed(() => toneOf(pxChg.value))
+const liveTag = computed(() => {
+  if (!hasLive.value) return '按参考价显示'
+  if (!live.isLive.value) return '收盘价'
+  const stamp = (live.asOf.value || '').slice(11, 19)
+  return stamp ? `实时 ${stamp}` : '实时'
+})
+
+/* 现价落在计划的哪一段：这才是「看一眼就知道该怎么办」的那句话。
+ * 只报价格不报位置，用户还得自己去区间表里比对四条线。 */
+const zoneState = computed(() => {
+  const plan = active.value
+  if (!plan || !px.value) return { text: '', tone: '' }
+  const z = plan.zones
+  if (px.value <= z.stop.high) return { text: '已破止损区', tone: 'danger' }
+  if (px.value < z.entry.low) {
+    return { text: `距建仓区下沿 ${((z.entry.low / px.value - 1) * 100).toFixed(2)}%`, tone: 'wait' }
+  }
+  if (px.value <= z.entry.high) return { text: '已进建仓区', tone: 'ok' }
+  if (z.target[0] && px.value >= z.target[0].low) return { text: '已达 TP1', tone: 'ok' }
+  return { text: `高于建仓区上沿 ${((px.value / z.entry.high - 1) * 100).toFixed(2)}%`, tone: 'warn' }
+})
+
+async function loadProfile(code: string) {
+  profileLoading.value = true
+  coOverflow.value = false
+  profile.value = null
+  try {
+    const got = await api.stockProfile(code)
+    if (active.value?.code !== code) return
+    profile.value = got
+  } catch {
+    if (active.value?.code !== code) return
+    profile.value = null
+  } finally {
+    if (active.value?.code === code) {
+      // 顺序不能反：正文元素挂在 `v-else-if="profile"` 分支下，
+      // loading 没关掉之前它根本不存在，量什么都量到 null。
+      profileLoading.value = false
+      await measureCo()
+    }
+  }
 }
 
 async function runCheck() {
@@ -178,6 +351,7 @@ onMounted(async () => {
             v-for="p in filtered"
             :key="p.plan_id"
             :plan="p"
+            :live="liveMap[p.code]"
             removable
             @open="open"
             @remove="removePlan"
@@ -237,27 +411,95 @@ onMounted(async () => {
               </span>
               <span class="chip brand">{{ active.signal_label }}</span>
               <span class="chip">{{ active.strategy_name }}</span>
+              <span v-if="zoneState.text" class="chip zone" :class="zoneState.tone">{{ zoneState.text }}</span>
             </div>
             <div class="muted">
               生成于 {{ active.as_of }} · 最早可执行 {{ active.executable_from }} · 时间止损 {{ active.time_stop_days }} 日
             </div>
           </div>
-          <div class="rr">
-            <span class="rr-val num">{{ active.rr.toFixed(2) }}</span>
-            <span class="muted">赔率 R:R</span>
+          <!-- 现价放在这里：看计划第一件事是「现在多少钱」，而不是「赔率多少」 -->
+          <div class="quote" :class="pxTone">
+            <div class="q-num">
+              <span class="q-px num">{{ px.toFixed(2) }}</span>
+              <span v-if="pxChg !== null" class="q-chg num">{{ fmtPct(pxChg) }}</span>
+            </div>
+            <div class="q-sub">
+              <span class="num">赔率 {{ active.rr.toFixed(2) }}</span>
+              <span class="q-sep">·</span>
+              <span>{{ liveTag }}</span>
+            </div>
           </div>
         </div>
 
+        <!-- 公司与板块：先认清「这票是什么」，再看点位。点位只对特定的公司结构有意义 -->
+        <section class="co">
+          <div class="co-head">
+            <span class="block-title">公司与板块</span>
+            <span v-if="profile && profile.source === 'eastmoney'" class="co-src">
+              数据源：东财 F10 · {{ profile.updated?.replace('T', ' ').slice(0, 16) }}
+            </span>
+            <span v-else-if="profile" class="co-src">本地行业与概念（F10 暂不可用）</span>
+          </div>
+
+          <div v-if="profileLoading" class="co-loading">正在读取公司资料…</div>
+
+          <template v-else-if="profile">
+            <div class="co-tags">
+              <span v-if="profile.board_tag" class="co-tag board">
+                {{ profile.board_tag }} · {{ profile.board_name }}
+              </span>
+              <span v-if="profile.industry" class="co-tag">{{ profile.industry }}</span>
+              <span v-for="c in profile.concepts" :key="c" class="co-tag concept">{{ c }}</span>
+            </div>
+
+            <div v-if="profile.em_industry" class="co-line">
+              <span class="co-k">产业链</span>
+              <span class="co-v">{{ profile.em_industry }}</span>
+            </div>
+            <div v-if="profile.main_business" class="co-line">
+              <span class="co-k">主营业务</span>
+              <span class="co-v strong">{{ profile.main_business }}</span>
+            </div>
+            <div v-if="profile.profile" class="co-quote">
+              <p ref="coEl" class="co-text" :class="{ clamped: !coOpen }">{{ profile.profile }}</p>
+            </div>
+            <button v-if="coOverflow || coOpen" class="co-more" type="button" @click="toggleCo">
+              {{ coOpen ? '收起' : '展开公司简介' }}
+            </button>
+            <div v-if="profile.found_date || profile.reg_capital" class="co-meta">
+              <span v-if="profile.found_date">成立 {{ profile.found_date }}</span>
+              <span v-if="profile.reg_capital">注册资本 {{ fmtNum(Number(profile.reg_capital), 0) }} 万元</span>
+              <span v-if="profile.csrc">证监会分类 {{ profile.csrc }}</span>
+            </div>
+          </template>
+          <div v-else class="co-loading">暂无公司资料</div>
+        </section>
+
         <ZoneLadder :plan="active" class="ladder" />
 
-        <KLineChart
-          v-if="chart"
-          :bars="chart.bars"
-          :indicators="chart.indicators"
-          :plans="[active]"
-          :height="300"
-          class="chart"
-        />
+        <div class="chart-box">
+          <div class="chart-bar">
+            <span class="cb-title">{{ chartMode === 'minute' ? '今日分时' : '日 K 与计划区间' }}</span>
+            <el-radio-group v-model="chartMode" size="small">
+              <el-radio-button value="minute">分时</el-radio-button>
+              <el-radio-button value="day">日 K</el-radio-button>
+            </el-radio-group>
+          </div>
+          <template v-if="chartMode === 'minute'">
+            <TimeShareChart v-if="minute" :data="minute" :height="260" />
+            <div v-else class="chart-empty">{{ minuteLoading ? '正在加载今日分时…' : '今日分时暂不可用（非交易时段或上游断流）' }}</div>
+          </template>
+          <template v-else>
+            <KLineChart
+              v-if="chart"
+              :bars="chart.bars"
+              :indicators="chart.indicators"
+              :plans="[active]"
+              :height="300"
+            />
+            <div v-else class="chart-empty">正在加载日 K…</div>
+          </template>
+        </div>
 
         <div class="cols">
           <div class="col">
@@ -483,24 +725,117 @@ onMounted(async () => {
   margin-bottom: 6px;
 }
 
-.rr {
+/* 抽屉右上角的现价：整个抽屉里唯一会自己变的数字，给它最大的字号。
+ * 涨跌色沿用 A 股口径（红涨绿跌），与卡片上的小价格完全一致。 */
+.quote {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  gap: 1px;
 }
 
-.rr-val {
-  font-size: 22px;
+.q-num {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.q-px {
+  font-size: 24px;
   font-weight: 700;
-  color: var(--af-brand);
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.q-chg {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.quote.up .q-px,
+.quote.up .q-chg {
+  color: var(--af-up);
+}
+
+.quote.down .q-px,
+.quote.down .q-chg {
+  color: var(--af-down);
+}
+
+.quote.flat .q-px,
+.quote.flat .q-chg {
+  color: var(--af-ink);
+}
+
+.q-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--af-ink-3);
+}
+
+.q-sep {
+  color: var(--af-ink-4);
+}
+
+/* 现价相对计划的位置。四种状态共用一套版式，只换配色——
+ * 破止损 / 已进区 / 高于上沿 是三种完全不同的动作，不能只靠文字。 */
+.chip.zone {
+  font-weight: 600;
+}
+
+.chip.zone.ok {
+  background: var(--af-brand-soft);
+  color: var(--af-brand-ink);
+}
+
+.chip.zone.warn,
+.chip.zone.danger {
+  background: var(--af-warn-soft);
+  color: var(--af-warn);
+}
+
+.chip.zone.danger {
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.chip.zone.wait {
+  background: var(--af-surface-3);
+  color: var(--af-ink-3);
+}
+
+.chart-box {
+  margin: 6px 0 4px;
+}
+
+.chart-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.cb-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--af-ink-2);
+}
+
+.chart-empty {
+  height: 180px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--af-border);
+  border-radius: 9px;
+  font-size: 12px;
+  color: var(--af-ink-3);
 }
 
 .ladder {
   margin: 22px 0 14px;
-}
-
-.chart {
-  margin: 6px 0 4px;
 }
 
 .cols {
@@ -514,6 +849,153 @@ onMounted(async () => {
   font-weight: 650;
   color: var(--af-ink-2);
   margin: 16px 0 9px;
+}
+
+/* ------------------------------------------------------ 公司与板块 */
+.co {
+  margin-top: 14px;
+  padding: 11px 13px 12px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius);
+  background: var(--af-surface-2);
+}
+
+.co-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* 卡片内的标题不再需要外边距：容器的 padding 已经给了间距 */
+.co-head .block-title {
+  margin: 0;
+}
+
+.co-src {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--af-ink-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.co-loading {
+  padding: 9px 0 2px;
+  font-size: 12px;
+  color: var(--af-ink-3);
+}
+
+.co-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.co-tag {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--af-border);
+  background: var(--af-surface);
+  color: var(--af-ink-2);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 上市板：与卡片上的单字 tag 同一套语义，这里展开成完整说法 */
+.co-tag.board {
+  font-weight: 600;
+  border-color: transparent;
+  color: var(--af-brand-ink);
+  background: var(--af-brand-soft);
+}
+
+/* 概念板块：虚线框表示「这只票挂在这里」，而不是「它就是这个行业」 */
+.co-tag.concept {
+  border-style: dashed;
+  background: transparent;
+  color: var(--af-ink-3);
+}
+
+.co-line {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.co-k {
+  flex: 0 0 52px;
+  color: var(--af-ink-3);
+}
+
+.co-v {
+  flex: 1;
+  min-width: 0;
+  color: var(--af-ink-2);
+}
+
+.co-v.strong {
+  color: var(--af-ink);
+  font-weight: 600;
+}
+
+/* 简介的边框与内边距放在外层。
+ *
+ * 不能和 `-webkit-line-clamp` 放同一个元素上：clamp 只裁内容区，而第 5 行
+ * 的行盒会越过 padding-bottom 露出来半截字（实测，见 .shots/rx-measure.png）。
+ * 把 padding 挪到包一层之后，裁剪边界正好落在第 4 行底部。 */
+.co-quote {
+  margin-top: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--af-border);
+  border-radius: 7px;
+  background: var(--af-surface);
+}
+
+.co-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--af-ink-2);
+}
+
+.co-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.co-more {
+  margin-top: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11.5px;
+  color: var(--af-brand);
+  cursor: pointer;
+}
+
+.co-more:hover {
+  text-decoration: underline;
+}
+
+.co-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--af-border);
+  font-size: 11px;
+  color: var(--af-ink-3);
 }
 
 .zt {

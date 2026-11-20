@@ -881,6 +881,67 @@ class Repo:
             for r in rows
         ]
 
+    # ------------------------------------------------------------ 公司概况
+    def concepts_of(self, code: str, limit: int = 12) -> list[str]:
+        """这只票挂在哪几个概念板块里。概念名比二级行业有用得多——
+        「航空机场」看不出在炒什么，「大飞机」「低空经济」一眼就懂。"""
+        rows = self.conn.execute(
+            "SELECT s.name FROM sector_member m JOIN sector s ON s.code = m.sector_code "
+            "WHERE m.code = ? ORDER BY s.name LIMIT ?",
+            (code, limit),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def concepts_bulk(self, codes: list[str], limit: int = 6) -> dict[str, list[str]]:
+        """批量取概念。板块列表页一次几十上百只票，逐只查就是 N 次往返。"""
+        if not codes:
+            return {}
+        marks = ",".join("?" * len(codes))
+        rows = self.conn.execute(
+            f"SELECT m.code, s.name FROM sector_member m JOIN sector s ON s.code = m.sector_code "
+            f"WHERE m.code IN ({marks}) ORDER BY m.code, s.name",
+            tuple(codes),
+        ).fetchall()
+        out: dict[str, list[str]] = {}
+        for code, name in rows:
+            bucket = out.setdefault(code, [])
+            if len(bucket) < limit:
+                bucket.append(name)
+        return out
+
+    def profile_get(self, code: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT name, em_industry, csrc, main_business, profile, scope, "
+            "found_date, reg_capital, website, source, updated "
+            "FROM stock_profile WHERE code = ?",
+            (code,),
+        ).fetchone()
+        if not row:
+            return None
+        keys = ("name", "em_industry", "csrc", "main_business", "profile", "scope",
+                "found_date", "reg_capital", "website", "source", "updated")
+        return dict(zip(keys, row))
+
+    def profile_put(self, code: str, data: dict, updated: str) -> None:
+        self.conn.execute(
+            "INSERT INTO stock_profile(code, name, em_industry, csrc, main_business, "
+            "profile, scope, found_date, reg_capital, website, source, updated) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(code) DO UPDATE SET name=excluded.name, "
+            "em_industry=excluded.em_industry, csrc=excluded.csrc, "
+            "main_business=excluded.main_business, profile=excluded.profile, "
+            "scope=excluded.scope, found_date=excluded.found_date, "
+            "reg_capital=excluded.reg_capital, website=excluded.website, "
+            "source=excluded.source, updated=excluded.updated",
+            (
+                code, data.get("name"), data.get("em_industry"), data.get("csrc"),
+                data.get("main_business"), data.get("profile"), data.get("scope"),
+                data.get("found_date"), data.get("reg_capital"), data.get("website"),
+                data.get("source") or "eastmoney", updated,
+            ),
+        )
+        self.conn.commit()
+
 
 _BOOL_COLS = frozenset({
     "limit_up", "above_ma20", "ma_bull", "macd_gold", "boll_break",

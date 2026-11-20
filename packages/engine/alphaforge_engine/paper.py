@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
 
-from .backtest import DEFAULTS, single_cap
+from .backtest import DEFAULTS, REGIME_SCALE, single_cap
 from .selector import execute
 from .signal import build_plan
 
@@ -51,7 +51,12 @@ ORDER_NOSLOT = "仅备选 · 仓位已满"
 # **只数**不是资金，写成「仓位已满」会让用户以为钱不够，实际是等已有票退出。
 # 行为上和 NOSLOT 一样不挂单——账户只减不增，直到持仓数回到上限以内。
 ORDER_OVER = "已超持仓上限 · 只减不增"
-ORDER_REGIME = "择时关闭 · 大盘在均线下方"
+# 择时关闭时的委托状态。这一版又回到「一张都不挂」，和最初那版行为相同，
+# 但依据完全不同：最初是 20 日线太敏感（沪深300 一跌破就把账户锁死两天，
+# 看起来像「模拟盘从来不买」），现在是半年线 + 5 年样本 A/B 的结果——
+# 弱势里半仓照样吃满跌幅，回撤只降 5 个点，而收益掉得更多。
+# 文案带上「半年线」是为了让人一眼看出当前用的是哪个口径，不必回来翻代码。
+ORDER_REGIME = "择时关闭 · 指数在半年线下方"
 
 
 def empty_account(strategy_id: str, name: str, spec: dict,
@@ -178,7 +183,7 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
     plans, orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                regime_ok=_regime_allows(engine, date_s, params))
+                                regime_scale=_regime_scale(engine, date_s, params))
     equity = list(account.get("equity") or [])
     if equity:
         equity[-1] = {"date": date_s, "value": round(nav, 2)}
@@ -272,11 +277,14 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         if o <= 0:
             continue
         weight = min(1.0 / int(params["top_n"]), single_cap(int(params["top_n"])))
+        # 择时降仓：弱市里每笔预算折半，而不是一张都不买。
         grep = (nav_open - cash) / nav_open if nav_open else 1.0
         if grep > MAX_GROSS:
             log.append("总仓位已到上限，本次委托不执行")
             continue
-        budget = min(nav_open * weight, cash)
+        # 同 backtest：`or 1.0` 会把 0 当成缺省值，择时空仓永远不生效
+        scale = order.get("scale")
+        budget = min(nav_open * weight * (1.0 if scale is None else float(scale)), cash)
         shares = int(budget / o / 100) * 100
         while shares >= 100:
             amount = shares * o
@@ -313,7 +321,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
     plans, new_orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                    regime_ok=_regime_allows(engine, date_s, params))
+                                    regime_scale=_regime_scale(engine, date_s, params))
 
     # ---- 4. 记账
     equity = list(account.get("equity") or [])
@@ -341,11 +349,13 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
 
 def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
                 positions: list[dict], nav: float,
-                date_s: str, regime_ok: bool = True) -> tuple[list[dict], list[dict]]:
+                date_s: str, regime_scale: float = 1.0) -> tuple[list[dict], list[dict]]:
     """按今日收盘选股 → 计划卡 + 明日委托。
 
-    `regime_ok=False`（大盘在均线下方）时仍然出卡——用户需要知道「今天不买是
-    因为大盘」，而不是打开页面发现一片空白——但一张委托都不挂。
+    `regime_scale < 1`（大盘在均线下方）时**照常挂单，但预算打折**。
+    以前这里是「一张委托都不挂」，页面上只剩一句「择时关闭」——用户看到的是
+    「模拟盘从来不买」，而且弱势行情恰恰是超短的主场。现在保留风控但不拦死：
+    卡片上照实写「择时降仓 · 半仓建仓」，委托带着 scale 一起下去。
     """
     try:
         selection = execute(engine, spec, top_n=int(params["top_n"]))
@@ -380,10 +390,6 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         plan["plan_date"] = date_s
         plans.append(plan)
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
-        if not regime_ok:
-            plan["order_state"] = ORDER_REGIME
-            plan["order_tone"] = "flat"
-            continue
         if code in held:
             plan["order_state"] = ORDER_HELD
             plan["order_tone"] = "flat"
@@ -392,11 +398,11 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
             plan["order_state"] = ORDER_NOSLOT if len(held) <= int(params["top_n"]) else ORDER_OVER
             plan["order_tone"] = "flat"
             continue
-        plan["order_state"] = ORDER_WAITING
+        plan["order_state"] = ORDER_REGIME if regime_scale < 1.0 else ORDER_WAITING
         plan["order_tone"] = "brand"
         orders.append({"code": code, "name": item["name"], "reason": "计划建仓",
                        "created": date_s, "atr": round(atr, 4),
-                       "score": item.get("score")})
+                       "score": item.get("score"), "scale": round(regime_scale, 2)})
 
         slots -= 1
 
@@ -442,26 +448,73 @@ def _held_days(engine, open_date: str, date_s: str) -> int:
     return sum(1 for d in engine.dates if open_date < d.isoformat() <= date_s)
 
 
-def _regime_allows(engine, date_s: str, params: dict) -> bool:
-    """今天该不该开新仓：沪深300 是否在 `market_ma` 日线之上。
+_MA_NAME = {5: "周线", 10: "两周线", 20: "月线", 30: "月半线",
+            60: "季线", 90: "季度线", 120: "半年线", 200: "年线"}
 
-    与回测 `backtest._regime_ok` 同一口径。`market_ma=0`（默认）时永远返回 True，
-    保持历史行为；取不到指数数据也返回 True——宁可照常交易，也不因为缺数据
-    让模拟盘静默停摆。
+
+def regime_state(engine, date_s: str, params: dict) -> dict:
+    """择时状态的完整快照，给前端解释「为什么今天不买」。
+
+    只回一个布尔值是不够的：模拟盘连续几天一单不挂，页面上看到的是一排灰色
+    「择时关闭」，用户没法判断这是规则在起作用还是程序坏了。所以把指数点位、
+    均线点位、偏离幅度一起带出去——「沪深300 3984.8 低于半年线 4539.9（−12.2%）」
+    这句话本身就是解释，比任何文案都有说服力。
+
+    取不到指数数据时返回 `enabled=False` 且 `open_new=True`：宁可照常交易，
+    也不因为缺数据让模拟盘静默停摆。
     """
     ma = int(params.get("market_ma") or 0)
+    state = {
+        "enabled": False, "ma": ma, "open_new": True,
+        "index_close": None, "index_ma": None, "gap_pct": None,
+        "as_of": None, "label": "未启用择时", "detail": "不按大盘位置过滤新仓",
+    }
     if ma <= 0:
-        return True
+        return state
     try:
         rows = engine.repo.index_daily("000300.SH", ma + 40)
     except Exception:                                    # noqa: BLE001
-        return True
+        return state
     hist = [(b["date"], float(b["close"])) for b in (rows or []) if b.get("close")]
-    hist = [r for r in hist if r[0] <= date_s]
+    hist = [r for r in hist if not date_s or r[0] <= date_s]
     if len(hist) < ma:
-        return True
+        return state
+
     closes = [c for _, c in hist[-ma:]]
-    return closes[-1] >= sum(closes) / len(closes)
+    last, avg = closes[-1], sum(closes) / len(closes)
+    gap = (last / avg - 1) * 100 if avg else 0.0
+    ok = last >= avg
+    name = _MA_NAME.get(ma, f"{ma} 日线")
+    state.update({
+        "enabled": True, "open_new": ok, "as_of": hist[-1][0],
+        "index_close": round(last, 2), "index_ma": round(avg, 2),
+        "gap_pct": round(gap, 2),
+        "label": "可开新仓" if ok else "择时关闭 · 不开新仓",
+        "detail": (f"沪深300 {last:.0f} {'高于' if ok else '低于'}"
+                   f"{name} {avg:.0f}（{gap:+.1f}%）"),
+    })
+    return state
+
+
+def _regime_allows(engine, date_s: str, params: dict) -> bool:
+    """今天该不该开新仓：沪深300 是否在 `market_ma` 日线之上。
+
+    与回测 `backtest._regime_ok` 同一口径。`market_ma=0` 时永远返回 True，
+    保持历史行为；取不到指数数据也返回 True——宁可照常交易，也不因为缺数据
+    让模拟盘静默停摆。
+    """
+    return bool(regime_state(engine, date_s, params)["open_new"])
+
+
+def _regime_scale(engine, date_s: str, params: dict) -> float:
+    """择时系数：大盘在均线上 → 1.0（满额），否则 → `REGIME_SCALE`（默认 0，不开新仓）。
+
+    这里返回的是 `REGIME_SCALE` 而不是写死的 0.5 或 0——口径统一放在
+    `backtest.REGIME_SCALE` 一处，回测和模拟盘才不会各说各话。现在的取值是 0
+    （弱势完全不开新仓），依据是 5 年样本上的 A/B：半仓在熊段照样吃满跌幅，
+    回撤只降 5 个点不到；改成空仓后回撤普降 10~18 个点。需要放宽时改那一个常量。
+    """
+    return 1.0 if _regime_allows(engine, date_s, params) else REGIME_SCALE
 
 
 def ensure_order_state(plans: list[dict], positions: list[dict],
@@ -563,6 +616,9 @@ def snapshot(engine, account: dict) -> dict:
             "holdings_count": len(positions),
         },
         "statistics": stats,
+        # 择时状态必须跟着账户一起出去：一单不挂的时候，页面要能说清是规则在
+        # 起作用（大盘在均线下方）还是程序没跑（`is_stale`）。
+        "regime": regime_state(engine, today_s, account.get("params") or {}),
         "positions": positions,
         "orders": account.get("orders") or [],
         "plans": ensure_order_state(account.get("plans") or [],

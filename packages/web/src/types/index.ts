@@ -112,6 +112,10 @@ export interface PlanCard {
   code: string
   name: string
   industry: string
+  /** 上市板原始值：主板 / 创业板 / 科创板 / 北交所 */
+  board?: string
+  /** 上市板单字 tag：沪 / 深 / 创 / 科 / 北——主板要再分沪深，卡片上一眼区分 */
+  board_tag?: string
   strategy_id: string
   strategy_name: string
   signal_type: string
@@ -143,6 +147,33 @@ export interface PlanCard {
   /** 选股排名与得分：候选取自选股结果时，排名说明它在候选中排第几 */
   rank?: number | null
   score?: number | null
+}
+
+/**
+ * 公司概况：抽屉里「这家公司干啥的、属于哪个板块」。
+ *
+ * `source` 是数据来源标记——本地兜底时只有 board / industry / concepts，
+ * 上游拉到 F10 后才有 main_business 与 profile。
+ */
+export interface StockProfile {
+  code: string
+  found: boolean
+  name?: string
+  board_tag: string
+  board_name: string
+  industry: string
+  concepts: string[]
+  main_business: string
+  profile: string
+  em_industry: string
+  csrc: string
+  scope: string
+  found_date: string
+  reg_capital: string
+  website: string
+  source: string
+  stale: boolean
+  updated?: string
 }
 
 /** 计划卡的候选来源：策略、股票池、匹配数——让「这批卡从哪来」写在标题边上 */
@@ -561,6 +592,8 @@ export interface Candidate {
   name: string
   industry: string
   board: string
+  /** 上市板单字 tag：沪 / 深 / 创 / 科 / 北 */
+  board_tag?: string
   score: number
   price: number
   change_pct: number
@@ -972,6 +1005,7 @@ export interface LabStrategyRow {
     statistics: LabPaper['statistics']
     last_run: string | null
     is_stale: boolean
+    regime?: RegimeState | null
     plans: number
     orders: number
   } | null
@@ -1193,6 +1227,24 @@ export interface WatchDoc {
   }
   holdings: Array<Record<string, unknown>>
   candidates: Array<Record<string, unknown>>
+  /** 择时状态。老数据里没有这个字段，所以是可选的 */
+  regime?: RegimeState | null
+}
+
+/**
+ * 择时状态：大盘相对均线的位置，以及今天允不允许开新仓。
+ * 由后端 `paper.regime_state` 给出，回测与模拟盘共用同一套口径。
+ */
+export interface RegimeState {
+  enabled: boolean
+  open_new: boolean
+  ma: number
+  index_close: number | null
+  index_ma: number | null
+  gap_pct: number | null
+  as_of: string | null
+  label: string
+  detail: string
 }
 
 /** 收盘复盘 */

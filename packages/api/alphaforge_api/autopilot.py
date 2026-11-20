@@ -101,6 +101,32 @@ def _fill_volratio(mkt, rows: list[dict], now: dt.datetime) -> None:
             row["volratio"] = round(today / ratio / avg, 2)
 
 
+def _fill_industry(mkt, rows: list[dict]) -> None:
+    """给持仓与候选补上行业联动背景（截至上一交易日收盘）。
+
+    为什么这条对超短特别重要：同样是「今天涨 8%」，如果同行业里有 2 家
+    涨停，那是板块启动的跟风位；如果同行业全绿，那是逆势挣扎。
+    模型看不到这个差别，就只能对着涨跌幅说废话。
+    """
+    if not rows:
+        return
+    try:
+        from alphaforge_engine.factor_board import get_board
+        board = get_board(mkt)
+        idx = {c: i for i, c in enumerate(board.codes)}
+        cols = {k: board.column(k)
+                for k in ("ind_limit_cnt", "ind_rank_pct", "ind_strength")}
+    except Exception:                                    # noqa: BLE001
+        return
+    for row in rows:
+        i = idx.get(row.get("code"))
+        if i is None:
+            continue
+        for key, col in cols.items():
+            if col and i < len(col):
+                row[key] = col[i]
+
+
 class Autopilot:
     def __init__(self, path: Path = STATE_FILE):
         self.path = path
@@ -200,6 +226,21 @@ class Autopilot:
             return
         self.run_eod()
 
+    # ---------------------------------------------------------------- 对象
+    @staticmethod
+    def _strategy_ids() -> list[str]:
+        """盯盘/推进/进化的对象：**所有已开立的账户**。
+
+        之前写死 `("trend", "limitup")`，新增的策略即使开了户也永远不会被
+        盯盘、不会被推进、不会进化——用户看到的就是「新策略是死的」。
+        改成读账户表之后，开一个账户就自动进入这条流水线。
+        """
+        try:
+            from .lab_store import get_lab
+            return list((get_lab().state.get("accounts") or {}).keys())
+        except Exception:                                # noqa: BLE001
+            return ["trend", "limitup"]
+
     # ---------------------------------------------------------------- 盘中
     def run_intraday(self) -> dict:
         """刷快照 → 组装事实 → 分析 → 落一条。盘中不产生任何交易动作。"""
@@ -221,11 +262,17 @@ class Autopilot:
             lab = get_lab()
             holdings: list[dict] = []
             candidates: list[dict] = []
-            for sid in ("trend", "limitup"):
+            # 择时状态取第一个已启动账户的口径带到页面上。各策略的 `market_ma`
+            # 目前统一由 DEFAULTS 给（120），取谁都一样；将来若按策略分开放，
+            # 这里应该改成按策略分组展示，而不是随便挑一个糊过去。
+            regime: dict | None = None
+            for sid in self._strategy_ids():
                 acc = lab.account(sid)
                 if not acc:
                     continue
                 snap = paper.snapshot(mkt, acc)
+                if regime is None:
+                    regime = snap.get("regime")
                 for pos in snap.get("positions") or []:
                     holdings.append({**pos, "strategy": sid})
                 for plan in snap.get("plans") or []:
@@ -251,6 +298,7 @@ class Autopilot:
             for row in holdings + candidates:
                 row["volume"] = (quotes.get(row.get("code")) or {}).get("volume")
             _fill_volratio(mkt, holdings + candidates, now)
+            _fill_industry(mkt, holdings + candidates)
 
             ctx = aiwatch.build_watch_context(
                 breadth=breadth, index=index, holdings=holdings,
@@ -271,6 +319,7 @@ class Autopilot:
                 # 之前直接把中文键版本存进来，前端按 `code/price` 取全是 undefined。
                 "holdings": holdings,
                 "candidates": candidates,
+                "regime": regime,
             }
             with self._lock:
                 self.state["watch"] = doc
@@ -335,9 +384,18 @@ class Autopilot:
             mkt = get_market()
             lab = get_lab()
             profile = store().profile()
+            from .routers import lab as lab_router   # 延迟导入：lab 会反过来 import 本模块
             advanced: dict[str, dict] = {}
-            for sid in ("trend", "limitup"):
-                acc = lab.account(sid)
+            for sid in self._strategy_ids():
+                # 走 `_account` 而不是直接读账户：它负责把「从未成交过的空账户」
+                # 的 spec 刷回当前策略定义。trend 账户曾经采纳过一次进化，
+                # 参数被推到 top_n=7 / 行业上限 4 / 时间止损 30 天，一笔没成交
+                # 却永久冻结——那不是超短，是另一条策略。
+                try:
+                    spec = lab_router._spec_of(sid)
+                    acc = lab_router._account(sid, spec)
+                except Exception:                        # noqa: BLE001
+                    acc = lab.account(sid)
                 if not acc:
                     continue
                 # 不加 force：`step` 自带「今天已推进过就跳过」的守卫，
@@ -369,10 +427,9 @@ class Autopilot:
             review = aiwatch.analyze_review(review_ctx)
             steps.append({"step": "收盘复盘", "source": review.get("source")})
 
-            # ---- 进化：两条策略各跑一轮，采纳与否由门槛决定
-            from .routers import lab as lab_router   # 延迟导入：lab 会反过来 import 本模块
+            # ---- 进化：每个账户各跑一轮，采纳与否由门槛决定
             evolved = []
-            for sid in ("trend", "limitup"):
+            for sid in self._strategy_ids():
                 got = lab_router.run_evolve_blocking(sid, apply=True)
                 evolved.append({"strategy": sid, **{k: got.get(k) for k in
                                                     ("action", "reason", "edge", "applied")}})

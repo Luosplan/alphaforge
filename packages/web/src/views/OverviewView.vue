@@ -27,8 +27,11 @@ const snapshot = ref<IndexQuote[]>([])
 const loading = ref(true)
 
 /* 7 大指数走实时轮询：`live_board` 已经把实时点位合并进指数簿，
-   一次请求同时喂饱 7 张卡片，不需要每个指数各开一个定时器 */
-const live = useLiveQuotes(ref<string[]>([]))
+   一次请求同时喂饱 7 张卡片，不需要每个指数各开一个定时器。
+   计划卡的现价顺路一起问——`/market/live` 支持批量，多带 4 个代码不多花请求。 */
+const liveCodes = ref<string[]>([])
+const live = useLiveQuotes(liveCodes)
+const livePlans = computed(() => live.items.value)
 
 const cnIndices = computed<IndexQuote[]>(() =>
   live.indices.value.length ? live.indices.value : snapshot.value,
@@ -100,6 +103,7 @@ onMounted(async () => {
     const [overview, indices] = await Promise.all([api.overview(), api.indices()])
     data.value = overview
     snapshot.value = indices
+    liveCodes.value = (overview.plans ?? []).slice(0, 4).map((p) => p.code)
   } finally {
     loading.value = false
   }
@@ -292,7 +296,14 @@ function openIndex(code: string) {
           </div>
           <div class="panel-body">
             <div class="plan-grid">
-              <PlanCardItem v-for="p in topPlans" :key="p.plan_id" :plan="p" compact @open="openPlan" />
+              <PlanCardItem
+                v-for="p in topPlans"
+                :key="p.plan_id"
+                :plan="p"
+                :live="livePlans[p.code]"
+                compact
+                @open="openPlan"
+              />
             </div>
           </div>
         </section>

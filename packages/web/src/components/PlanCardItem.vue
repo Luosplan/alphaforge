@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Close } from '@element-plus/icons-vue'
-import type { PlanCard } from '@/types'
+import type { LiveQuote, PlanCard } from '@/types'
+import { boardClass, fmtPct, toneOf } from '@/utils/format'
 import ZoneLadder from './ZoneLadder.vue'
 
-const props = defineProps<{ plan: PlanCard; compact?: boolean; removable?: boolean }>()
+const props = defineProps<{
+  plan: PlanCard
+  compact?: boolean
+  removable?: boolean
+  /** 实时报价。由父级统一轮询后按代码下发——每张卡各自轮询会打爆数据源 */
+  live?: LiveQuote | null
+}>()
 const emit = defineEmits<{
   (e: 'open', plan: PlanCard): void
   (e: 'remove', plan: PlanCard): void
@@ -12,6 +19,21 @@ const emit = defineEmits<{
 
 const statusClass = computed(() =>
   props.plan.status === 'TRIGGERED' ? 'triggered' : props.plan.status === 'HOLDING' ? 'holding' : 'pending',
+)
+/* 上市板：中文单字比「SH / SZ」快得多，涨跌幅规则也能一眼分开 */
+const boardTag = computed(() => props.plan.board_tag || '')
+
+/* 现价：优先实时价。拿不到实时值就退回计划生成时的参考价并降级显示——
+ * 显示「—」等于把卡上最有用的数字挖掉，而参考价至少量级是对的。 */
+const hasLive = computed(() => {
+  const p = props.live?.price
+  return typeof p === 'number' && p > 0
+})
+const price = computed(() => (hasLive.value ? (props.live!.price as number) : props.plan.ref_price))
+const chg = computed(() => (hasLive.value ? props.live!.change_pct ?? null : null))
+const tone = computed(() => toneOf(chg.value))
+const priceTitle = computed(() =>
+  hasLive.value ? '实时价（盘中 3 秒刷新）' : '实时价未取到，显示的是计划生成时的参考价',
 )
 /* 信号标签编码「动作」而非「涨跌」，因此不用红绿，避免与价格色混淆 */
 const signalTone = computed(() => {
@@ -27,9 +49,18 @@ const signalTone = computed(() => {
       <div class="ident">
         <span class="name">{{ plan.name }}</span>
         <span class="code num">{{ plan.code }}</span>
-        <span v-if="plan.rank" class="rank num" title="在选股结果中的排名">#{{ plan.rank }}</span>
+        <span
+          v-if="boardTag"
+          class="btag"
+          :class="boardClass(boardTag)"
+          :title="plan.board || ''"
+        >{{ boardTag }}</span>
       </div>
       <div class="head-right">
+        <span class="px" :class="[tone, { dim: !hasLive }]" :title="priceTitle">
+          <span class="px-val num">{{ price.toFixed(2) }}</span>
+          <span v-if="chg !== null" class="px-chg num">{{ fmtPct(chg) }}</span>
+        </span>
         <span class="pill" :class="statusClass">{{ plan.status_label }}</span>
         <button
           v-if="removable"
@@ -104,16 +135,48 @@ const signalTone = computed(() => {
   min-width: 0;
 }
 
-/* 选股排名：同一天里第 1 名和第 6 名的可信度不是一回事，标出来 */
-.rank {
+/* 上市板 tag 的样式在 main.css 的原子类里（选股结果页也用同一份） */
+
+/* 现价：卡上唯一会自己变的数字，所以给它最大的字重。
+ * 实时价和参考价都显示同一位宽，避免刷新时整行横向跳动。 */
+.px {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
   flex: 0 0 auto;
-  font-size: 10px;
+}
+
+.px-val {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.px-chg {
+  font-size: 10.5px;
   font-weight: 600;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 3px;
-  color: var(--af-brand);
-  background: var(--af-brand-soft);
+}
+
+.px.up .px-val,
+.px.up .px-chg {
+  color: var(--af-up);
+}
+
+.px.down .px-val,
+.px.down .px-chg {
+  color: var(--af-down);
+}
+
+.px.flat .px-val,
+.px.flat .px-chg {
+  color: var(--af-ink-2);
+}
+
+/* 拿不到实时值时降级：保留数字，但压低视觉权重，不假装它是实时价 */
+.px.dim .px-val {
+  color: var(--af-ink-3);
+  font-weight: 600;
 }
 
 .head-right {
@@ -229,6 +292,10 @@ const signalTone = computed(() => {
 
 .compact .name {
   font-size: 13.5px;
+}
+
+.compact .px-val {
+  font-size: 12.5px;
 }
 
 @media (max-width: 767px) {

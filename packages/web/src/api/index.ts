@@ -25,6 +25,7 @@ import type {
   Quote,
   RiskCheckResult,
   SectorFlow,
+  StockProfile,
   SelectResult,
   StrategyPayload,
   Temperature,
@@ -88,6 +89,9 @@ export const api = {
   temperature: () => http.get<Temperature>('/market/temperature'),
   search: (q: string, limit = 10) =>
     http.get<SearchHit[]>('/market/search', { params: { q, limit } }),
+  /** 公司概况：上市板 / 概念板块 / 主营业务。首次访问要回上游拉 F10，之后读缓存 */
+  stockProfile: (code: string, refresh = false) =>
+    http.get<StockProfile>(`/market/stock/${code}/profile`, { params: refresh ? { refresh } : {} }),
 
   watchlist: () => http.get<WatchGroup[]>('/watchlist'),
   addWatch: (code: string, group_id = 'g1') => http.post('/watchlist/items', { code, group_id }),
