@@ -10,6 +10,7 @@ const routes = [
   { path: '/portfolio', name: 'portfolio', component: () => import('@/views/PortfolioView.vue'), meta: { title: '持仓', icon: 'Wallet' } },
   { path: '/lab', name: 'lab', component: () => import('@/views/LabView.vue'), meta: { title: '实验室', icon: 'MagicStick' } },
   { path: '/watch', name: 'watch', component: () => import('@/views/WatchView.vue'), meta: { title: '盯盘', icon: 'View' } },
+  { path: '/journal', name: 'journal', component: () => import('@/views/JournalView.vue'), meta: { title: '复盘日记', icon: 'Notebook' } },
   // public：不需要登录；shell:false：不套侧栏与顶栏，整屏就一张登录卡
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { title: '登录', public: true, shell: false } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

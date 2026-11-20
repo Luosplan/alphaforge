@@ -42,6 +42,7 @@ import type {
   LabHoldout,
   LabAdoption,
   AutopilotState,
+  ReviewJournal,
   LlmTestResult,
   WatchDoc,
   LabGenome,
@@ -178,6 +179,9 @@ export const api = {
   autopilotHistory: (limit = 30) =>
     http.get<{ items: Array<{ at: string; mood: string; summary: string; source: string }> }>(
       `/lab/autopilot/history?limit=${limit}`),
+  /** 复盘日记：每个交易日一篇，新的在前 */
+  labReviews: (limit = 30) =>
+    http.get<ReviewJournal>(`/lab/reviews?limit=${limit}`),
   llmTest: () => http.post<LlmTestResult>('/lab/llm/test', {}),
   labEvolveApply: (strategy: string) =>
     http.post<{ applied: string; generation: number; score: number }>('/lab/evolve/apply', { strategy }),

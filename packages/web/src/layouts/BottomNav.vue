@@ -16,7 +16,7 @@ const route = useRoute()
       :class="{ active: route.name === item.name }"
     >
       <AppIcon :name="item.icon" />
-      <span>{{ item.label }}</span>
+      <span>{{ item.short ?? item.label }}</span>
     </router-link>
   </nav>
 </template>

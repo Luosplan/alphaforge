@@ -91,6 +91,13 @@ withDefaults(defineProps<{ name: string; collapsed?: boolean }>(), { collapsed: 
       <path d="M15.4 15.4L20.6 20.6" />
     </template>
 
+    <!-- 复盘日记：摊开的册子 + 中缝 + 两行字 -->
+    <template v-else-if="name === 'journal'">
+      <path d="M12 6.4C10.3 4.9 7.9 4.2 4.6 4.4v13.4c3.3-.2 5.7.5 7.4 2 1.7-1.5 4.1-2.2 7.4-2V4.4c-3.3-.2-5.7.5-7.4 2Z" />
+      <path d="M12 6.4v13.4" />
+      <path d="M6.8 9.2h2.6M6.8 12.2h2.6" />
+    </template>
+
     <!-- 连接状态圆点 -->
     <template v-else-if="name === 'dot'">
       <circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none" />

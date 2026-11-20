@@ -56,7 +56,10 @@ def _default_state() -> dict:
         "last_eod_date": None,
         "running": None,            # 当前正在做什么，给前端显示
         "watch": None,              # 最近一轮盘中分析
-        "review": None,             # 最近一次收盘复盘
+        "review": None,             # 最近一次收盘复盘（= reviews[0] 的快捷方式）
+        # 复盘日记：每个交易日一篇，新的在前。`review` 只留最新一条，
+        # 而「复盘日记」页要看的是连续几十天怎么想、怎么改。
+        "reviews": [],
         "eod": None,                # 最近一次收盘任务的结果
         "history": [],              # 盘中分析留最近 60 条
         # 每日「计划 vs 实际」的执行质量，留最近 60 天。它不只是给人看的：
@@ -72,6 +75,10 @@ def _default_state() -> dict:
 # 20 天就有 60~100 张，足够看出成交率和滑点是不是系统性偏坏；
 # 再拉长会掺进几个月前已经换过参数的市场。
 HEALTH_DAYS = 20
+
+# 复盘日记留多少天。一年约 244 个交易日，一篇 3~6KB，180 篇也就 1MB——
+# 足够回看「这套规则在一年里怎么变、当时为什么变」，又不至于把状态文件撑大。
+REVIEW_KEEP_DAYS = 180
 
 
 def _plan_health(history: list[dict]) -> dict:
@@ -191,6 +198,13 @@ class Autopilot:
                 base.update(json.loads(self.path.read_text(encoding="utf-8")))
             except (json.JSONDecodeError, OSError):
                 pass
+        # `reviews` 是后加的字段：老状态文件里只有当天那一篇 `review`。
+        # 直接置空会让复盘日记一上线就「一篇都没有」，但那天明明写过——
+        # 所以把旧的那篇搬进列表，往后每跑一次 EOD 再往前接一篇。
+        if not base.get("reviews") and isinstance(base.get("review"), dict):
+            old = base["review"]
+            if old.get("as_of"):
+                base["reviews"] = [old]
         return base
 
     def _save(self) -> None:
@@ -545,14 +559,22 @@ class Autopilot:
                                                     ("action", "reason", "edge", "applied")}})
             steps.append({"step": "进化", "result": evolved})
 
+            entry = {"at": now.isoformat(timespec="seconds"),
+                     "as_of": today, "text": review,
+                     "market": review_ctx["市场"],
+                     "account": review_ctx["账户"],
+                     # 计划 vs 实际：挂单/成交/滑点/未成交原因，
+                     # 前端在复盘面板里单独一张小表，按策略拆开
+                     "plan": plan_stats}
+            # 同一天补跑要替换而不是追加：否则补跑三次，「复盘日记」里
+            # 同一天就有三篇，还都长得差不多。
+            reviews = [r for r in (self.state.get("reviews") or [])
+                       if r.get("as_of") != today]
+            reviews.insert(0, entry)
+
             with self._lock:
-                self.state["review"] = {"at": now.isoformat(timespec="seconds"),
-                                        "as_of": today, "text": review,
-                                        "market": review_ctx["市场"],
-                                        "account": review_ctx["账户"],
-                                        # 计划 vs 实际：挂单/成交/滑点/未成交原因，
-                                        # 前端在复盘面板里单独一张小表，按策略拆开
-                                        "plan": plan_stats}
+                self.state["review"] = entry
+                self.state["reviews"] = reviews[:REVIEW_KEEP_DAYS]
                 self.state["plan_history"] = hist[-60:]
                 self.state["plan_health"] = health
                 self.state["eod"] = {"at": now.isoformat(timespec="seconds"),

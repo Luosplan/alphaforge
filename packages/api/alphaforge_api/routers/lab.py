@@ -603,3 +603,27 @@ def autopilot_history(request: Request, limit: int = 30):
 
     rows = list(get_pilot().status().get("history") or [])
     return ok({"items": list(reversed(rows))[:max(1, min(limit, 60))]})
+
+
+@router.get("/reviews")
+def reviews(request: Request, limit: int = 30):
+    """复盘日记：每个交易日一篇，最新的在前。
+
+    和 `/autopilot` 里的 `review` 是同一份内容，区别只在**留多少**：
+    那个字段每天都覆盖，只留最新一篇；这一页要看的是「这段时间是怎么想的、
+    参数为什么改」。所以老的版本迁移过来时也要兼容——`reviews` 为空
+    而 `review` 有值，说明是这次更新之前跑出来的，把它当成第一篇。
+    """
+    from ..autopilot import get_pilot
+
+    state = get_pilot().status()
+    rows = list(state.get("reviews") or [])
+    if not rows and state.get("review"):
+        rows = [state["review"]]
+    limit = max(1, min(limit, 180))
+    return ok({
+        "items": rows[:limit],
+        "total": len(rows),
+        # 前端用它判断「今天这篇还没写」：写过日记的最后日期就是它
+        "last_as_of": rows[0].get("as_of") if rows else None,
+    })

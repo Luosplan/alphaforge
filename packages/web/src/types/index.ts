@@ -1329,6 +1329,14 @@ export interface ReviewPlanStats {
   }>
 }
 
+/** 复盘日记：每个交易日一篇，新的在前 */
+export interface ReviewJournal {
+  items: ReviewDoc[]
+  total: number
+  /** 写过日记的最后日期；前端据此判断「今天这篇还没写」 */
+  last_as_of: string | null
+}
+
 /** 模型接入状态。`last_error` 是「配了 key 但调不通」的唯一线索 */
 export interface LlmStatus {
   enabled: boolean
