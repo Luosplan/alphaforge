@@ -77,6 +77,18 @@ function headline(r: ReviewDoc): string {
   return r.text?.headline || '（无标题）'
 }
 
+/**
+ * 账户今日总盈亏 = 已实现（今天卖出的）+ 浮动（还拿着的）。
+ *
+ * 只显示已实现会得出荒唐的结论：买入当天一分钱没卖，账户「今日 0」，
+ * 而票已经跌了 3%。用户问的正是这个差额。老数据没有 `浮动盈亏` 字段，
+ * 缺省 0，行为与以前一致。
+ */
+function totalPnl(r: ReviewDoc): number {
+  const a = r.account ?? {}
+  return Number(a['今日盈亏'] ?? 0) + Number(a['浮动盈亏'] ?? 0)
+}
+
 async function load() {
   loading.value = true
   try {
@@ -173,9 +185,9 @@ onMounted(load)
             </span>
           </div>
           <div class="f-cell">
-            <span class="f-k">账户今日</span>
-            <span class="f-v num" :class="toneOf(active.account?.['今日盈亏'] ?? 0)">
-              {{ fmtNum(active.account?.['今日盈亏'] ?? 0, 0) }}
+            <span class="f-k">账户今日（含浮动）</span>
+            <span class="f-v num" :class="toneOf(totalPnl(active))">
+              {{ fmtNum(totalPnl(active), 0) }}
             </span>
           </div>
           <div class="f-cell">
@@ -190,6 +202,62 @@ onMounted(load)
         <ul class="j-points">
           <li v-for="(p, i) in active.text.points" :key="'p' + i">{{ p }}</li>
         </ul>
+
+        <!-- 持仓逐票：这一页最有用的部分。
+             「今天买的那只，收盘赚了还是亏了，明天该怎么操作」——三件事必须
+             落在同一行，否则读完还是不知道该干什么。 -->
+        <template v-if="active.holdings?.length">
+          <div class="j-block-title">持仓与明日动作</div>
+          <div class="j-hold-wrap">
+            <table class="j-hold">
+              <thead>
+                <tr>
+                  <th>标的</th>
+                  <th class="r">成本 / 收盘</th>
+                  <th class="r">今日盈亏</th>
+                  <th class="r">浮盈</th>
+                  <th class="r">距止损</th>
+                  <th>明日动作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="h in active.holdings" :key="`${h.code}-${h.strategy_id || ''}`">
+                  <td>
+                    <span class="h-name">{{ h.name || h.code }}</span>
+                    <span v-if="h.today_buy" class="h-tag">今日买入</span>
+                    <div class="h-sub">
+                      <span class="num">{{ h.code }}</span>
+                      <span class="dot">·</span><span class="num">{{ h.shares }} 股</span>
+                      <span v-if="h.strategy_name" class="dot">·</span>
+                      <span v-if="h.strategy_name">{{ h.strategy_name }}</span>
+                    </div>
+                  </td>
+                  <td class="r num">
+                    {{ h.cost.toFixed(2) }}
+                    <div class="h-sub">{{ h.close.toFixed(2) }}</div>
+                  </td>
+                  <td class="r num">
+                    <span :class="h.tone">{{ fmtNum(h.day_pnl, 0) }}</span>
+                    <div class="h-sub" :class="h.tone">{{ fmtPct(h.day_pct) }}</div>
+                  </td>
+                  <td class="r num">
+                    <span :class="toneOf(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span>
+                    <div class="h-sub">{{ fmtNum(h.pnl, 0) }}</div>
+                  </td>
+                  <td class="r num">
+                    {{ h.dist_stop_pct == null ? '—' : fmtPct(h.dist_stop_pct, 1, false) }}
+                    <div class="h-sub">止损 {{ h.stop.toFixed(2) }}</div>
+                  </td>
+                  <td class="h-act" :class="h.action_tone">{{ h.action }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="j-hold-foot">
+            今日盈亏：今天买的按买入价算，此前持有的按昨收算——两者相加才是账户今天真实的浮动。
+            T+1 规则下今天买的今天不能卖，动作最早明天开盘执行。
+          </p>
+        </template>
 
         <!-- 计划 vs 实际：日记里最有价值的一段，因为它是账本不是感想 -->
         <template v-if="active.plan && active.plan.order_count">
@@ -436,6 +504,99 @@ onMounted(load)
   font-size: 12px;
   font-weight: 600;
   color: var(--af-ink-2);
+}
+
+/* 持仓表：窄屏不折行，整体横向滚动——把「明日动作」挤成三行反而读不了 */
+.j-hold-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+}
+
+.j-hold {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+/* 首列放「名称 + 今日买入 + 代码/股数/策略」，窄屏下挤得只剩两个字的宽度，
+   名称会被迫折行、标签被切成「今日 / 买入」。给一个下限让它别缩。 */
+.j-hold td:first-child,
+.j-hold th:first-child {
+  min-width: 160px;
+}
+
+.j-hold th {
+  padding: 7px 10px;
+  text-align: left;
+  font-weight: 550;
+  font-size: 11px;
+  color: var(--af-ink-3);
+  background: var(--af-surface-2);
+  white-space: nowrap;
+}
+
+.j-hold th.r,
+.j-hold td.r {
+  text-align: right;
+}
+
+.j-hold td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--af-border);
+  vertical-align: top;
+  color: var(--af-ink-2);
+}
+
+.h-name {
+  font-weight: 600;
+  color: var(--af-ink);
+}
+
+.h-tag {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--af-brand-soft);
+  color: var(--af-brand);
+  font-size: 10.5px;
+  font-weight: 500;
+  /* 不换行：窄屏下「今日买入」会被切成「今日 / 买入」两行，把整行撑高 */
+  white-space: nowrap;
+}
+
+.h-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--af-ink-3);
+  font-weight: 400;
+}
+
+/* 明日动作这一列要能读，给出宽度上限而不是让它撑满 */
+.h-act {
+  width: 40%;
+  min-width: 150px;
+  line-height: 1.55;
+}
+
+.h-act.warn {
+  color: var(--af-warn);
+}
+
+.h-act.brand {
+  color: var(--af-brand);
+}
+
+.j-hold-foot {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--af-ink-3);
 }
 
 .j-plan {

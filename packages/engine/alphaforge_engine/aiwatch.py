@@ -33,12 +33,18 @@ SYSTEM_WATCH = (
 )
 
 SYSTEM_REVIEW = (
-    "你是一名 A 股收盘复盘助手。你会收到当日的市场宽度、模拟盘成交与净值变化。"
+    "你是一名 A 股收盘复盘助手。你会收到当日的市场宽度、模拟盘成交、"
+    "持仓逐票明细（`持仓` 字段里有每只票的成本、今日盈亏、浮盈、距止损、明日动作）"
+    "与净值变化。"
     "任务：用事实复盘今天做对了什么、做错了什么，以及明天要注意什么。\n"
     "硬性要求：\n"
     "1. 只能引用我给出的数字；\n"
-    "2. 不要写「明天必涨」这类预测，只写观察点与纪律；\n"
-    "3. 只输出 JSON，形如 "
+    "2. 只要 `持仓` 里有票，points 里**必须**有一条逐票讲清楚："
+    "今天买的那只收盘是赚是亏（用 `今日盈亏` 与 `今日涨跌`）、现在浮盈多少、"
+    "明天是继续持有还是走（用 `明日动作`）。这一条不许省略、不许含糊成"
+    "「持仓表现平稳」；\n"
+    "3. 不要写「明天必涨」这类预测，只写观察点与纪律；\n"
+    "4. 只输出 JSON，形如 "
     '{"headline":"...","points":["...","..."],"tomorrow":["...","..."]}'
     "；points 2~4 条，tomorrow 1~3 条，每条不超过 45 字。"
 )
@@ -204,9 +210,14 @@ def _norm_code(raw: object) -> str:
 
 def build_review_context(*, breadth: dict, index: dict | None, account: dict,
                          trades: list[dict], plans: list[dict], as_of: str,
-                         plan_stats: dict | None = None) -> dict:
+                         plan_stats: dict | None = None,
+                         holdings: list[dict] | None = None) -> dict:
     wins = [t for t in trades if _num(t.get("pnl")) > 0]
     losses = [t for t in trades if _num(t.get("pnl")) < 0]
+    # 浮动盈亏 = 每只持仓「今天这一天」的盈亏之和（新仓按买入价算，老仓按昨收算）。
+    # 只看已实现盈亏会得出一个荒唐的结论：买入当天一分钱没卖，账户「今日盈亏 0」，
+    # 而票已经跌了 3%。用户问的正是这个差额。
+    float_pnl = round(sum(_num(h.get("day_pnl")) for h in (holdings or [])), 2)
     ctx = {
         "日期": as_of,
         "市场": {
@@ -222,6 +233,7 @@ def build_review_context(*, breadth: dict, index: dict | None, account: dict,
             "今日成交": len(trades),
             "盈利笔数": len(wins), "亏损笔数": len(losses),
             "今日盈亏": round(sum(_num(t.get("pnl")) for t in trades), 2),
+            "浮动盈亏": float_pnl,
         },
         "成交明细": [
             {"代码": t.get("code"), "名称": t.get("name"), "方向": t.get("side"),
@@ -236,6 +248,23 @@ def build_review_context(*, breadth: dict, index: dict | None, account: dict,
             for p in plans[:10]
         ],
     }
+    # 持仓逐票：日报里最该有、以前却没有的一段。
+    # 「今天买了某只，收盘赚了还是亏了，明天怎么操作」——这三件事必须同时在场，
+    # 否则读的人只能看到「成交 2 笔」，完全不知道该干什么。
+    if holdings:
+        ctx["持仓"] = [
+            {
+                "代码": h.get("code"), "名称": h.get("name"),
+                "今日买入": h.get("today_buy"),
+                "成本": h.get("cost"), "收盘": h.get("close"),
+                "今日盈亏": h.get("day_pnl"), "今日涨跌": h.get("day_pct"),
+                "浮盈%": h.get("pnl_pct"),
+                "距止损%": h.get("dist_stop_pct"),
+                "持有天数": h.get("held_days"),
+                "明日动作": h.get("action"),
+            }
+            for h in holdings[:8]
+        ]
     # 计划执行情况：模型写的复盘如果只说「今天涨了多少」，用户没法判断
     # 这套计划卡到底有没有在按说的执行。挂单/成交/滑点三项直接喂进去，
     # 复盘的那句话才可能落在「今天说买 5 只、成交 3 只，两只是一字板」上。
@@ -252,6 +281,25 @@ def build_review_context(*, breadth: dict, index: dict | None, account: dict,
     return ctx
 
 
+def _short_action(text: object) -> str:
+    """把「明日动作」压成两三个字，给一句话复盘用。
+
+    判断顺序有讲究，三条都不能换位置：
+    1. `holding_rows` 里 T+1 那条原文是「今日建仓，T+1 明日才可卖；按止损位持有」，
+       里面带了「止损」两字——「止损」若排在前面，昨天刚买的票会被说成「逼近止损」；
+    2. 浮盈那条是「若明日仍在榜单则减 1/3」，只有「减」没有「减仓」，
+       只匹配「减仓」会把它漏成「继续持有」（这条错了最误导人）；
+    3. 「时间止损倒计时」同理，含「止损」但不是逼近。
+    """
+    t = str(text or "")
+    for key, short in (("则减", "明日减 1/3"), ("减仓", "明日减仓"), ("加仓", "明日加仓"),
+                       ("T+1", "明日才可卖"), ("倒计时", "时间止损临近"),
+                       ("止损", "逼近止损")):
+        if key in t:
+            return short
+    return "继续持有"
+
+
 def analyze_review(context: dict) -> dict:
     """收盘复盘。模型失败时给一份纯事实的规则版。"""
     m = context.get("市场") or {}
@@ -260,6 +308,9 @@ def analyze_review(context: dict) -> dict:
     ratio = up / (up + down) if (up + down) else 0.5
     mood = "偏强" if ratio >= 0.6 else ("偏弱" if ratio <= 0.4 else "中性")
     today_pnl = _num(a.get("今日盈亏"))
+    # 浮动盈亏来自 `build_review_context` 从持仓逐票汇总出来的那个数；
+    # 老数据 / 没有持仓时是 0，headline 就退化成「只看已实现」。
+    float_pnl = _num(a.get("浮动盈亏"))
     p = context.get("计划执行") or {}
     plan_point = None
     if p.get("挂单"):
@@ -269,15 +320,30 @@ def analyze_review(context: dict) -> dict:
                       f"{int(_num(p.get('成交')))} 张"
                       + (f"（执行率 {rate:.0f}%）" if rate is not None else "")
                       + (f"，平均不利滑点 {bps:.0f}bp" if bps is not None else ""))
+    # 持仓逐票那一句：用户要的就是「今天买的那只，收盘赚了还是亏了，明天怎么办」。
+    # 只列前 3 只——一句话复盘里塞 5 只票就成了一团数字，完整明细在前面的表格里。
+    hold_point = None
+    hs = context.get("持仓") or []
+    if hs:
+        bits = [
+            f"{h.get('名称') or h.get('代码')}{'今买' if h.get('今日买入') else ''} "
+            f"{_num(h.get('今日涨跌')):+.1f}%（{_short_action(h.get('明日动作'))}）"
+            for h in hs[:3]
+        ]
+        hold_point = (f"持仓 {int(_num(a.get('持仓数')))} 只：" + "；".join(bits)
+                      + f"。现金 {_num(a.get('现金')):,.0f}")
+
     fallback = {
         "source": "rule",
         "headline": (f"{mood}，涨停 {int(_num(m.get('涨停')))} 家，"
-                     f"账户今日 {today_pnl:+.0f} 元"),
+                     f"账户今日 {today_pnl + float_pnl:+,.0f} 元"),
         "points": [
             f"上涨 {int(up)} / 下跌 {int(down)}，中位数 {m.get('涨幅中位数')}%",
             f"今日成交 {int(_num(a.get('今日成交')))} 笔，"
-            f"盈 {int(_num(a.get('盈利笔数')))} 亏 {int(_num(a.get('亏损笔数')))}",
-            f"当前持仓 {int(_num(a.get('持仓数')))} 只，现金 {_num(a.get('现金')):,.0f}",
+            f"盈 {int(_num(a.get('盈利笔数')))} 亏 {int(_num(a.get('亏损笔数')))}"
+            + (f"，持仓浮动 {float_pnl:+,.0f}" if float_pnl else ""),
+            hold_point or f"当前持仓 {int(_num(a.get('持仓数')))} 只，"
+                          f"现金 {_num(a.get('现金')):,.0f}",
         ] + ([plan_point] if plan_point else []),
         "tomorrow": [
             "按计划卡执行，不临时加仓",

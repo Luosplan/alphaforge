@@ -74,6 +74,28 @@ const maxPct = computed(() => {
 })
 
 /**
+ * 弱势时的预算系数：0.5 = 半仓照做，0 = 该策略在弱市停手。
+ * 老接口没有这两个字段，用 `open_new` 兜底，行为与以前一致。
+ */
+const regimeScale = computed(() => {
+  const r = watch.value?.regime
+  if (!r) return 1
+  if (typeof r.scale === 'number') return r.scale
+  return r.open_new ? 1 : 0
+})
+
+/** 三种处境各说一句，别让它退化成一句「择时关闭」 */
+const regimeNote = computed(() => {
+  const r = watch.value?.regime
+  if (!r) return ''
+  if (r.open_new) return '按规则正常开新仓'
+  if (regimeScale.value > 0) {
+    return `弱势只打抱团：行业有涨停潮、或涨幅排名靠前才建仓，仓位减半；已持仓照常止损 / 止盈`
+  }
+  return `该策略在弱市停手（放开实测更差），其他策略仍在打抱团；指数回到${r.ma} 日线上方即恢复满额`
+})
+
+/**
  * 委托状态在表格里要短。后端那串是给人读的完整句子
  * （「择时关闭 · 指数在半年线下方」135px），一列吃掉表格六分之一，
  * 后面「判定/理由」全被挤扁。这里只取前半句做主标签，完整文案放 title。
@@ -91,7 +113,12 @@ const ORDER_LABELS: [string, string, string][] = [
   ['已持有', '已持有', 'flat'],
   ['仅备选', '仓位已满', 'flat'],
   ['已超持仓上限', '超上限', 'warn'],
-  ['择时关闭', '择时关闭', 'flat'],
+  // 弱势三态：减半照做 / 行业不抱团放弃 / 该策略停手。
+  // 上几版这里统一是「择时关闭」，三种完全不同的处境挤在一个词里，
+  // 用户看到只会以为系统坏了。
+  ['弱势减半', '弱势建仓', 'brand'],
+  ['弱势 · 行业未抱团', '未抱团', 'flat'],
+  ['弱势停手', '弱势停手', 'flat'],
 ]
 
 function orderMeta(state: string): { label: string; tone: string } {
@@ -315,22 +342,20 @@ onBeforeUnmount(() => {
           <i class="down" :style="{ width: (watch.market.下跌 / maxPct) * 100 + '%' }" />
         </div>
         <!-- 择时状态必须写在页面上。模拟盘连续几天一单不挂，如果只有一排灰色
-             「择时关闭」，看起来就是程序坏了；把指数点位和均线摆出来，
-             「低于半年线 12.2%」本身就解释了原因，也告诉用户什么时候会恢复。 -->
+             标签，看起来就是程序坏了；把指数点位和均线摆出来，
+             「低于半年线 12.2%」本身就解释了原因，也告诉用户什么时候会恢复。
+             注意三种处境要分开说（强势 / 弱势照做 / 弱势停手）：挤成一句
+             「择时关闭」，用户分不清是规则在挑机会，还是系统停摆了。 -->
         <div
           v-if="watch.regime?.enabled"
           class="regime-strip"
-          :class="watch.regime.open_new ? 'ok' : 'off'"
+          :class="watch.regime.open_new ? 'ok' : (regimeScale > 0 ? 'weak' : 'off')"
         >
-          <span class="chip" :class="watch.regime.open_new ? 'up' : 'flat'">
+          <span class="chip" :class="watch.regime.open_new ? 'up' : (regimeScale > 0 ? 'warn' : 'flat')">
             {{ watch.regime.label }}
           </span>
           <span class="regime-detail num">{{ watch.regime.detail }}</span>
-          <span class="regime-note muted">
-            {{ watch.regime.open_new
-              ? '按规则正常开新仓'
-              : `指数回到${watch.regime.ma} 日线上方即恢复，已持仓仍按止损 / 止盈走完` }}
-          </span>
+          <span class="regime-note muted">{{ regimeNote }}</span>
         </div>
         <p class="ai-summary">
           <span class="chip" :class="watch.analysis.source === 'llm' ? 'brand' : 'flat'">
@@ -605,6 +630,11 @@ onBeforeUnmount(() => {
 
 .regime-strip.ok {
   border-left-color: var(--af-up);
+}
+
+/* 弱势照做：既不是「正常」（红），也不是「停手」（绿），用 warn 单独一档 */
+.regime-strip.weak {
+  border-left-color: var(--af-warn);
 }
 
 .regime-detail {

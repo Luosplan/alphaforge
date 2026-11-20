@@ -84,6 +84,11 @@ STRATEGIES: list[dict] = [
         # 的单段收益都明显更好），但那是拿同一份数据挑参数，样本外会还回去。
         # 统一 120 的跨策略最差子区间是 −5.1%，本身已是五个候选值里最好的。
         "market_ma": 120,
+        # 弱势时不参与。这条策略是「逆势埋伏」——缩量横盘 + 放量启动，
+        # 它赚的是板块还没被发现的窗口。指数在半年线下方时，这种窗口的
+        # 失败率显著上升：放开后 1260 天回测年化 15.50%→8.50%、卡玛 0.79→0.37。
+        # 让它参与不是「多抓机会」，是「多亏钱」。
+        "weak_participate": False,
         "time_stop": 6,
         "stop_atr": 1.5,
         "tp1_atr": 1.8,
@@ -110,6 +115,13 @@ STRATEGIES: list[dict] = [
         "top_n": 3,
         "max_per_industry": 2,
         "market_ma": 120,
+        # 弱势（沪深300 在半年线下方）仍照常参与，只打抱团 + 半仓。
+        #
+        # 这个标记不是拍脑袋加的：这条策略本身选的就是「行业刚出 ≥2 家涨停的
+        # 首日」，天生依赖题材抱团。1260 天回测上，让它在弱势期参与反而更好
+        # （年化 17.31%→18.81%，卡玛 0.67→0.69，回撤 −25.86%→−27.27%）。
+        # 另外两条策略的道理相反，见各自的注释。
+        "weak_participate": True,
         "time_stop": 4,
         "stop_atr": 1.4,
         "tp1_atr": 1.6,
@@ -140,6 +152,10 @@ STRATEGIES: list[dict] = [
         # 一张委托都不挂，看起来像「模拟盘坏了」。改成 120 日与其余策略统一口径，
         # 也顺带避开了短均线来回穿越带来的反复开关。
         "market_ma": 120,
+        # 弱势时不参与。趋势策略的前提是「趋势还在」，指数在半年线下方时
+        # 中期动量本身就在衰减：放开后 1260 天回测年化 21.83%→16.04%、
+        # 回撤 −23.62%→−37.34%。这条策略是三条里最适合「不做」的那条。
+        "weak_participate": False,
     },
 ]
 
@@ -372,6 +388,18 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         sort_key = sort_cfg["by"]
         sort_value = row["score"] * 100 if sort_key == "score" else float(board.column(sort_key)[i] or 0)
 
+        # 抱团画像：弱势行情里「只打抱团」要靠它判准入（见 `paper._next_plans`），
+        # 前端的计划卡也会显示。**不能**用 `or 100` 兜底 `ind_rank_pct`——
+        # 0 表示行业涨幅排第一（最强），`0.0 or 100` 会把它翻成最弱。
+        rank_raw = board.column("ind_rank_pct")[i]
+        huddle = {
+            "ind_limit_cnt": float(board.column("ind_limit_cnt")[i] or 0),
+            "ind_limit_prev": float(board.column("ind_limit_prev")[i] or 0),
+            "ind_rank_pct": 100.0 if rank_raw is None else float(rank_raw),
+            "ind_strength": float(board.column("ind_strength")[i] or 0),
+            "industry": sym["industry"],
+        }
+
         items.append({
             "rank": rank,
             "code": sym["code"],
@@ -388,6 +416,7 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
             "reason": {"positive": positive, "negative": negative},
             "hits": hits,
             "rank_value": round(sort_value, 3),
+            "huddle": huddle,
         })
 
     mode = "hybrid" if (weights and filters) else ("factor" if weights else "filter")

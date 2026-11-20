@@ -67,13 +67,33 @@ const FACTOR_LABEL: Record<string, string> = {
 const stats = computed(() => overview.value?.stats)
 const strategies = computed<LabStrategyRow[]>(() => overview.value?.strategies ?? [])
 
-/* 择时状态取任意一条已启动策略的即可：`market_ma` 目前由 DEFAULTS 统一给
- * 120 日，五条策略口径相同。将来若按策略分别设置，这里要改成按策略展示。 */
+/* 择时状态。以前所有策略共用 120 日口径，取任意一条都行；v10 起「弱市做不做」
+ * 按策略区分（板块联动打抱团、另两条停手），所以不能随便取第一条——
+ * 优先展示「还在做」的那条：用户想知道的不是谁停手了，而是现在有没有在做。
+ * 停手的条数放进 hint 里，不藏着。 */
 const regime = computed(() => {
-  for (const s of strategies.value) {
-    if (s.paper?.regime) return s.paper.regime
-  }
-  return null
+  const rows = strategies.value
+    .map((s) => s.paper?.regime)
+    .filter((r): r is NonNullable<typeof r> => !!r)
+  if (!rows.length) return null
+  return rows.find((r) => (r.scale ?? (r.open_new ? 1 : 0)) > 0) ?? rows[0]
+})
+
+/** 弱市里被停掉的策略条数。只在弱势时才有意义 */
+const regimeStopped = computed(
+  () =>
+    strategies.value.filter((s) => {
+      const r = s.paper?.regime
+      return !!r && !r.open_new && (r.scale ?? 0) <= 0
+    }).length,
+)
+
+const regimeHint = computed(() => {
+  const r = regime.value
+  if (!r) return ''
+  if (r.open_new) return '回测与模拟盘同一口径：正常开新仓，已持仓按止损 / 止盈走完'
+  return '弱势只打抱团：行业有涨停潮、或涨幅排名靠前才建仓，仓位减半；已持仓照常止损 / 止盈'
+    + (regimeStopped.value ? `。另有 ${regimeStopped.value} 条策略弱市停手（放开实测更差）` : '')
 })
 
 const plans = computed<LabPlanCard[]>(() => {
@@ -574,15 +594,17 @@ onBeforeUnmount(stopPoll)
       </div>
     </section>
 
-    <!-- 择时状态。模拟盘一单不挂的时候，这一行是页面上唯一能解释原因的地方：
-         不是程序没跑，是大盘在均线下方、规则主动停手。 -->
+    <!-- 择时状态。模拟盘一单不挂的时候，这一行是页面上唯一能解释原因的地方。
+         但要分清三件事：正常 / 弱势只打抱团（照做但减仓）/ 该策略弱市停手。 -->
     <div v-if="regime" class="regime-line">
-      <span class="chip" :class="regime.open_new ? 'up' : 'flat'">{{ regime.label }}</span>
-      <span class="num">{{ regime.detail }}</span>
-      <span class="muted">
-        回测与模拟盘同一口径：大盘在均线下方不开新仓，这是熊段回撤能压住的
-        主要原因；已持仓仍按止损 / 止盈走完
+      <span
+        class="chip"
+        :class="regime.open_new ? 'up' : ((regime.scale ?? 0) > 0 ? 'warn' : 'flat')"
+      >
+        {{ regime.label }}
       </span>
+      <span class="num">{{ regime.detail }}</span>
+      <span class="muted">{{ regimeHint }}</span>
     </div>
 
     <!-- 进化进度：只在跑的时候出现，不占常驻版面 -->

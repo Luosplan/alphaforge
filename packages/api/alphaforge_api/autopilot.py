@@ -516,6 +516,9 @@ class Autopilot:
             index = mkt.repo.index_quote("000300.SH")
             merged = {"nav": 0.0, "cash": 0.0, "positions": [], "trades": [],
                       "plans": []}
+            # 持仓逐票：三个账户各有自己的 params（time_stop 不同），所以动作
+            # 必须按账户分别推，不能合并后再套一份参数——那样时间止损会算错。
+            holdings: list[dict] = []
             for sid in advanced:
                 acc = lab.account(sid) or {}
                 snap = paper.snapshot(mkt, acc)
@@ -526,6 +529,12 @@ class Autopilot:
                     [t for t in (acc.get("trades") or []) if t.get("date") ==
                      mkt.trade_date.isoformat()] if mkt.trade_date else [])
                 merged["plans"].extend(snap.get("plans") or [])
+                for row in paper.holding_rows(acc.get("positions") or [],
+                                              acc.get("params") or {},
+                                              acc.get("plans") or []):
+                    row["strategy_id"] = sid
+                    row["strategy_name"] = acc.get("name") or sid
+                    holdings.append(row)
             # 计划执行率要在**推进之后**算：成交是今天开盘那一格发生的，
             # 挂在昨天的委托上。这一步只统计，不改任何参数——参数只由
             # 进化 + 样本外门槛动，复盘改参数等于用一天的噪声调模型。
@@ -547,7 +556,7 @@ class Autopilot:
             review_ctx = aiwatch.build_review_context(
                 breadth=breadth, index=index, account=merged,
                 trades=merged["trades"], plans=merged["plans"],
-                as_of=today, plan_stats=plan_stats)
+                as_of=today, plan_stats=plan_stats, holdings=holdings)
             review = aiwatch.analyze_review(review_ctx)
             steps.append({"step": "收盘复盘", "source": review.get("source")})
 
@@ -563,6 +572,9 @@ class Autopilot:
                      "as_of": today, "text": review,
                      "market": review_ctx["市场"],
                      "account": review_ctx["账户"],
+                     # 持仓逐票：今天买的那只收盘赚了还是亏了、明天怎么操作。
+                     # 复盘只说「成交 2 笔」等于什么都没说，这一段才是能用的部分。
+                     "holdings": holdings,
                      # 计划 vs 实际：挂单/成交/滑点/未成交原因，
                      # 前端在复盘面板里单独一张小表，按策略拆开
                      "plan": plan_stats}

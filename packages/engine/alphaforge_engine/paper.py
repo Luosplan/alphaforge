@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
 
-from .backtest import DEFAULTS, REGIME_SCALE, TRIM_FRAC, single_cap
+from .backtest import (DEFAULTS, GAP_MAX_PCT, GAP_MIN_PCT, REGIME_HUDDLE_MAX_RANK,
+                       REGIME_HUDDLE_MIN_LIMITS, REGIME_SCALE, TRIM_FRAC, single_cap)
 from .gate import blocked_label, board_allow, buyable
 from .selector import execute
 from .signal import TRIM_PNL_PCT, build_plan
@@ -54,12 +55,22 @@ ORDER_NOSLOT = "仅备选 · 仓位已满"
 # **只数**不是资金，写成「仓位已满」会让用户以为钱不够，实际是等已有票退出。
 # 行为上和 NOSLOT 一样不挂单——账户只减不增，直到持仓数回到上限以内。
 ORDER_OVER = "已超持仓上限 · 只减不增"
-# 择时关闭时的委托状态。这一版又回到「一张都不挂」，和最初那版行为相同，
-# 但依据完全不同：最初是 20 日线太敏感（沪深300 一跌破就把账户锁死两天，
-# 看起来像「模拟盘从来不买」），现在是半年线 + 5 年样本 A/B 的结果——
-# 弱势里半仓照样吃满跌幅，回撤只降 5 个点，而收益掉得更多。
-# 文案带上「半年线」是为了让人一眼看出当前用的是哪个口径，不必回来翻代码。
-ORDER_REGIME = "择时关闭 · 指数在半年线下方"
+# 弱势（沪深300 在半年线下方）时的委托状态。这一版**不再停手**：
+# 只买行业里正在抱团的那几只，且每笔预算乘 `REGIME_SCALE`（0.5）。
+# 上一版是「一张都不挂」，依据是 5 年样本上「弱势停手」比「弱势半仓」回撤小；
+# 但那条结论针对的是**无差别半仓**。实测 2026-08-17 跌破半年线之后连续三个月
+# 零成交、三个账户净值恒等于初始资金——自进化闭环第三环直接空转。
+# 现在把「该不该参与」交给行业强度判断（`ind_limit_cnt` / `ind_rank_pct`），
+# 而不是交给指数位置一刀切。
+ORDER_WEAK = "弱势减半 · 明日开盘建仓"
+# 弱势时行业没有抱团迹象 → 这张卡只是观察位。文案要写明「因为行业不抱团」，
+# 不能笼统写「择时关闭」——后者会让人以为系统停摆了。
+ORDER_NO_HUDDLE = "弱势 · 行业未抱团，不建仓"
+# 弱势停手：只有声明了 `weak_participate` 的策略才会走到这一支，其余策略
+# 在弱势期本该一张不挂（放开实测年化、回撤都明显变差，见 selector 注释）。
+# 文案不能写「择时关闭」——那是全局开关的语气，看起来像整个系统停了；
+# 这里是**这条策略**主动不做，另外一条（板块联动首日）照样在打抱团。
+ORDER_REGIME = "弱势停手 · 该策略在弱市无 edge"
 
 # 减仓一次卖多少（1/3）与「浮盈多少算该减」（`TRIM_PNL_PCT`）都从上层取：
 # 回测和模拟盘必须用同一对数，否则同一只票在实验室里减仓、在回测里继续拿着。
@@ -82,6 +93,9 @@ def empty_account(strategy_id: str, name: str, spec: dict,
     for key in ("market_ma", "breakeven_after_tp1"):
         value = spec.get(key)
         base[key] = DEFAULTS[key] if value is None else value
+    # 弱市做不做是**策略的性质**，不在 DEFAULTS 里（它不该被当成全局默认值，
+    # 更不该进遗传搜索）。缺省 False = 停手，宁可保守。
+    base["weak_participate"] = bool(spec.get("weak_participate", False))
     for key in PARAM_KEYS:
         value = spec.get(key)
         if value is not None:
@@ -205,6 +219,11 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
 
 def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tuple[dict, dict]:
     params = {**DEFAULTS, **(account.get("params") or {})}
+    # `weak_participate` 是 v10 新加的策略性质，老账户落盘的 params 里没有。
+    # 不补的话，老账户会一直按「弱市停手」跑，而新口径里「板块联动首日」本该
+    # 继续打抱团——同一条策略，新建的账户和升级前建的账户行为不一样。
+    if "weak_participate" not in (account.get("params") or {}):
+        params["weak_participate"] = bool((account.get("spec") or {}).get("weak_participate"))
     positions = [dict(p) for p in account.get("positions") or []]
     trades = list(account.get("trades") or [])
     cash = float(account.get("cash") or 0.0)
@@ -318,6 +337,18 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         if prev_close > 0 and o >= prev_close * 1.0999 and hi <= o * 1.001:
             log.append(f"跳过 {code}：开盘一字涨停，买不到")
             continue
+        # 开盘校验：开盘价就是 9:25 集合竞价的撮合结果，跳空幅度决定「还值不值得买」。
+        # 昨天收盘做的计划，到今天开盘可能已经不成立了：
+        #   高开太多 → 情绪已经透支，追进去就是给别人抬轿；
+        #   低开太多 → 跳空破位，说明昨天的信号已被证伪。
+        # 和回测 `_buy_block` 同一组常量，两边不会各说各话。
+        gap_pct = (o / prev_close - 1) * 100 if prev_close > 0 else 0.0
+        if gap_pct > GAP_MAX_PCT:
+            log.append(f"跳过 {code}：高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
+            continue
+        if gap_pct < GAP_MIN_PCT:
+            log.append(f"跳过 {code}：低开 {gap_pct:.1f}%，跳空破位（信号已证伪）")
+            continue
         if kind == "ADD":
             pos = pos_by_code.get(code)
             if not pos:
@@ -404,6 +435,33 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
                                     regime_scale=_regime_scale(engine, date_s, params),
                                     boards=prof.get("boards"))
 
+    # ---- 3.5 收盘快照：把「今天这只票自己赚了多少 / 浮盈多少 / 离止损多远」算出来
+    #
+    # 放在撮合之后，是因为**今天新买的票也要在内**——用户问的正是「我今天买的那只，
+    # 收盘是赚还是亏」。所以口径分两种：
+    #   今日新建仓 → 相对买入价（买完到收盘这段）
+    #   此前已持有 → 相对昨收（今天这一天的日内涨跌）
+    # 两者相加就是今天账户的浮动盈亏，再加上已实现部分就是今日总盈亏，账是平的。
+    #
+    # 这些数每天只在推进模拟盘时算一次，展示层直接读，不要在页面里重算——
+    # 页面拿到的是落盘账户，重算就得再查一次日线，还可能因为数据更新而和账户对不上。
+    for pos in positions:
+        bar, prev = feed.bar(pos["code"], date_s)
+        close = float(bar["close"]) if bar else float(pos.get("cost") or 0)
+        prev_close = float(prev["close"]) if prev else close
+        cost = float(pos.get("cost") or 0)
+        stop = float(pos.get("stop") or 0)
+        today_buy = pos.get("open_date") == date_s
+        base = cost if today_buy else prev_close
+        pos["last"] = close
+        pos["today_buy"] = today_buy
+        pos["day_pct"] = round((close / base - 1) * 100, 2) if base > 0 else 0.0
+        pos["day_pnl"] = round((close - base) * pos["shares"], 2)
+        pos["pnl_pct"] = round((close / cost - 1) * 100, 2) if cost > 0 else 0.0
+        pos["pnl"] = round((close - cost) * pos["shares"], 2)
+        pos["dist_stop_pct"] = round((close / stop - 1) * 100, 2) if stop > 0 else None
+        pos["held_days"] = _held_days(engine, pos.get("open_date") or date_s, date_s)
+
     # ---- 4. 记账
     equity = list(account.get("equity") or [])
     if not equity or equity[-1]["date"] != date_s:
@@ -411,6 +469,11 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
 
     updated = {
         **account,
+        # `weak_participate` 必须写回：它是由 `_advance` 从 spec 补出来的，
+        # 只放在局部 `params` 里的话，`regime_state` 读账户落盘的 params
+        # 永远是 None，页面上会一直显示「弱势停手」——而账户其实在挂单。
+        "params": {**(account.get("params") or {}),
+                   "weak_participate": bool(params.get("weak_participate"))},
         "cash": round(cash, 2),
         "positions": positions,
         "orders": new_orders,
@@ -435,7 +498,7 @@ def _held_action(plan: dict, pos: dict, nav: float,
     口径就是计划卡自己说的话，不另立一套规则：
     - **加仓**：同一只票今天又进了 Top-N，说明信号还在，就补到计划仓位
       （`sizing.shares`）。受两条硬约束：单票不超过 15% 净值、现金够付；
-      择时关闭时不加（新敞口和建仓一样该被拦）。
+      弱势时和建仓同一口径——预算乘 `regime_scale`（0.5），不是不加。
     - **减仓**：浮盈到了 12% 就减 1/3，只减一次。TP1 已经减过半的票照样减：
       三档合计 2/3，剩下的 1/3 还跟得住趋势。此前把 `tp1_done` 也排除在外，
       这条规则几乎永不触发——TP1 在 +2.6ATR 就先成交了，浮盈走不到 12%。
@@ -467,16 +530,100 @@ def _held_action(plan: dict, pos: dict, nav: float,
     return None
 
 
+def holding_rows(positions: list[dict], params: dict | None = None,
+                 plans: list[dict] | None = None) -> list[dict]:
+    """持仓逐票 + 明日动作，供复盘日记的「持仓」段直接渲染。
+
+    为什么要有这个函数：复盘如果只写「今天成交 2 笔、持仓 2 只」，读的人
+    根本不知道明天该干什么。用户的原话是「我今天买入了某一只，今天收盘时
+    亏了还是赚了，明白这只该怎么操作」——这三件事必须落在同一行里。
+
+    动作口径和 `_held_action` / 撮合里的止损止盈是同一套，不另立规则：
+    日报说「明天减仓」而第二天实际什么都没做，那份日报就是在骗人。
+    所以这里的文案都带条件——减仓只在「明天它又进了榜单」时才会发生，
+    写成「明日减仓」会让人误以为是既定动作。
+    """
+    params = params or {}
+    kinds: dict[str, str] = {}
+    for p in plans or []:
+        k = p.get("order_kind")
+        if k:
+            kinds[p.get("code") or ""] = k
+    time_stop = int(params.get("time_stop") or DEFAULTS["time_stop"])
+
+    rows: list[dict] = []
+    for pos in positions:
+        code = pos.get("code") or ""
+        shares = int(pos.get("shares") or 0)
+        if shares <= 0:
+            continue
+        cost = float(pos.get("cost") or 0)
+        close = float(pos.get("last") or cost)
+        stop = float(pos.get("stop") or 0)
+        pnl_pct = pos.get("pnl_pct")
+        if pnl_pct is None:
+            pnl_pct = (close / cost - 1) * 100 if cost > 0 else 0.0
+        pnl_pct = float(pnl_pct)
+        day_pnl = float(pos.get("day_pnl") or 0.0)
+        day_pct = float(pos.get("day_pct") or 0.0)
+        dist = pos.get("dist_stop_pct")
+        dist = None if dist is None else float(dist)
+        held = int(pos.get("held_days") or 0)
+        today_buy = bool(pos.get("today_buy"))
+
+        kind = kinds.get(code)
+        if kind == "TRIM":
+            action, tone = "明日开盘减仓 1/3", "warn"
+        elif kind == "ADD":
+            action, tone = "明日开盘加仓", "brand"
+        elif dist is not None and dist <= 2.0:
+            action, tone = f"逼近止损（距 {dist:.1f}%），跌破就走", "warn"
+        elif today_buy:
+            # T+1：今天买的今天不能卖，这一条必须写在明面上，
+            # 否则用户会在盘中问「跌了怎么不止损」
+            action, tone = "今日建仓，T+1 明日才可卖；按止损位持有", "flat"
+        elif pnl_pct >= TRIM_PNL_PCT and not pos.get("trimmed"):
+            action = f"浮盈 {pnl_pct:.1f}%，若明日仍在榜单则减 1/3"
+            tone = "warn"
+        elif held >= time_stop - 1:
+            action, tone = f"时间止损倒计时（已持 {held} 日 / 上限 {time_stop} 日）", "warn"
+        else:
+            action = f"继续持有，止损 {stop:.2f}" if stop > 0 else "继续持有"
+            tone = "flat"
+
+        rows.append({
+            "code": code, "name": pos.get("name") or "",
+            "shares": shares, "cost": round(cost, 3), "close": round(close, 3),
+            "day_pnl": round(day_pnl, 2), "day_pct": round(day_pct, 2),
+            "pnl": round((close - cost) * shares, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "stop": round(stop, 3),
+            "dist_stop_pct": None if dist is None else round(dist, 2),
+            "held_days": held, "today_buy": today_buy,
+            "action": action, "action_tone": tone,
+            "tone": "up" if day_pnl > 0 else ("down" if day_pnl < 0 else "flat"),
+        })
+
+    # 今天买的排最前（用户最关心），其余按当日影响大小
+    rows.sort(key=lambda r: (not r["today_buy"], -abs(r["day_pnl"])))
+    return rows
+
+
 def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
                 positions: list[dict], nav: float,
                 date_s: str, regime_scale: float = 1.0,
                 boards: dict | None = None) -> tuple[list[dict], list[dict]]:
     """按今日收盘选股 → 计划卡 + 明日委托。
 
-    `regime_scale < 1`（大盘在均线下方）时**照常挂单，但预算打折**。
-    以前这里是「一张委托都不挂」，页面上只剩一句「择时关闭」——用户看到的是
-    「模拟盘从来不买」，而且弱势行情恰恰是超短的主场。现在保留风控但不拦死：
-    卡片上照实写「择时降仓 · 半仓建仓」，委托带着 scale 一起下去。
+    弱势（沪深300 在半年线下方）时按策略分开走：
+    - `regime_scale == 0`（未声明 `weak_participate`）：一张不挂，卡片写「弱势停手」；
+    - `0 < regime_scale < 1`（板块联动首日）：照常挂单，但①只保留行业里正在
+      抱团的候选（`ind_limit_cnt` / `ind_rank_pct`），②每笔预算乘 `regime_scale`。
+
+    上一版这里在弱势时对所有策略一张委托都不挂。好处是熊段不被拖累，代价是
+    指数一旦长期站不回去，账户就彻底锁死——实测连续三个月零成交，自进化闭环里
+    「模拟成交 → 收盘复盘 → 进化换参」三环全空转。指数位置是个很粗的信号，
+    它回答不了「今天有没有能做的票」；行业抱团能。
 
     `boards` 传购买权限：模拟盘的委托是照这张卡真挂出去的（次日开盘成交），
     所以候选池必须先按权限过一遍——买不了的票进了卡，第二天照样会被成交。
@@ -513,6 +660,9 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         atr = max((entry_low - stop_high) / 1.15, entry_low * 0.005)
         plan["atr"] = round(atr, 4)
         plan["plan_date"] = date_s
+        # 抱团画像跟着卡片走：弱势时「凭什么这只还能建仓」全靠它解释，
+        # 前端直接显示「行业 3 家涨停 / 排名前 5%」，不用再查一次因子。
+        plan["huddle"] = item.get("huddle") or {}
         plans.append(plan)
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
         if code in held:
@@ -536,14 +686,27 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
             plan["order_state"] = ORDER_NOSLOT if len(held) <= int(params["top_n"]) else ORDER_OVER
             plan["order_tone"] = "flat"
             continue
-        # 择时关闭（REGIME_SCALE=0）时根本不挂单：以前照样往 orders 里塞一张
-        # scale=0 的委托，明早按 0 股静默跳过，抽屉里却一直列着「待成交委托」，
-        # 页面上说「会成交」而账户里永远不会成交——看到的就是假的。
+        # 弱势停手（只有未声明 `weak_participate` 的策略会走到这里）：
+        # 一张单都不挂。挂在账上但永远成交不了的委托比明说「不做」更糟。
         if regime_scale <= 0:
             plan["order_state"] = ORDER_REGIME
             plan["order_tone"] = "flat"
             continue
-        plan["order_state"] = ORDER_REGIME if regime_scale < 1.0 else ORDER_WAITING
+        # 弱势参与（目前只有「板块联动首日」）：再加一道抱团准入——
+        # 行业当日涨停 ≥ N 家、或涨幅排名进前 M% 才建仓。
+        # 判断口径与回测 `_huddle_ok` 同一组常量，回测调阈值这里自动跟着变。
+        # 因子缺行（次新 / 停牌复牌）当「不抱团」：弱市里宁可错过。
+        if regime_scale < 1.0:
+            huddle = item.get("huddle") or {}
+            cnt = float(huddle.get("ind_limit_cnt") or 0)
+            # `ind_rank_pct` 的 0 表示行业最强，不能用 `or 100` 兜底
+            rank_raw = huddle.get("ind_rank_pct")
+            rank = 100.0 if rank_raw is None else float(rank_raw)
+            if not (cnt >= REGIME_HUDDLE_MIN_LIMITS or rank <= REGIME_HUDDLE_MAX_RANK):
+                plan["order_state"] = ORDER_NO_HUDDLE
+                plan["order_tone"] = "flat"
+                continue
+        plan["order_state"] = ORDER_WEAK if regime_scale < 1.0 else ORDER_WAITING
         plan["order_tone"] = "brand"
         orders.append({"code": code, "name": item["name"], "reason": "计划建仓",
                        "created": date_s, "atr": round(atr, 4),
@@ -598,19 +761,27 @@ _MA_NAME = {5: "周线", 10: "两周线", 20: "月线", 30: "月半线",
 
 
 def regime_state(engine, date_s: str, params: dict) -> dict:
-    """择时状态的完整快照，给前端解释「为什么今天不买」。
+    """择时状态的完整快照，给前端解释「今天为什么只买这么点」。
 
-    只回一个布尔值是不够的：模拟盘连续几天一单不挂，页面上看到的是一排灰色
-    「择时关闭」，用户没法判断这是规则在起作用还是程序坏了。所以把指数点位、
-    均线点位、偏离幅度一起带出去——「沪深300 3984.8 低于半年线 4539.9（−12.2%）」
-    这句话本身就是解释，比任何文案都有说服力。
+    只回一个布尔值是不够的：页面上看到的是一排灰色标签，用户没法判断这是
+    规则在起作用还是程序坏了。所以把指数点位、均线点位、偏离幅度一起带出去
+    ——「沪深300 3984.8 低于半年线 4539.9（−12.2%）」这句话本身就是解释。
 
-    取不到指数数据时返回 `enabled=False` 且 `open_new=True`：宁可照常交易，
+    三个字段各管一件事，别混：
+    - `weak`：大盘在均线下方，进入「只打抱团 + 半仓」模式；
+    - `open_new`：是否**满额**开新仓。弱势时为 False，但**不等于停手**——
+      真正决定买不买的是候选所在行业抱不抱团（见 `_next_plans`）；
+    - `scale`：弱势时的预算系数，直接取自 `backtest.REGIME_SCALE`。
+
+    `open_new=False` 而账户仍在建仓，是本版和上一版最大的行为差别；
+    上一版它是「停手」的意思，前端那句「指数回到均线上方即恢复」也得跟着改。
+
+    取不到指数数据时返回 `enabled=False`：宁可照常交易，
     也不因为缺数据让模拟盘静默停摆。
     """
     ma = int(params.get("market_ma") or 0)
     state = {
-        "enabled": False, "ma": ma, "open_new": True,
+        "enabled": False, "ma": ma, "open_new": True, "weak": False, "scale": 1.0,
         "index_close": None, "index_ma": None, "gap_pct": None,
         "as_of": None, "label": "未启用择时", "detail": "不按大盘位置过滤新仓",
     }
@@ -630,11 +801,19 @@ def regime_state(engine, date_s: str, params: dict) -> dict:
     gap = (last / avg - 1) * 100 if avg else 0.0
     ok = last >= avg
     name = _MA_NAME.get(ma, f"{ma} 日线")
+    if ok:
+        label = "可开新仓"
+    elif params.get("weak_participate"):
+        label = f"弱势 · 只打抱团（{REGIME_SCALE:g} 成仓）"
+    else:
+        label = "弱势停手 · 该策略在弱市无 edge"
     state.update({
-        "enabled": True, "open_new": ok, "as_of": hist[-1][0],
+        "enabled": True, "open_new": ok, "weak": not ok,
+        "scale": 1.0 if ok else (REGIME_SCALE if params.get("weak_participate") else 0.0),
+        "as_of": hist[-1][0],
         "index_close": round(last, 2), "index_ma": round(avg, 2),
         "gap_pct": round(gap, 2),
-        "label": "可开新仓" if ok else "择时关闭 · 不开新仓",
+        "label": label,
         "detail": (f"沪深300 {last:.0f} {'高于' if ok else '低于'}"
                    f"{name} {avg:.0f}（{gap:+.1f}%）"),
     })
@@ -652,14 +831,20 @@ def _regime_allows(engine, date_s: str, params: dict) -> bool:
 
 
 def _regime_scale(engine, date_s: str, params: dict) -> float:
-    """择时系数：大盘在均线上 → 1.0（满额），否则 → `REGIME_SCALE`（默认 0，不开新仓）。
+    """择时系数：大盘在均线上 → 1.0（满额），否则看策略自己声明的口径。
 
-    这里返回的是 `REGIME_SCALE` 而不是写死的 0.5 或 0——口径统一放在
-    `backtest.REGIME_SCALE` 一处，回测和模拟盘才不会各说各话。现在的取值是 0
-    （弱势完全不开新仓），依据是 5 年样本上的 A/B：半仓在熊段照样吃满跌幅，
-    回撤只降 5 个点不到；改成空仓后回撤普降 10~18 个点。需要放宽时改那一个常量。
+    返回 `REGIME_SCALE`（弱市半仓）或 `0.0`（停手）——取决于这个账户所属策略
+    有没有声明 `weak_participate`：
+    - 板块联动首日：弱市照做，只打抱团、半仓（放开实测更好）；
+    - 缩量蓄势 / 趋势波段：弱市停手（放开实测年化掉、回撤大）。
+
+    **这个函数不回答「买哪只」**，只回答「买多少」。买不买由行业抱团决定
+    （`_next_plans` 里的 `REGIME_HUDDLE_*`）。分开是因为依据不同：仓位看大盘，
+    准入看题材。
     """
-    return 1.0 if _regime_allows(engine, date_s, params) else REGIME_SCALE
+    if _regime_allows(engine, date_s, params):
+        return 1.0
+    return REGIME_SCALE if params.get("weak_participate") else 0.0
 
 
 def ensure_order_state(plans: list[dict], positions: list[dict],
@@ -819,7 +1004,13 @@ def snapshot(engine, account: dict) -> dict:
         market_value += mv
         positions.append({
             **{k: pos[k] for k in ("code", "shares", "cost", "open_date",
-                                   "stop", "tp1", "tp2") if k in pos},
+                                   "stop", "tp1", "tp2",
+                                   # 收盘快照：日报持仓表和前端都用这几个数。
+                                   # 这里必须透传，不能让页面拿 `change_pct` 顶替
+                                   # 「今日盈亏」——`change_pct` 是按最近两根日线算的，
+                                   # 停牌股、隔了周末的账户都会算错。
+                                   "day_pnl", "day_pct", "dist_stop_pct",
+                                   "held_days", "today_buy") if k in pos},
             "name": pos.get("name", ""),
             "price": round(price, 2),
             "change_pct": round((price / prev - 1) * 100, 2) if prev else 0.0,

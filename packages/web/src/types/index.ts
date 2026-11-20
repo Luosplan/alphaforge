@@ -1252,7 +1252,12 @@ export interface WatchDoc {
  */
 export interface RegimeState {
   enabled: boolean
+  /** 是否**满额**开新仓。弱势时为 false，但不等于停手——看 weak + scale */
   open_new: boolean
+  /** 弱势：大盘在均线下方，进入「只打抱团 + 折仓」模式 */
+  weak?: boolean
+  /** 弱势时的预算系数：0.5 = 半仓；0 = 该策略在弱市停手 */
+  scale?: number
   ma: number
   index_close: number | null
   index_ma: number | null
@@ -1275,8 +1280,36 @@ export interface ReviewDoc {
   }
   market: Record<string, number>
   account: Record<string, number>
+  /** 持仓逐票：今天买的那只收盘赚了还是亏了、明天怎么操作 */
+  holdings?: ReviewHolding[]
   /** 计划 vs 实际：昨天挂的单今天成交了几张、滑点多少、没成交为什么 */
   plan?: ReviewPlanStats | null
+}
+
+/** 复盘里的持仓逐票。`day_*` 是今天这一天，`pnl_*` 是这整笔的浮盈 */
+export interface ReviewHolding {
+  code: string
+  name: string
+  shares: number
+  cost: number
+  close: number
+  /** 今日盈亏（元）。今日新建仓按买入价算，此前已持有按昨收算 */
+  day_pnl: number
+  day_pct: number
+  /** 整笔浮盈（元 / %） */
+  pnl: number
+  pnl_pct: number
+  stop: number
+  /** 收盘价距止损还有多少 %；null 表示没有止损位 */
+  dist_stop_pct: number | null
+  held_days: number
+  today_buy: boolean
+  /** 明日动作：继续持有 / 开盘减仓 / 逼近止损 / T+1 不可卖 … */
+  action: string
+  action_tone: 'flat' | 'warn' | 'brand'
+  tone: 'up' | 'down' | 'flat'
+  strategy_id?: string
+  strategy_name?: string
 }
 
 /** 复盘里「计划执行」那一段的统计。只统计，不回写策略参数 */
