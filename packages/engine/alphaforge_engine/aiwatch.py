@@ -278,6 +278,13 @@ def build_review_context(*, breadth: dict, index: dict | None, account: dict,
                         "动作": m.get("kind_label"), "原因": m.get("reason")}
                        for m in (plan_stats.get("missed") or [])][:8],
         }
+        # 弱转强族的当日验证：出手几只、收盘封住几只。模型要能看到这个数，
+        # 否则它只能写「买了 2 只、涨了 1.2%」，说不出买点成没成立。
+        seal = plan_stats.get("seal") or {}
+        if seal.get("entries"):
+            ctx["计划执行"]["弱转强封板"] = (
+                f"{seal.get('sealed')}/{seal.get('entries')}"
+                f"（{seal.get('rate')}%）")
     return ctx
 
 

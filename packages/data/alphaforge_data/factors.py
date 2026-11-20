@@ -129,6 +129,14 @@ def compute(sym: dict, series: dict, memberships: set[str]) -> dict | None:
 
     high5 = max(highs[-5:]) if highs else closes[-1]
 
+    # 烂板：盘中摸到涨停、收盘没封住。弱转强策略的「弱」有一半来自这里——
+    # 摸过板说明有人愿意打上去，没封住说明获利盘在板价上出货。次日如果能
+    # 高开，那批抛压就已经被消化，阻力反而比首板封死的票更小。
+    # 只看收盘涨幅判不出来：+7% 可能是烂板，也可能是一路缓涨到 7%。
+    prev_close = closes[-2] if n >= 2 and closes[-2] else 0.0
+    hi_chg = (highs[-1] / prev_close - 1) if prev_close else 0.0
+    failed_limit = 1 if (hi_chg >= limit - 0.002 and chg < limit - 0.002) else 0
+
     # 连板数：从最新一根往前数连续涨停的天数。30 天封顶——A 股再长的连板
     # 几乎不存在，而不封顶会让一条脏数据（比如除权日的假涨跌幅）数出几百。
     limit_cnt = 0
@@ -188,6 +196,7 @@ def compute(sym: dict, series: dict, memberships: set[str]) -> dict | None:
         "ind_rank_pct": 50.0,
         # ---- 连板数（打板策略的硬门槛）
         "limit_cnt": float(limit_cnt),
+        "failed_limit": failed_limit,
         # 中间量，不入库（不在 FACTOR_COLUMNS 里，写库时自然被忽略）：
         # 「同日行业涨停家数」和「昨日行业涨停家数」差一天，就是板块联动
         # 第一天的判据。存下来会被下一个交易日的同步覆盖，没有意义。

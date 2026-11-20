@@ -256,6 +256,9 @@ FACTOR_BOOL: tuple[str, ...] = (
     "limit_up", "above_ma20", "ma_bull", "macd_gold",
     "boll_break", "new_high20", "new_high60", "is_st",
     "in_hs300", "in_sz50", "in_zz500", "in_sse", "in_szse",
+    # v3 追加：烂板。弱转强策略的「弱」有一半来自它，只有 high 能判，
+    # 收盘涨幅和成交量都替代不了。
+    "failed_limit",
 )
 
 FACTOR_TEXT: tuple[str, ...] = ("industry", "board")

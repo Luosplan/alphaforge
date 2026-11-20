@@ -25,6 +25,10 @@ const emit = defineEmits<{ (e: 'update:modelValue', value: Condition[]): void }>
 
 const OP_TEXT: Record<string, string> = { '>': '>', '>=': '≥', '<': '<', '<=': '≤', '=': '=', '!=': '≠' }
 
+/* 组节点：一条条件里套一组条件，value 是子条件数组。只有后端会产出，
+   构造器不提供新增入口——但复制、另存会剥掉 label，本地得自己摊开。 */
+const GROUP_JOIN: Record<string, string> = { any: ' 或 ', all: ' 且 ' }
+
 /* 添加表单 */
 const fieldKey = ref('')
 const op = ref('>=')
@@ -70,6 +74,8 @@ const canAdd = computed(() => {
 })
 
 function describe(c: Condition): string {
+  const join = GROUP_JOIN[c.field]
+  if (join) return (c.value as Condition[]).map(describe).join(join)
   const meta = props.fields.find((f) => f.key === c.field)
   const label = meta?.label ?? c.field
   const unit = meta?.unit ?? ''

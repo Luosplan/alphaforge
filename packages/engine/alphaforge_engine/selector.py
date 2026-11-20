@@ -24,7 +24,7 @@ import statistics
 from alphaforge_core.fields import FIELD_MAP, WEIGHTABLE_FIELDS
 from alphaforge_core.indicators import atr, sma
 
-from .conditions import matches, normalize_all
+from .conditions import evaluate, leaves, normalize_all
 from .factor_board import get_board
 from .gate import allowed_labels, board_allow, buyable
 from .market import MarketEngine
@@ -36,9 +36,9 @@ from .profile import board_tag
 # 上，选出来的必然是**已经涨透**的票（实测选出 5 日 +52%、20 日 +60% 的标的）。
 # 对超短来说这是最坏的位置——买在加速末段，赚的是最后一棒，亏起来最快。
 #
-# 现在按「买点位置」分两条：
-#   埋伏组  squeeze / sector —— 用蓄势、板块联动定义买点，目标是买在启动前或
-#           启动第一根，而不是跟在第三根后面；
+# 现在按「买点位置」分四类：
+#   埋伏组  squeeze / sector / w2s —— 用蓄势、板块联动、弱转强定义买点，
+#           目标是买在启动前或启动的第一天，而不是跟在第三根后面；
 #   延续组  trend —— 保留趋势延续，但补上量与位置约束（mom5 ≤ 12、
 #           mom60 ≤ 45、volratio ≥ 1.3、mom20 ≥ 8、站稳 20 日线）。
 #
@@ -47,6 +47,21 @@ from .profile import board_tag
 #   卡玛分别是 −0.06 与 0.01——不是「稍差」，是没有 edge，却每条每天还要
 #   占 3 张计划卡、一个模拟账户和一个进化名额。策略多不等于机会多，
 #   摊薄的是注意力和样本。
+#
+# 2026-11 新增 w2s（弱转强）：删掉的「打板」买的是**已经封住的强**，
+#   而打板的问题不在「打」，在「买不到」——一字板和秒板的成交权在市场手里，
+#   买得到的时候通常已经是终点。弱转强反过来：买的是**弱刚被修复的那一刻**，
+#   那个价位有人愿意卖（昨天板上套住的人在解套出局），所以买得进。
+#   完整规则见 `docs/adr/0008-weak-to-strong-buy-point.md`。
+#
+# 所有策略的 ATR 三档与持有上限一律走 `backtest.DEFAULTS`（2.2 / 2.6 / 5.0 / 20），
+#   不再逐条收紧。此前每条写了自己的 1.4~1.8 ATR、4~6 天，而 `run_backtest`
+#   当时只从 spec 读 top_n 一类结构参数——**这些档位从未被回测检验过**，
+#   模拟盘按紧档位跑、回测按 DEFAULTS 跑，同一个页面上两个数。补齐之后用
+#   同一份样本扫了一遍（sector：stop 1.4/1.8/2.2 × 持 5/10/20）：
+#   9 个格子里越紧越差，1.4ATR+5天 年化 2.64%（回撤 −43.2%），
+#   2.2ATR+20天 年化 26.69%（回撤 −22.9%），且单调、没有内部的拐点。
+#   换句话说这三条策略的 edge 来自「拿住」，把它们短线化就是把它杀掉。
 #
 # 同一轮还收紧了 trend：它原来只有 2 条过滤，全市场 4956 只命中——那不是
 # 「选股」而是「按动量排序」。加上量能与中期动量两条门槛后命中 33 只，
@@ -89,10 +104,6 @@ STRATEGIES: list[dict] = [
         # 失败率显著上升：放开后 1260 天回测年化 15.50%→8.50%、卡玛 0.79→0.37。
         # 让它参与不是「多抓机会」，是「多亏钱」。
         "weak_participate": False,
-        "time_stop": 6,
-        "stop_atr": 1.5,
-        "tp1_atr": 1.8,
-        "tp2_atr": 3.5,
     },
     {
         "id": "sector",
@@ -122,10 +133,6 @@ STRATEGIES: list[dict] = [
         # （年化 17.31%→18.81%，卡玛 0.67→0.69，回撤 −25.86%→−27.27%）。
         # 另外两条策略的道理相反，见各自的注释。
         "weak_participate": True,
-        "time_stop": 4,
-        "stop_atr": 1.4,
-        "tp1_atr": 1.6,
-        "tp2_atr": 3.0,
     },
     {
         "id": "trend",
@@ -161,10 +168,68 @@ STRATEGIES: list[dict] = [
         # 那不是风控更稳，是把最强的那批信号当风险滤掉了。
         "gap_gate": False,
     },
+    {
+        "id": "w2s",
+        "name": "弱转强",
+        "desc": "昨日烂板或放量滞涨，次日高开 1%~7% 买入；当日必须封板，不封则次日开盘走",
+        # 权重只做排序，不做准入：真正的买点由下面的条件定义。同一天可能
+        # 有几只都满足「昨天弱、今天高开」，排序优先给行业里正在抱团的那只
+        # ——弱转强能不能成，题材强度比个股形态更说了算。
+        # 不写 `mainflow`：资金流历史只有 3% 覆盖，回测会把它整条摘掉，
+        # 于是同一条策略在「今日选股」里按四个因子排、在回测里按三个排。
+        "weights": {"ind_limit_cnt": 0.30, "ind_strength": 0.24,
+                    "ind_rank_pct": 0.22, "volratio": 0.24},
+        "filters": [
+            # 「弱」的定义。两种形态互不包含，必须是「或」：
+            #   烂板 —— 盘中摸到涨停没封住，板上有人出货；
+            #   放量滞涨 —— 量放出来了价没走，放量的是卖方。
+            # 一字板和秒板之所以被排除在「弱」之外，恰恰因为它们不可交易：
+            # 那是「强」，而强到一字的地步，第二天照样一字，轮不到我们。
+            {"field": "any", "value": [
+                {"field": "failed_limit", "op": "is", "value": True},
+                {"field": "all", "value": [
+                    {"field": "volratio", "op": ">=", "value": 2.0},
+                    {"field": "change_pct", "op": "<=", "value": 6},
+                ]},
+            ]},
+            # 今天已经封死的票不要：次日大概率一字，买入价是市场给的，
+            # 我们既挂不进单，也没有「弱转强」那部分折价。
+            {"field": "limit_up", "op": "is", "value": False},
+            # 跌停或接近跌停的票不算「弱转强」的弱，那是「崩」——次日高开
+            # 多半是超跌反抽，没有承接，和放量出货后的修复是两件事。
+            {"field": "change_pct", "op": ">=", "value": -5},
+            # 位置约束：弱转强要的是「启动初期的第一次分歧」，不是高位第三次
+            # 分歧。20 日涨幅上界砍掉已经在加速段的，下界砍掉下跌中继。
+            {"field": "mom20", "op": "between", "value": [-5, 35]},
+            # 成交额下限：5000 万以下接不住单，也谈不上「放量」。
+            {"field": "amount", "op": ">=", "value": 0.5},
+        ],
+        "top_n": 3,
+        "max_per_industry": 2,
+        "market_ma": 120,
+        # 弱势期照常参与：弱转强本来就是「退潮里找修复」的玩法，指数在
+        # 半年线下方时，这类票反而是市场里仅剩的进攻方向。
+        "weak_participate": True,
+        # 买点的一半在开盘那一刻：高开不到位说明昨天的弱没被修复，
+        # 高开过头已经接近一字、买不到也没溢价。区间之外一律不做。
+        "gap_band": [1, 7],
+        # 「当日必须封板，不封次日开盘走」默认**关**。这不是偷懒，是实测：
+        # 同一份 1260 天样本、同一批信号，只把这条验证规则打开——
+        #   关：年化 14.33%，回撤 −18.5%，卡玛 0.78，胜率 52.6%
+        #   清仓：年化 −1.13%，回撤 −24.3%，卡玛 −0.05，胜率 42.3%
+        #   减半：年化 −2.79%，回撤 −22.5%，卡玛 −0.12，胜率 43.2%
+        # 换 6 组买点参数重跑，6 组一致变差。原因是 T+1：当天买的当天卖不掉，
+        # 「没封板」这个事实要到收盘才知道，成交只能等次日开盘——而那正是
+        # 弱势里最差的价位之一，未封板的单子平均每笔 −5.7%。
+        # 留着这个开关而不是删掉：封板率是随行情变的（这段样本 16%），
+        # 强势期它会明显回升。复盘日记每天记「出手几只、封板几只」，
+        # 等封板率稳定在 35% 以上再打开，那时它才可能从成本变成验证。
+        "need_limit_close": False,
+        "limit_close_frac": 1.0,
+    },
 ]
 
 STRATEGY_MAP: dict[str, dict] = {s["id"]: s for s in STRATEGIES}
-
 
 def _zscore(values: list[float]) -> list[float]:
     if len(values) < 2:
@@ -271,10 +336,9 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         if blocked == len(pool):
             return _empty(engine, cfg, "「个人设置 → 购买权限」里没有开通任何板块，"
                                       "开通后才能选股")
-    for cond in filters:
-        column = board.column(cond["field"])
-        for i, cell in enumerate(column):
-            if mask[i] and not matches(cond, cell):
+    if filters:
+        for i in range(len(mask)):
+            if mask[i] and not evaluate(filters, lambda k, i=i: board.column(k)[i]):
                 mask[i] = False
 
     # 池门槛（打板用）：只在连板数 ≥ N 的票里选。
@@ -373,7 +437,7 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
                 for k, v in contributions[::-1][:2] if v < 0
             ]
         else:
-            positive = [f["label"] for f in filters][:3]
+            positive = [f["label"] for f in leaves(filters)][:3]
             negative = []
 
         # 命中条件对应的实际值：条件筛选模式下，这比「因子贡献」更有信息量
@@ -386,7 +450,7 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
                 "value": board.column(f["field"])[i],
                 "unit": FIELD_MAP[f["field"]].unit,
             }
-            for f in filters
+            for f in leaves(filters)
         ]
 
         sort_key = sort_cfg["by"]
@@ -492,6 +556,10 @@ def strategy_list(custom: list[dict] | None = None) -> list[dict]:
     `top_n` 与两条撮合开关（`pool_limit_min` / `market_ma`）必须从策略定义里读，
     不能写死 10——打板策略的 top_n=3 和「只在涨停池里选」是它成立的前提，
     在这里被抹平成默认值，跑出来的就不是打板了。
+
+    `filters` 同理：弱转强的全部信息量都在条件里，返回空数组会让它在编辑器里
+    变成一套「只有权重」的策略，复制一份出来买点悄悄消失。带上归一化后的
+    label，前端也不必自己拼中文。
     """
     rows = [
         {
@@ -499,7 +567,7 @@ def strategy_list(custom: list[dict] | None = None) -> list[dict]:
             "name": s["name"],
             "desc": s["desc"],
             "weights": s["weights"],
-            "filters": [],
+            "filters": normalize_all(s.get("filters")),
             "sort": None,
             "top_n": s.get("top_n", 10),
             "max_per_industry": s.get("max_per_industry", 2),

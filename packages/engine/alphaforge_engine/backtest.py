@@ -35,7 +35,7 @@ from alphaforge_core.fields import FIELD_MAP
 from alphaforge_core.metrics import summarize
 from alphaforge_core.universe import pc as price_limit
 
-from .conditions import ConditionError, matches, normalize, normalize_all
+from .conditions import ConditionError, evaluate, normalize, normalize_all
 from .gate import board_allow, buyable
 
 # 减仓阈值与模拟盘共用一处定义。写在 `signal.py` 里是因为「浮盈多少算该减」
@@ -89,7 +89,10 @@ TRADING_DAYS = 252
 # 在第 2 步——「早上买进、下午打穿止损离场」在回测里成立，实盘挂不出那张
 # 卖单。模拟盘因为「先止损、后撮合」的顺序天然合规，于是同一个策略在两边
 # 走出了不同的账。补上这一条，回测的亏损尾部和换手都会变，必须再换版本号。
-MODEL_VERSION = 11
+# v12：新增「弱转强」买点（v11 及以前的策略集合里没有这一类），并给建仓加
+# 「跳空区间带」与「当日未封板次日离场」两条按策略生效的规则；`factor` 表
+# 新增 `failed_limit`（烂板）一列。选股口径变了，旧回测全部不可比。
+MODEL_VERSION = 12
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -846,7 +849,11 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # 都是按 spec 里的值走的，只有回测走 DEFAULTS，就会出现「回测里空仓躲过的
     # 熊段，实盘照样满仓挨打」——这正是用户抱怨过的「回测和实盘两张皮」。
     # 三处读同一个值，回测数字才对实盘有参考意义。
-    for key in ("top_n", "max_per_industry", "pool_limit_min", "market_ma"):
+    # 风控三档 + 持有上限也必须从 spec 读。此前只读了 top_n 一类结构参数，
+    # 于是 squeeze 的 stop_atr 1.5 / time_stop 6 在回测里全是 DEFAULTS 的
+    # 2.2 / 20——模拟盘按 6 天走、回测按 20 天走，同一条策略两本账。
+    for key in ("top_n", "max_per_industry", "pool_limit_min", "market_ma",
+                "stop_atr", "tp1_atr", "tp2_atr", "time_stop"):
         value = spec.get(key)
         if value is not None:
             cfg[key] = value
@@ -866,6 +873,16 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # 开盘跳空闸开不开，同样是策略性质：抓动量的那条不该被高开拦下。
     # 缺省 True——「拦极端跳空」是更安全的默认值，要关必须显式声明。
     cfg["gap_gate"] = bool(spec.get("gap_gate", True))
+    # 弱转强要求「必须高开」：区间带是买点的组成部分，不是风控。它替代默认
+    # 闸而不是叠加——默认闸允许低开到 −6%，那正好把「弱势没被修复」当成机会。
+    band = spec.get("gap_band")
+    cfg["gap_band"] = (float(band[0]), float(band[1])) if band else None
+    # 弱转强的验证条件：买入当日必须封板，没封住就是判断错了，次日开盘走。
+    # 这条不能靠止损兜——止损是「跌到某个价位才反应」，而这里要的是
+    # 「一到收盘就承认看错」，晚了整整一天，成本差在隔夜。
+    # `limit_close_frac` 决定走多少：1.0 清仓，0.5 只走一半。
+    cfg["need_limit_close"] = bool(spec.get("need_limit_close"))
+    cfg["limit_close_frac"] = float(spec.get("limit_close_frac") or 1.0)
 
     if panel is None:
         panel = build_panel(engine, days=days, max_codes=max_codes,
@@ -1042,7 +1059,7 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
             if ci in positions:
                 continue
             blocked = _buy_block(bars, p, panel.limit[ci],
-                                 cfg.get("gap_gate", True))
+                                 cfg.get("gap_gate", True), cfg.get("gap_band"))
             if blocked:
                 gap_skipped[blocked[0]] = gap_skipped.get(blocked[0], 0) + 1
                 continue
@@ -1161,6 +1178,31 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
                 trades.append(rec)
                 positions.pop(ci, None)
 
+        # ---- 3.5 弱转强：买入当日没封板 = 判断错了，次日开盘无条件走
+        #
+        # 这条和止损不是一回事。止损回答「跌到某个价位怎么办」，它回答
+        # 「收盘就承认看错」——差一个隔夜，成本就吃在跳空上。写在这一步而不是
+        # 塞进 `_held_action`：后者只在票还留在 Top-N 里时才被调用，
+        # 「没封板」的票第二天的排名大概率掉出去，正好最需要它的时候不在。
+        if cfg.get("need_limit_close"):
+            for ci, pos in positions.items():
+                if pos.get("d0") != d:
+                    continue
+                p = panel.bar[d][ci]
+                if p < 0:
+                    continue                       # 停牌：没有收盘价，明天再说
+                if panel.bars[ci]["pct"][p] >= panel.limit[ci] - 0.002:
+                    continue
+                pending = [o for o in pending if o["ci"] != ci]
+                frac = min(max(float(cfg.get("limit_close_frac") or 1.0), 0.0), 1.0)
+                qty = int(pos["shares"] * frac / 100) * 100
+                if 0 < qty < pos["shares"] * 0.5:
+                    qty = pos["shares"]          # 不足半仓的零头一律清掉，别留 100 股
+                if qty < 100:
+                    continue
+                pending.append({"ci": ci, "kind": "TRIM", "shares": qty,
+                                "reason": "未封板离场"})
+
         # ---- 4. 收盘：生成下一交易日的委托（信号只用当日及之前的数据）
         #
         # 每天扫一次，只补**空出来的仓位**，不为了换股而换股。
@@ -1249,7 +1291,8 @@ def _gap(bars: dict, p: int) -> float:
 
 
 def _buy_block(bars: dict, p: int, limit: float,
-               gap_gate: bool = True) -> tuple[str, str] | None:
+               gap_gate: bool = True,
+               band: tuple[float, float] | None = None) -> tuple[str, str] | None:
     """开盘买不了的原因，返回 (类别, 说明)；能买返回 None。
 
     「一字涨停」和「跳空超出容忍」是两件不同的事，必须分开说：
@@ -1261,10 +1304,22 @@ def _buy_block(bars: dict, p: int, limit: float,
     「动量延续」，高开恰恰是动量被确认的信号。同一份样本上给它设闸，
     年化从 21.83% 掉到 12.97%——那不是「风控更稳」，是把最强的那批信号
     当成风险滤掉了。一字涨停那一条不跟着关：那是买不到，不是要不要买。
+
+    `band` 是「必须高开」的区间（百分比，如 (1, 7)），弱转强专用。它替代
+    默认的追高/破位闸，因为这类买点的前提就是高开：不跳空说明昨天的弱势
+    没有被修复，跳太多则已经是一字板、买不到也没溢价。区间之外分两种说法——
+    高开不足算「没确认」，高开过头算「已透支」，不能报成同一件事。
     """
     gap = _gap(bars, p)
     if gap >= limit - 0.002:
         return ("limit", "一字涨停买不到")
+    if band is not None:
+        lo, hi = band
+        if gap < lo / 100:
+            return ("gap_weak", f"高开 {gap * 100:+.1f}%，未达 {lo:g}%，弱势没被修复")
+        if gap > hi / 100:
+            return ("gap_high", f"高开 {gap * 100:+.1f}%，越过 {hi:g}%，情绪已透支")
+        return None
     if not gap_gate:
         return None
     if gap > GAP_MAX_PCT / 100:
@@ -1274,9 +1329,10 @@ def _buy_block(bars: dict, p: int, limit: float,
     return None
 
 
-def _can_buy(bars: dict, p: int, limit: float, gap_gate: bool = True) -> bool:
-    """开盘能不能买：不是一字涨停，且跳空没超出容忍区间。"""
-    return _buy_block(bars, p, limit, gap_gate) is None
+def _can_buy(bars: dict, p: int, limit: float, gap_gate: bool = True,
+             band: tuple[float, float] | None = None) -> bool:
+    """开盘能不能买：不是一字涨停，且跳空落在策略要求的区间里。"""
+    return _buy_block(bars, p, limit, gap_gate, band) is None
 
 
 def _huddle_ok(panel: Panel, ci: int, d: int) -> bool:
@@ -1364,6 +1420,14 @@ def _filter_cell(panel: Panel, ci: int, p: int, field: str):
         return round(bars["amt"][p] / 1e8, 4) if bars["amt"][p] else 0.0
     if field == "limit_up":
         return bars["pct"][p] >= panel.limit[ci] * 0.997
+    if field == "failed_limit":
+        # 与 `alphaforge_data.factors.compute` 同一口径：摸到涨停、没封住
+        if p < 1 or not bars["c"][p - 1]:
+            return False
+        lim = panel.limit[ci]
+        touched = bars["h"][p] / bars["c"][p - 1] - 1 >= lim - 0.002
+        sealed = bars["pct"][p] >= lim - 0.002
+        return bool(touched and not sealed)
     if field == "above_ma20":
         ma = _ma(bars["c"], p, 20)
         return bool(ma > 0 and bars["c"][p] > ma)
@@ -1403,6 +1467,10 @@ def _held_action(panel: Panel, ci: int, pos: dict, d: int, nav: float,
     bars = panel.bars[ci]
     p = panel.bar[d][ci]
     if p < 0:
+        return None
+    # 建仓当日不加减：不加仓是因为计划仓位在开盘那一刻已经买满，
+    # 不减仓是因为 T+1 卖不出去（没封板的票由第 3.5 步挂次日离场单）。
+    if cfg.get("need_limit_close") and pos.get("d0") == d:
         return None
     price = bars["c"][p]
     cost = float(pos.get("cost") or 0.0)
@@ -1468,9 +1536,8 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
             col = panel.bars[ci]["f"].get("limit_cnt")
             if not col or col[p] < pool_min:
                 continue
-        if filters and not all(
-                matches(cond, _filter_cell(panel, ci, p, cond["field"]))
-                for cond in filters):
+        if filters and not evaluate(filters,
+                                    lambda k, ci=ci, p=p: _filter_cell(panel, ci, p, k)):
             continue
         score = 0.0
         for key, w in weights.items():
@@ -1618,15 +1685,21 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
     else:
         notes.append("未启用择时：任何行情都满仓参与，熊段回撤会显著放大")
     if gap_skipped:
-        _gap_label = {"limit": "一字涨停买不到", "gap_high": "高开不追", "gap_low": "低开不接"}
+        _gap_label = {"limit": "一字涨停买不到", "gap_high": "高开不追", "gap_low": "低开不接",
+                      "gap_weak": "高开不足（弱势没被修复）"}
+        if spec.get("gap_band"):
+            lo, hi = spec["gap_band"]
+            _band_note = f"。买点要求高开落在 {lo:g}%~{hi:g}% 之间"
+        elif not spec.get("gap_gate", True):
+            _band_note = ("。这条策略不设跳空闸（它赚的就是启动首日的动量，"
+                          "高开正是信号本身），只拦一字涨停")
+        else:
+            _band_note = (f"。高开超过 {GAP_MAX_PCT:g}% 视为情绪透支放弃，"
+                          f"低开超过 {abs(GAP_MIN_PCT):g}% 视为信号证伪放弃")
         notes.append(
             "开盘校验（成交价是次日开盘，即集合竞价结果）："
             + "、".join(f"{_gap_label[k]} {v} 次" for k, v in gap_skipped.items() if v)
-            + ("。高开超过 "
-               f"{GAP_MAX_PCT:g}% 视为情绪透支放弃，低开超过 {abs(GAP_MIN_PCT):g}% 视为信号证伪放弃"
-               if spec.get("gap_gate", True) else
-               "。这条策略不设跳空闸（它赚的就是启动首日的动量，"
-               "高开正是信号本身），只拦一字涨停"))
+            + _band_note)
     notes.append(f"每天扫描空缺仓位并补足到 top_n={cfg['top_n']}，不为了换股而换股："
                  f"已持有的标的不会因为排名下滑被卖，只会被止损/止盈/时间止损带走")
     notes.append(f"已持仓的票同样按计划卡执行：再进 Top-N 且浮盈未到 {TRIM_PNL_PCT:g}% 时"

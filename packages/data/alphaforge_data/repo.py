@@ -945,7 +945,7 @@ class Repo:
 
 _BOOL_COLS = frozenset({
     "limit_up", "above_ma20", "ma_bull", "macd_gold", "boll_break",
-    "new_high20", "new_high60", "is_st",
+    "new_high20", "new_high60", "is_st", "failed_limit",
     "in_hs300", "in_sz50", "in_zz500", "in_sse", "in_szse",
 })
 

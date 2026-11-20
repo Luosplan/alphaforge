@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
+from alphaforge_core.universe import pc as price_limit
 
 from .backtest import (DEFAULTS, GAP_MAX_PCT, GAP_MIN_PCT, REGIME_HUDDLE_MAX_RANK,
                        REGIME_HUDDLE_MIN_LIMITS, REGIME_SCALE, TRIM_FRAC, single_cap)
@@ -98,6 +99,11 @@ def empty_account(strategy_id: str, name: str, spec: dict,
     base["weak_participate"] = bool(spec.get("weak_participate", False))
     # 开盘跳空闸同理：抓动量的策略不该被高开拦下，缺省开。
     base["gap_gate"] = bool(spec.get("gap_gate", True))
+    # 弱转强的两条买点属性：必须高开的区间，和「当日没封板次日走」的验证条件。
+    # 它们描述的是「这类买点长什么样」，不是可以搜的参数，所以不进 PARAM_KEYS。
+    base["gap_band"] = list(spec["gap_band"]) if spec.get("gap_band") else None
+    base["need_limit_close"] = bool(spec.get("need_limit_close"))
+    base["limit_close_frac"] = float(spec.get("limit_close_frac") or 1.0)
     for key in PARAM_KEYS:
         value = spec.get(key)
         if value is not None:
@@ -221,16 +227,18 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
 
 def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tuple[dict, dict]:
     params = {**DEFAULTS, **(account.get("params") or {})}
-    # `weak_participate` / `gap_gate` 是 v10 新加的策略性质，老账户落盘的
-    # params 里没有。不补的话，老账户会一直按「弱市停手 + 跳空闸开到最紧」跑，
-    # 而同一条策略新建的账户行为不一样——同一个页面上并排两个数，谁也不知道
-    # 差在哪。
+    # `weak_participate` / `gap_gate` / `gap_band` / `need_limit_close` 都是
+    # 策略性质，v10 之后才陆续加进 params，老账户落盘的那份里没有。不补的话，
+    # 老账户会一直按旧口径跑，而同一条策略新建的账户行为不一样——同一个页面上
+    # 并排两个数，谁也不知道差在哪。
     saved = account.get("params") or {}
     spec_raw = account.get("spec") or {}
-    if "weak_participate" not in saved:
-        params["weak_participate"] = bool(spec_raw.get("weak_participate"))
-    if "gap_gate" not in saved:
-        params["gap_gate"] = bool(spec_raw.get("gap_gate", True))
+    for key, default in (("weak_participate", False), ("gap_gate", True),
+                         ("gap_band", None), ("need_limit_close", False),
+                         ("limit_close_frac", 1.0)):
+        if key not in saved:
+            value = spec_raw.get(key)
+            params[key] = default if value is None else value
     positions = [dict(p) for p in account.get("positions") or []]
     trades = list(account.get("trades") or [])
     cash = float(account.get("cash") or 0.0)
@@ -355,8 +363,20 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         #   低开太多 → 跳空破位，说明昨天的信号已被证伪。
         # `gap_gate=False` 的策略（趋势波段）跳过这一段：它赚的是动量延续，
         # 高开就是确认。和回测 `_buy_block` 同一组常量，两边不会各说各话。
-        if params.get("gap_gate", True):
-            gap_pct = (o / prev_close - 1) * 100 if prev_close > 0 else 0.0
+        gap_pct = (o / prev_close - 1) * 100 if prev_close > 0 else 0.0
+        band = params.get("gap_band")
+        if band:
+            # 弱转强：高开是买点的组成部分，不是风控。区间之外分两种性质——
+            # 高开不足说明昨天的弱势没被修复（信号没成立），高开过头已经
+            # 是一字板或接近一字（买不到也没溢价），复盘时要分开统计。
+            lo, hi = float(band[0]), float(band[1])
+            if gap_pct < lo:
+                log.append(f"跳过 {code}：高开 {gap_pct:+.1f}%，未达 {lo:g}%，弱势没被修复")
+                continue
+            if gap_pct > hi:
+                log.append(f"跳过 {code}：高开 {gap_pct:+.1f}%，越过 {hi:g}%，情绪已透支")
+                continue
+        elif params.get("gap_gate", True):
             if gap_pct > GAP_MAX_PCT:
                 log.append(f"跳过 {code}：高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
                 continue
@@ -449,6 +469,37 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
                                     regime_scale=_regime_scale(engine, date_s, params),
                                     boards=prof.get("boards"))
 
+    # ---- 3.4 弱转强：买入当日没封板 = 判断错了，次日开盘无条件走
+    #
+    # 这条不能用止损替代。止损回答「跌到某个价位怎么办」，而这句要的是
+    # 「一到收盘就承认看错」——差整整一个隔夜，成本就吃在隔夜跳空上。
+    # 它也不会和 T+1 冲突：委托是今天收盘挂的，成交在明天开盘。
+    if params.get("need_limit_close"):
+        for pos in positions:
+            if pos.get("open_date") != date_s:
+                continue
+            bar, prev = feed.bar(pos["code"], date_s)
+            if not bar or not prev or not prev.get("close"):
+                continue
+            lim = price_limit(pos["code"], bool(engine.symbol(pos["code"]).get("is_st")))
+            chg = float(bar["close"]) / float(prev["close"]) - 1
+            if chg >= lim - 0.002:
+                continue
+            frac = min(max(float(params.get("limit_close_frac") or 1.0), 0.0), 1.0)
+            qty = int(pos["shares"] * frac / 100) * 100
+            if 0 < qty < pos["shares"] * 0.5:
+                qty = pos["shares"]
+            if qty < 100:
+                continue
+            new_orders.append({"code": pos["code"], "name": pos.get("name", ""),
+                               "kind": "TRIM", "shares": qty,
+                               "reason": "未封板离场", "created": date_s,
+                               "scale": 1.0})
+            pos["exit_next"] = "未封板离场" if qty >= pos["shares"] else "未封板减半"
+            log.append(f"{pos['code']} 收盘未封板（{chg * 100:+.1f}%），"
+                       f"明日开盘{'清仓' if qty >= pos['shares'] else f'减 {qty} 股'}"
+                       f"（弱转强验证失败）")
+
     # ---- 3.5 收盘快照：把「今天这只票自己赚了多少 / 浮盈多少 / 离止损多远」算出来
     #
     # 放在撮合之后，是因为**今天新买的票也要在内**——用户问的正是「我今天买的那只，
@@ -488,7 +539,10 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         # 永远是 None，页面上会一直显示「弱势停手」——而账户其实在挂单。
         "params": {**(account.get("params") or {}),
                    "weak_participate": bool(params.get("weak_participate")),
-                   "gap_gate": bool(params.get("gap_gate", True))},
+                   "gap_gate": bool(params.get("gap_gate", True)),
+                   "gap_band": params.get("gap_band"),
+                   "need_limit_close": bool(params.get("need_limit_close")),
+                   "limit_close_frac": float(params.get("limit_close_frac") or 1.0)},
         "cash": round(cash, 2),
         "positions": positions,
         "orders": new_orders,
@@ -587,7 +641,10 @@ def holding_rows(positions: list[dict], params: dict | None = None,
         today_buy = bool(pos.get("today_buy"))
 
         kind = kinds.get(code)
-        if kind == "TRIM":
+        if pos.get("exit_next"):
+            # 已经下了离场单，不再是「可能减仓」而是既定动作，文案要确定
+            action, tone = f"{pos['exit_next']}，明日开盘走", "warn"
+        elif kind == "TRIM":
             action, tone = "明日开盘减仓 1/3", "warn"
         elif kind == "ADD":
             action, tone = "明日开盘加仓", "brand"
@@ -678,6 +735,11 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         # 抱团画像跟着卡片走：弱势时「凭什么这只还能建仓」全靠它解释，
         # 前端直接显示「行业 3 家涨停 / 排名前 5%」，不用再查一次因子。
         plan["huddle"] = item.get("huddle") or {}
+        # 区间带策略（弱转强）的买点是「次日高开多少」，不是 ATR 建仓区。
+        # 卡片上不写清楚，用户会照着 ATR 区间去挂限价，而实际成交看的是开盘价。
+        band = params.get("gap_band")
+        if band and signal_type == "ENTRY":
+            plan["entry_rule"] = f"高开 {band[0]:g}%~{band[1]:g}%"
         plans.append(plan)
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
         if code in held:
@@ -1025,7 +1087,7 @@ def snapshot(engine, account: dict) -> dict:
                                    # 「今日盈亏」——`change_pct` 是按最近两根日线算的，
                                    # 停牌股、隔了周末的账户都会算错。
                                    "day_pnl", "day_pct", "dist_stop_pct",
-                                   "held_days", "today_buy") if k in pos},
+                                   "held_days", "today_buy", "exit_next") if k in pos},
             "name": pos.get("name", ""),
             "price": round(price, 2),
             "change_pct": round((price / prev - 1) * 100, 2) if prev else 0.0,

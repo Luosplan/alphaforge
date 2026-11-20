@@ -28,6 +28,10 @@ _FACTOR_V2_COLUMNS: tuple[str, ...] = (
     "limit_cnt",
 )
 
+# schema v3：弱转强要判「烂板」（盘中触及涨停但收盘没封住），
+# 只有 close 是算不出来的，必须多存一列。
+_FACTOR_V3_COLUMNS: tuple[str, ...] = ("failed_limit",)
+
 
 def db_path() -> Path:
     raw = os.environ.get("AF_DB", "").strip()
@@ -64,7 +68,7 @@ def _migrate_factor(conn: sqlite3.Connection) -> None:
     if not info:
         return
     have = {row[1] for row in info}
-    for col in _FACTOR_V2_COLUMNS:
+    for col in _FACTOR_V2_COLUMNS + _FACTOR_V3_COLUMNS:
         if col not in have:
             conn.execute(f"ALTER TABLE factor ADD COLUMN {col} REAL")
 

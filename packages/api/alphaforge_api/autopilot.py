@@ -30,6 +30,7 @@ import threading
 import time
 from pathlib import Path
 
+from alphaforge_core.universe import pc as price_limit
 from alphaforge_engine import aiwatch, harness, paper
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -559,7 +560,7 @@ class Autopilot:
             # 计划执行率要在**推进之后**算：成交是今天开盘那一格发生的，
             # 挂在昨天的委托上。这一步只统计，不改任何参数——参数只由
             # 进化 + 样本外门槛动，复盘改参数等于用一天的噪声调模型。
-            plan_stats = _plan_review(lab, advanced, prev_snap, today)
+            plan_stats = _plan_review(mkt, lab, advanced, prev_snap, today)
             steps.append({"step": "计划执行复盘",
                           "orders": plan_stats["order_count"],
                           "filled": plan_stats["filled_count"]})
@@ -569,7 +570,8 @@ class Autopilot:
                     if r.get("date") != today]
             hist.append({k: plan_stats.get(k) for k in
                          ("date", "order_count", "filled_count", "fill_rate",
-                          "avg_adverse_bps")})
+                          "avg_adverse_bps")}
+                        | {"seal_rate": (plan_stats.get("seal") or {}).get("rate")})
             health = _plan_health(hist)
             steps.append({"step": "执行质量", **{k: health[k] for k in
                                               ("days", "orders", "fill_rate",
@@ -662,10 +664,22 @@ _pilot: Autopilot | None = None
 # 退出原因的展示顺序：先讲主动兑现的（计划减仓 / 止盈），再讲被动离场的
 # （止损 / 时间止损）。按出现次数排会把「止损 22 次」顶到最前面，
 # 复盘读起来像在宣布一天都在割肉，而实际动作结构是止盈为主。
-_EXIT_ORDER = ("计划减仓", "TP2 清仓", "TP1 减半", "保本止损", "止损", "时间止损")
+_EXIT_ORDER = ("计划减仓", "未封板离场", "TP2 清仓", "TP1 减半", "保本止损", "止损", "时间止损")
 
 
-def _plan_review(lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
+def _sealed_today(mkt, code: str, today_s: str) -> bool:
+    """今天收盘有没有封住涨停。弱转强的买点是否成立，收盘那一刻就有答案。"""
+    rows = mkt.bars(code, "1d", "none", limit=3) or []
+    if len(rows) < 2 or rows[-1]["date"] != today_s:
+        return False
+    prev = float(rows[-2]["close"] or 0)
+    if prev <= 0:
+        return False
+    limit = price_limit(code, bool(mkt.symbol(code).get("is_st")))
+    return float(rows[-1]["close"]) / prev - 1 >= limit - 0.002
+
+
+def _plan_review(mkt, lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
                  today_s: str) -> dict:
     """今日「计划 vs 实际」：挂了几张、成交几张、滑点多少、没成交为什么。
 
@@ -679,6 +693,12 @@ def _plan_review(lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
     by_strategy: list[dict] = []
     exits: dict[str, dict] = {}
     bps_all: list[float] = []
+    # 弱转强族：今天出手几只、收盘封住几只。这是这条买点上唯一「当天收盘
+    # 就能验证」的指标——止损、止盈都要等几天才知道答案，而它不用。
+    # 封板率决定「必须当日封板否则次日走」那条硬规则该不该打开：
+    # 1260 天样本上它是 16%，打开硬规则年化从 13.92% 掉到 −1.82%；
+    # 强势期会明显回升，所以每天记一笔，等它稳定在高位再谈开关。
+    seal = {"entries": 0, "sealed": 0, "codes": []}
 
     for sid, info in advanced.items():
         acc = lab.account(sid) or {}
@@ -715,6 +735,15 @@ def _plan_review(lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
             slot["pnl"] += float(t.get("pnl") or 0)
             slot["pnl_pct_sum"] += float(t.get("pnl_pct") or 0)
 
+        if (acc.get("spec") or {}).get("gap_band"):
+            for t in today_trades:
+                if t.get("side") != "BUY":
+                    continue
+                seal["entries"] += 1
+                if _sealed_today(mkt, t["code"], today_s):
+                    seal["sealed"] += 1
+                    seal["codes"].append(t["code"])
+
         by_strategy.append({
             "strategy_id": sid, "strategy_name": name,
             "orders": got["order_count"], "filled": got["filled_count"],
@@ -742,6 +771,13 @@ def _plan_review(lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
         "filled_count": filled,
         "fill_rate": round(filled / total * 100, 1) if total else None,
         "avg_adverse_bps": round(sum(bps_all) / len(bps_all), 1) if bps_all else None,
+        "seal": {
+            "entries": seal["entries"],
+            "sealed": seal["sealed"],
+            "rate": (round(seal["sealed"] / seal["entries"] * 100, 1)
+                     if seal["entries"] else None),
+            "codes": seal["codes"][:8],
+        },
         "kinds": list(kinds.values()),
         "rows": rows[:40],
         "missed": missed[:20],

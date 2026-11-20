@@ -812,7 +812,7 @@ onBeforeUnmount(stopPoll)
                 <tr>
                   <th>标的</th>
                   <th>类型</th>
-                  <th>建仓区</th>
+                  <th>建仓区 / 买点</th>
                   <th>现价</th>
                   <th>委托</th>
                   <th>距止损</th>
@@ -837,7 +837,17 @@ onBeforeUnmount(stopPoll)
                       {{ p.signal_label }}
                     </span>
                   </td>
-                  <td class="num">{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</td>
+                  <td
+                    class="num"
+                    :title="
+                      p.entry_rule
+                        ? `次日开盘价较今收落在 ${p.entry_rule} 区间才建仓；ATR 区间 ${px(p.zones.entry.low)} – ${px(p.zones.entry.high)} 在这里只用来定止损`
+                        : '建仓区由 ATR(14) 定标尺'
+                    "
+                  >
+                    <template v-if="p.entry_rule">{{ p.entry_rule }}</template>
+                    <template v-else>{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</template>
+                  </td>
                   <td class="num">{{ px(p.live_price ?? p.ref_price) }}</td>
                   <td
                     class="c-order"
@@ -877,7 +887,7 @@ onBeforeUnmount(stopPoll)
       </div>
       <div v-if="plans.length" class="p-legend">
         <span class="pl-title">口径</span>
-        <span>建仓区与止损由 ATR(14) 定标尺</span>
+        <span>建仓区与止损由 ATR(14) 定标尺；弱转强的买点是次日高开幅度，显示为「高开 x%~y%」</span>
         <span class="dot">·</span>
         <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘…」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
         <span class="dot">·</span>

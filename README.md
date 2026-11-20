@@ -574,6 +574,8 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 | [0004](docs/adr/0004-account-profile-and-search.md) | 账户口径进入风控，搜索改为多通道检索 |
 | [0005](docs/adr/0005-nl-query-strategy-and-panorama.md) | 自然语言选股、可编辑策略与市场全景（词典、条件模型、温度） |
 | [0006](docs/adr/0006-real-market-data.md) | 真实行情数据接入，下线确定性合成行情（三源分工、复权推算、实测坑表） |
+| [0007](docs/adr/0007-realtime-quotes.md) | 实时行情：批量轮询 + 短 TTL 缓存 |
+| [0008](docs/adr/0008-weak-to-strong-buy-point.md) | 短线买点收到「弱转强」：强弱判据、出手节点、封板验证的代价 |
 
 ## 8. 编码规则
 

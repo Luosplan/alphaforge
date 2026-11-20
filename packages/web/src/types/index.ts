@@ -528,7 +528,8 @@ export interface FieldMeta {
 export interface Condition {
   field: string
   op: string
-  value: number | string | boolean | number[]
+  /** 组节点（field 为 any / all）的 value 是子条件数组 */
+  value: number | string | boolean | number[] | Condition[]
   label: string
 }
 
@@ -558,7 +559,7 @@ export interface StrategyPayload {
   name: string
   desc: string
   weights: Record<string, number>
-  filters: Array<{ field: string; op: string; value: number | string | boolean | number[] }>
+  filters: Array<{ field: string; op: string; value: Condition['value'] }>
   sort: { by: string; desc: boolean } | null
   top_n: number
   max_per_industry: number
@@ -931,6 +932,8 @@ export interface LabPlanCard extends PlanCard {
   order_kind?: string
   /** 这张委托的股数。加仓/减仓是**增量**，不等于 sizing.shares（那是总计划仓位） */
   order_shares?: number
+  /** 建仓触发条件的人话说明。区间带策略（弱转强）买点看次日高开幅度，不是 ATR 建仓区 */
+  entry_rule?: string
   strategy_generation?: number
 }
 
