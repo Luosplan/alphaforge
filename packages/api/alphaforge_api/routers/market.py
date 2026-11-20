@@ -10,7 +10,7 @@ from alphaforge_engine.panorama import global_book, index_book, market_temperatu
 from alphaforge_engine.profile import company_profile
 from alphaforge_engine.signal import active_plans
 
-from ..deps import market, ok
+from ..deps import market, ok, store
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -78,7 +78,10 @@ def bars(
     live = engine.live_quotes([code]).get("items") or []
     quote_row = {**base_quote, **live[0]} if live else base_quote
     symbol = {"code": code, "name": quote_row["name"], "industry": quote_row["industry"], "board": quote_row["board"]}
-    zones = [p for p in active_plans(engine)["items"] if p["code"] == code]
+    # 计划卡按购买权限过滤：行情页画出来的建仓区，和信号页能看到的必须是同一批，
+    # 否则「这里有卡、计划页却没有」会被当成丢数据
+    zones = [p for p in active_plans(engine, boards=store().profile()["boards"])["items"]
+             if p["code"] == code]
     return ok({
         "symbol": symbol,
         "freq": freq,

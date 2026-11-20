@@ -203,10 +203,11 @@ def _norm_code(raw: object) -> str:
 
 
 def build_review_context(*, breadth: dict, index: dict | None, account: dict,
-                         trades: list[dict], plans: list[dict], as_of: str) -> dict:
+                         trades: list[dict], plans: list[dict], as_of: str,
+                         plan_stats: dict | None = None) -> dict:
     wins = [t for t in trades if _num(t.get("pnl")) > 0]
     losses = [t for t in trades if _num(t.get("pnl")) < 0]
-    return {
+    ctx = {
         "日期": as_of,
         "市场": {
             "上涨": breadth.get("up", 0), "下跌": breadth.get("down", 0),
@@ -235,6 +236,20 @@ def build_review_context(*, breadth: dict, index: dict | None, account: dict,
             for p in plans[:10]
         ],
     }
+    # 计划执行情况：模型写的复盘如果只说「今天涨了多少」，用户没法判断
+    # 这套计划卡到底有没有在按说的执行。挂单/成交/滑点三项直接喂进去，
+    # 复盘的那句话才可能落在「今天说买 5 只、成交 3 只，两只是一字板」上。
+    if plan_stats:
+        ctx["计划执行"] = {
+            "挂单": plan_stats.get("order_count"),
+            "成交": plan_stats.get("filled_count"),
+            "执行率": plan_stats.get("fill_rate"),
+            "平均不利滑点(bp)": plan_stats.get("avg_adverse_bps"),
+            "未成交": [{"代码": m.get("code"), "名称": m.get("name"),
+                        "动作": m.get("kind_label"), "原因": m.get("reason")}
+                       for m in (plan_stats.get("missed") or [])][:8],
+        }
+    return ctx
 
 
 def analyze_review(context: dict) -> dict:
@@ -245,6 +260,15 @@ def analyze_review(context: dict) -> dict:
     ratio = up / (up + down) if (up + down) else 0.5
     mood = "偏强" if ratio >= 0.6 else ("偏弱" if ratio <= 0.4 else "中性")
     today_pnl = _num(a.get("今日盈亏"))
+    p = context.get("计划执行") or {}
+    plan_point = None
+    if p.get("挂单"):
+        rate = p.get("执行率")
+        bps = p.get("平均不利滑点(bp)")
+        plan_point = (f"昨日挂单 {int(_num(p.get('挂单')))} 张、成交 "
+                      f"{int(_num(p.get('成交')))} 张"
+                      + (f"（执行率 {rate:.0f}%）" if rate is not None else "")
+                      + (f"，平均不利滑点 {bps:.0f}bp" if bps is not None else ""))
     fallback = {
         "source": "rule",
         "headline": (f"{mood}，涨停 {int(_num(m.get('涨停')))} 家，"
@@ -254,7 +278,7 @@ def analyze_review(context: dict) -> dict:
             f"今日成交 {int(_num(a.get('今日成交')))} 笔，"
             f"盈 {int(_num(a.get('盈利笔数')))} 亏 {int(_num(a.get('亏损笔数')))}",
             f"当前持仓 {int(_num(a.get('持仓数')))} 只，现金 {_num(a.get('现金')):,.0f}",
-        ],
+        ] + ([plan_point] if plan_point else []),
         "tomorrow": [
             "按计划卡执行，不临时加仓",
             "跌破止损的先走，不等反弹",

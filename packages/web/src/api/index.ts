@@ -108,12 +108,14 @@ export const api = {
   fields: () => http.get<FieldMeta[]>('/select/fields'),
   examples: () => http.get<string[]>('/select/examples'),
   parseQuery: (text: string) => http.post<AiParse>('/select/parse', { text }),
-  runQuery: (text: string, top_n?: number) =>
-    http.post<SelectResult>('/select/query', { text, top_n }),
+  runQuery: (text: string, top_n?: number, only_allowed = true) =>
+    http.post<SelectResult>('/select/query', { text, top_n, only_allowed }),
   runSelect: (payload: {
     strategy?: string
     top_n?: number
     exclude_st?: boolean
+    /** 只看已开通购买的板块；关掉是纯研究（可以看双创，但不代表能买） */
+    only_allowed?: boolean
     spec?: Record<string, unknown>
   }) => http.post<SelectResult>('/select/run', payload),
   createStrategy: (payload: StrategyPayload) => http.post<Strategy>('/select/strategies', payload),

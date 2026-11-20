@@ -21,9 +21,14 @@ router = APIRouter(prefix="/signal", tags=["signal"])
 
 
 def _board() -> dict:
-    """当日计划卡 + 候选来源。各路由共用，避免每个请求都重跑一遍选股。"""
+    """当日计划卡 + 候选来源。各路由共用，避免每个请求都重跑一遍选股。
+
+    `boards` 必须传：计划卡是要下单的东西，未开通板块的票挂上去只会变成
+    「明天开盘自动买进一只根本不能买的票」。
+    """
     pf = portfolio()
-    return active_plans(market(), nav=pf["summary"]["nav"], holdings=pf["holdings"])
+    return active_plans(market(), nav=pf["summary"]["nav"], holdings=pf["holdings"],
+                        boards=profile()["boards"])
 
 
 @router.get("/plans")

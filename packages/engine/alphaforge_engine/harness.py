@@ -80,6 +80,8 @@ from __future__ import annotations
 import random
 import time
 
+from alphaforge_core.constants import normalize_profile
+
 from .backtest import DEFAULTS, MODEL_VERSION, build_panel, run_backtest, slice_panel
 
 # 参与搜索的基因。key 与 `backtest.FACTORS` 对齐，权重先取正数再归一化。
@@ -141,6 +143,11 @@ INT_GENES = frozenset({"top_n", "max_per_industry", "time_stop"})
 
 MIN_CLOSED = 8           # 已了结交易少于此数 → 压分
 STRONG_EDGE = 0.35       # 样本外优势超过这个数，一次就够，不必等第二轮确认
+# 模拟盘执行质量的否决线（见 `paper_verdict`）。样本少于 8 张挂单一律不否决：
+# 择时关闭时几个月不挂单，拿两三张单去否决回测结论，自进化会彻底停摆。
+PAPER_MIN_ORDERS = 8
+PAPER_MIN_FILL = 50.0    # 挂单成交率低于此值 → 回测的「挂了就能成交」假设失真
+PAPER_MAX_BPS = 80.0     # 平均不利滑点超过此值 → 回测的成本假设明显偏低
 TURNOVER_PENALTY = 0.02  # 每 1 倍换手扣 0.02 分
 CALMAR_CAP = 4.0         # Calmar 计分封顶，避免「回撤压到 1%」的解把其它项全挤成噪声
 EXPOSURE_WEIGHT = 0.20   # 平均仓位每偏离 50% 一个单位的分差
@@ -358,7 +365,46 @@ def _evaluate(engine, genome: dict, spec: dict, panel, capital: float,
     return score_of(report), report
 
 
-def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
+def paper_verdict(paper: dict | None) -> dict:
+    """模拟盘执行质量，作为「该不该换参数」的最后一道闸门。
+
+    为什么要这一道：上面六项全部来自**回测**。回测默认「挂了单就能成交、成交价
+    约等于开盘价、停牌照跑」。模拟盘每天在真实行情上验证这三个假设——挂单成交
+    率长期偏低说明一字板/流动性假设失真，实现滑点偏大说明成本估低了。
+    回测说变好、模拟盘却根本没按计划成交，这时候换参数等于把一个没被验证过的
+    结论推到实盘前面。
+
+    但这条**默认放行**：模拟盘样本天然稀少（择时关闭时几个月不挂单），
+    拿几个月的一张单去否决回测结论，会让自进化彻底停摆。所以只有样本够了
+    （≥8 张挂单）才可能否决，且只否决两件极端的事：成交率 <50%、滑点 >80bp。
+
+    `paper` 为空（模拟盘还没跑过、或今天没有委托）时一律 pass——不构成证据，
+    也就不构成否决。
+    """
+    if not paper:
+        return {"key": "paper_live", "label": "模拟盘执行质量无异常", "pass": True,
+                "value": "无样本"}
+    orders = int(paper.get("orders") or 0)
+    if orders < PAPER_MIN_ORDERS:
+        return {"key": "paper_live", "label": "模拟盘执行质量无异常", "pass": True,
+                "value": f"样本 {orders} 张，不足以下结论"}
+    rate = paper.get("fill_rate")
+    bps = paper.get("avg_adverse_bps")
+    bad = []
+    if rate is not None and float(rate) < PAPER_MIN_FILL:
+        bad.append(f"成交率 {float(rate):.0f}%")
+    if bps is not None and float(bps) > PAPER_MAX_BPS:
+        bad.append(f"滑点 {float(bps):.0f}bp")
+    if bad:
+        return {"key": "paper_live", "label": "模拟盘执行质量无异常", "pass": False,
+                "value": "、".join(bad)}
+    return {"key": "paper_live", "label": "模拟盘执行质量无异常", "pass": True,
+            "value": (f"{orders} 张，成交 {float(rate or 0):.0f}%"
+                      if rate is not None else f"{orders} 张")}
+
+
+def adopt_verdict(result: dict, prev: dict | None = None,
+                  paper: dict | None = None) -> dict:
     """这次进化的参数该不该真换上去。
 
     为什么不能看分数：遗传搜索每次都会给出一个「比基线分高」的基因组——它
@@ -418,6 +464,9 @@ def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
         {"key": "turnover", "label": "换手不高于上次 1.5 倍",
          "pass": (prev_turnover <= 0) or (turnover <= prev_turnover * 1.5),
          "value": f"{turnover:.0f}x"},
+        # 最后一道：模拟盘在真行情上跑出来的执行质量（挂单成交率 / 实现滑点）。
+        # 前六项全是回测口径，这一项是唯一来自「实际撮合过没有」的证据。
+        paper_verdict(paper),
     ]
     failed = [c for c in checks if not c["pass"]]
 
@@ -435,7 +484,9 @@ def adopt_verdict(result: dict, prev: dict | None = None) -> dict:
                   f"{hold_ret * 100:+.1f}% 仍在亏钱——比烂不算改进")
     else:
         action = "hold"
-        reason = "样本外赢了但风控不合格：" + "、".join(
+        # 文案从「风控不合格」改成「门槛没全过」：现在这张表里除了风控，
+        # 还有一项来自模拟盘执行质量，混着叫风控会让人找不到原因。
+        reason = "样本外赢了但门槛没全过：" + "、".join(
             f"{c['label']}（{c['value']}）" for c in failed)
 
     return {"action": action, "reason": reason, "checks": checks,
@@ -478,7 +529,8 @@ def evolve(engine, spec: dict | None = None, *, population: int = 28,
     population = max(6, min(int(population), 64))
     generations = max(1, min(int(generations), 20))
 
-    panel = build_panel(engine, days=days, max_codes=max_codes)
+    panel = build_panel(engine, days=days, max_codes=max_codes,
+                        boards=normalize_profile(None, profile)["boards"])
     if panel.n == 0:
         return {
             "strategy_id": spec.get("id") or "custom",

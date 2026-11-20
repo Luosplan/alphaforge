@@ -59,8 +59,56 @@ def _default_state() -> dict:
         "review": None,             # 最近一次收盘复盘
         "eod": None,                # 最近一次收盘任务的结果
         "history": [],              # 盘中分析留最近 60 条
+        # 每日「计划 vs 实际」的执行质量，留最近 60 天。它不只是给人看的：
+        # 进化采纳参数前要读它（`harness.paper_verdict`）——回测假设的三件事
+        # （挂了就能成交、成交价≈开盘价、停牌照跑）只在模拟盘里被真正检验过。
+        "plan_history": [],
+        "plan_health": None,
         "error": None,
     }
+
+
+# 执行质量看最近多少个**有挂单**的交易日。20 个：超短的一天挂 3~5 张，
+# 20 天就有 60~100 张，足够看出成交率和滑点是不是系统性偏坏；
+# 再拉长会掺进几个月前已经换过参数的市场。
+HEALTH_DAYS = 20
+
+
+def _plan_health(history: list[dict]) -> dict:
+    """把每日对账滚成一份执行质量：成交率、滑点、样本天数。
+
+    只认 `order_count > 0` 的日子。择时关闭时每天都是「挂 0 张、成交 0 张」，
+    把它们算进平均会把成交率稀释成一个没有意义的小数——那不是执行差，
+    是规则主动不开仓。
+    """
+    rows = [r for r in (history or []) if int(r.get("order_count") or 0) > 0]
+    rows = rows[-HEALTH_DAYS:]
+    if not rows:
+        return {"days": 0, "orders": 0, "filled": 0, "fill_rate": None,
+                "avg_adverse_bps": None, "from": None, "to": None,
+                "label": "还没有成交样本", "tone": "flat"}
+    orders = sum(int(r.get("order_count") or 0) for r in rows)
+    filled = sum(int(r.get("filled_count") or 0) for r in rows)
+    # 滑点按**挂单张数**加权，不是按天平均：挂 1 张的那天和挂 5 张的那天
+    # 权重一样，会把一两张极端成交的滑点放大成整段时间的印象。
+    bps_num = sum(float(r.get("avg_adverse_bps") or 0) * int(r.get("order_count") or 0)
+                  for r in rows if r.get("avg_adverse_bps") is not None)
+    bps_den = sum(int(r.get("order_count") or 0)
+                  for r in rows if r.get("avg_adverse_bps") is not None)
+    rate = round(filled / orders * 100, 1) if orders else None
+    bps = round(bps_num / bps_den, 1) if bps_den else None
+    if orders < 8:
+        label, tone = f"样本 {orders} 张，尚不足以下结论", "flat"
+    elif (rate is not None and rate < 50) or (bps is not None and bps > 80):
+        label, tone = "执行质量偏差（成交率低或滑点大）", "warn"
+    else:
+        # 用 brand 而不是 up：红色在这套配色里只代表「涨」，一个中性的
+        # 健康状态标成红的，会被读成「出问题了」。
+        label, tone = "执行质量正常", "brand"
+    return {"days": len(rows), "orders": orders, "filled": filled,
+            "fill_rate": rate, "avg_adverse_bps": bps,
+            "from": rows[0].get("date"), "to": rows[-1].get("date"),
+            "label": label, "tone": tone}
 
 
 def _elapsed_ratio(now: dt.datetime) -> float:
@@ -231,7 +279,7 @@ class Autopilot:
     def _strategy_ids() -> list[str]:
         """盯盘/推进/进化的对象：**所有已开立的账户**。
 
-        之前写死 `("trend", "limitup")`，新增的策略即使开了户也永远不会被
+        之前写死 `("trend", "limitup")`（两条都已删除），新增的策略即使开了户也永远不会被
         盯盘、不会被推进、不会进化——用户看到的就是「新策略是死的」。
         改成读账户表之后，开一个账户就自动进入这条流水线。
         """
@@ -239,7 +287,7 @@ class Autopilot:
             from .lab_store import get_lab
             return list((get_lab().state.get("accounts") or {}).keys())
         except Exception:                                # noqa: BLE001
-            return ["trend", "limitup"]
+            return ["squeeze", "sector", "trend"]
 
     # ---------------------------------------------------------------- 盘中
     def run_intraday(self) -> dict:
@@ -253,7 +301,7 @@ class Autopilot:
             self.state["running"] = "盘中盯盘"
         self._save()
         try:
-            syncer = Syncer(get_market().repo)
+            syncer = Syncer(get_market().repo, workers=16)
             written = syncer.refresh_snapshot()
             mkt = get_market()
             breadth = mkt.repo.market_breadth()
@@ -372,20 +420,59 @@ class Autopilot:
         steps: list[dict] = []
         try:
             mkt = get_market()
-            syncer = Syncer(mkt.repo)
+            syncer = Syncer(mkt.repo, workers=16)
             steps.append({"step": "刷新快照", "rows": syncer.refresh_snapshot()})
+            # 收盘链路原来只跑「日线 + 因子」：资金流和指数都不更新，于是
+            # ① 资金类因子用的是昨天的数；② 择时看的是昨天的沪深300 ——
+            # 两个都会让「明天买什么」和「今天收盘的事实」对不上。
+            # 每一步单独 try：资金流被限流不该连带把复盘和进化一起跳过。
+            for label, call in (("同步日线", syncer.step_daily),
+                                ("同步资金流", syncer.step_flow),
+                                ("同步指数", syncer.step_index)):
+                t0 = time.time()
+                try:
+                    rows = call()
+                    steps.append({"step": label, "rows": rows,
+                                  "seconds": round(time.time() - t0, 1)})
+                except Exception as exc:                 # noqa: BLE001
+                    steps.append({"step": label,
+                                  "error": f"{type(exc).__name__}: {exc}"})
             try:
-                steps.append({"step": "同步日线", "rows": syncer.step_daily()})
                 syncer.step_factor()
                 steps.append({"step": "重算因子", "rows": 0})
             except Exception as exc:                     # noqa: BLE001
-                steps.append({"step": "同步日线", "error": f"{type(exc).__name__}: {exc}"})
+                steps.append({"step": "重算因子", "error": f"{type(exc).__name__}: {exc}"})
 
             mkt = get_market()
+            # 今天到底有没有**新的交易日**？没有就别往下走。
+            #
+            # 这条守卫是必须的：节假日（周一到周五但休市）和「日线源还没更新」
+            # 这两种情况下，`trade_date` 仍停在上一个交易日，而下面会拿昨天的
+            # 委托去对今天的成交——一张都没成交，于是那一天就被记成
+            # 「挂 5 张、成交 0 张、执行率 0%」。这个假数字会直接进入
+            # 执行质量（甚至否决进化采纳），比不跑更糟。
+            trade_day = mkt.trade_date.isoformat() if mkt.trade_date else None
+            if trade_day != today:
+                reason = (f"本地最新交易日是 {trade_day or '（无数据）'}，不是今天 {today}"
+                          "——非交易日，或日线源还没更新。今天不推进、不复盘、不记账；"
+                          "交易日恢复后模拟盘会按日历逐格补齐")
+                steps.append({"step": "跳过收盘任务", "reason": reason})
+                with self._lock:
+                    self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
+                                         "date": today, "steps": steps,
+                                         "skipped": True, "reason": reason}
+                    # 标记成「今天跑过了」，否则巡检每 30 秒重试一次同步，
+                    # 每次两分钟，把整个后台线程占满。要补跑点页面上的按钮。
+                    self.state["last_eod_date"] = today
+                    self.state["error"] = None
+                self._save()
+                return self.state["eod"]
+
             lab = get_lab()
             profile = store().profile()
             from .routers import lab as lab_router   # 延迟导入：lab 会反过来 import 本模块
             advanced: dict[str, dict] = {}
+            prev_snap: dict[str, dict] = {}
             for sid in self._strategy_ids():
                 # 走 `_account` 而不是直接读账户：它负责把「从未成交过的空账户」
                 # 的 spec 刷回当前策略定义。trend 账户曾经采纳过一次进化，
@@ -398,6 +485,11 @@ class Autopilot:
                     acc = lab.account(sid)
                 if not acc:
                     continue
+                # 推进之前先把「昨天挂的单」抄下来：`paper.step` 会用今天收盘
+                # 生成的委托覆盖 `orders`，跑完再读就只剩明天的单，
+                # 「昨天说买什么、今天成交没有」永远算不出来。
+                prev_snap[sid] = {"orders": list(acc.get("orders") or []),
+                                  "plans": list(acc.get("plans") or [])}
                 # 不加 force：`step` 自带「今天已推进过就跳过」的守卫，
                 # 收盘任务重跑一次不该把账户往前推两天。
                 acc, info = paper.step(mkt, acc, profile)
@@ -420,10 +512,28 @@ class Autopilot:
                     [t for t in (acc.get("trades") or []) if t.get("date") ==
                      mkt.trade_date.isoformat()] if mkt.trade_date else [])
                 merged["plans"].extend(snap.get("plans") or [])
+            # 计划执行率要在**推进之后**算：成交是今天开盘那一格发生的，
+            # 挂在昨天的委托上。这一步只统计，不改任何参数——参数只由
+            # 进化 + 样本外门槛动，复盘改参数等于用一天的噪声调模型。
+            plan_stats = _plan_review(lab, advanced, prev_snap, today)
+            steps.append({"step": "计划执行复盘",
+                          "orders": plan_stats["order_count"],
+                          "filled": plan_stats["filled_count"]})
+            # 滚进执行质量历史：同一天重跑收盘时**替换**而不是追加，否则补跑
+            # 一次，20 天样本里就有两天各算了两遍，成交率会被自己的重跑污染。
+            hist = [r for r in (self.state.get("plan_history") or [])
+                    if r.get("date") != today]
+            hist.append({k: plan_stats.get(k) for k in
+                         ("date", "order_count", "filled_count", "fill_rate",
+                          "avg_adverse_bps")})
+            health = _plan_health(hist)
+            steps.append({"step": "执行质量", **{k: health[k] for k in
+                                              ("days", "orders", "fill_rate",
+                                               "avg_adverse_bps", "label")}})
             review_ctx = aiwatch.build_review_context(
                 breadth=breadth, index=index, account=merged,
                 trades=merged["trades"], plans=merged["plans"],
-                as_of=today)
+                as_of=today, plan_stats=plan_stats)
             review = aiwatch.analyze_review(review_ctx)
             steps.append({"step": "收盘复盘", "source": review.get("source")})
 
@@ -439,7 +549,12 @@ class Autopilot:
                 self.state["review"] = {"at": now.isoformat(timespec="seconds"),
                                         "as_of": today, "text": review,
                                         "market": review_ctx["市场"],
-                                        "account": review_ctx["账户"]}
+                                        "account": review_ctx["账户"],
+                                        # 计划 vs 实际：挂单/成交/滑点/未成交原因，
+                                        # 前端在复盘面板里单独一张小表，按策略拆开
+                                        "plan": plan_stats}
+                self.state["plan_history"] = hist[-60:]
+                self.state["plan_health"] = health
                 self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
                                      "date": today, "steps": steps, "evolved": evolved}
                 self.state["last_eod_date"] = today
@@ -468,6 +583,97 @@ class Autopilot:
 
 
 _pilot: Autopilot | None = None
+
+
+# 退出原因的展示顺序：先讲主动兑现的（计划减仓 / 止盈），再讲被动离场的
+# （止损 / 时间止损）。按出现次数排会把「止损 22 次」顶到最前面，
+# 复盘读起来像在宣布一天都在割肉，而实际动作结构是止盈为主。
+_EXIT_ORDER = ("计划减仓", "TP2 清仓", "TP1 减半", "保本止损", "止损", "时间止损")
+
+
+def _plan_review(lab, advanced: dict[str, dict], prev_snap: dict[str, dict],
+                 today_s: str) -> dict:
+    """今日「计划 vs 实际」：挂了几张、成交几张、滑点多少、没成交为什么。
+
+    用户关心的是「这套计划卡到底有没有在按说的执行」。策略赚不赚钱看回测，
+    计划可不可信只看这个执行率——两者混在一起谈，等于用收益给执行质量背书。
+    """
+    totals = {"order_count": 0, "filled_count": 0}
+    kinds: dict[str, dict] = {}
+    rows: list[dict] = []
+    missed: list[dict] = []
+    by_strategy: list[dict] = []
+    exits: dict[str, dict] = {}
+    bps_all: list[float] = []
+
+    for sid, info in advanced.items():
+        acc = lab.account(sid) or {}
+        name = acc.get("name") or sid
+        snap_prev = prev_snap.get(sid) or {}
+        today_trades = [t for t in (acc.get("trades") or [])
+                        if t.get("date") == today_s]
+        got = paper.match_orders(snap_prev.get("orders") or [],
+                                 snap_prev.get("plans") or [],
+                                 today_trades, today_s,
+                                 log=(info or {}).get("log") or [])
+        totals["order_count"] += got["order_count"]
+        totals["filled_count"] += got["filled_count"]
+        for k in got["kinds"]:
+            slot = kinds.setdefault(k["kind"], {"kind": k["kind"], "label": k["label"],
+                                                "orders": 0, "filled": 0})
+            slot["orders"] += k["orders"]
+            slot["filled"] += k["filled"]
+        for row in got["rows"]:
+            rows.append({**row, "strategy_id": sid, "strategy_name": name})
+            if row["adverse_bps"] is not None:
+                bps_all.append(row["adverse_bps"])
+        for m in got["missed"]:
+            missed.append({**m, "strategy_name": name})
+
+        # 今日已了结的交易按退出原因归堆：这才是「哪种动作真的在赚钱」
+        closed = [t for t in today_trades if t.get("pnl") is not None]
+        for t in closed:
+            key = str(t.get("reason") or "其他").split("（")[0].strip() or "其他"
+            slot = exits.setdefault(key, {"reason": key, "count": 0, "wins": 0,
+                                          "pnl": 0.0, "pnl_pct_sum": 0.0})
+            slot["count"] += 1
+            slot["wins"] += 1 if float(t.get("pnl") or 0) > 0 else 0
+            slot["pnl"] += float(t.get("pnl") or 0)
+            slot["pnl_pct_sum"] += float(t.get("pnl_pct") or 0)
+
+        by_strategy.append({
+            "strategy_id": sid, "strategy_name": name,
+            "orders": got["order_count"], "filled": got["filled_count"],
+            "fill_rate": got["fill_rate"],
+            "trades": len(today_trades),
+            "realized_pnl": round(sum(float(t.get("pnl") or 0) for t in closed), 2),
+        })
+
+    exit_rows = []
+    for key in _EXIT_ORDER + tuple(k for k in exits if k not in _EXIT_ORDER):
+        slot = exits.get(key)
+        if not slot:
+            continue
+        exit_rows.append({
+            "reason": key, "count": slot["count"],
+            "win_rate": round(slot["wins"] / slot["count"] * 100, 1),
+            "pnl": round(slot["pnl"], 2),
+            "avg_pnl_pct": round(slot["pnl_pct_sum"] / slot["count"], 2),
+        })
+
+    total, filled = totals["order_count"], totals["filled_count"]
+    return {
+        "date": today_s,
+        "order_count": total,
+        "filled_count": filled,
+        "fill_rate": round(filled / total * 100, 1) if total else None,
+        "avg_adverse_bps": round(sum(bps_all) / len(bps_all), 1) if bps_all else None,
+        "kinds": list(kinds.values()),
+        "rows": rows[:40],
+        "missed": missed[:20],
+        "by_exit": exit_rows,
+        "by_strategy": by_strategy,
+    }
 
 
 def get_pilot() -> Autopilot:

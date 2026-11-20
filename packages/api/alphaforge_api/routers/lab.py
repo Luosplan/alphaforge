@@ -32,9 +32,9 @@ def _spec_of(strategy: str, inline: dict | None = None) -> dict:
     """取一条策略的 spec，并保证 `top_n` / `max_per_industry` 一定有值。
 
     `STRATEGY_MAP` 里的内置策略只写了 `max_per_industry`，`top_n` 是靠
-    `normalize_spec` 补的默认 10——而策略列表页展示的正是补齐后的值。
+    `normalize_spec` 补的默认值——而策略列表页展示的正是补齐后的值。
     直接返回原始字典的话，`spec["top_n"]` 是缺失的，回测会退回
-    `backtest.DEFAULTS` 的 8：界面写 10、实际按 8 跑，而且看不出来。
+    `backtest.DEFAULTS`：界面写一个数、实际按另一个数跑，而且看不出来。
     """
     if inline:
         base = {**inline, "id": inline.get("id") or "inline",
@@ -346,7 +346,17 @@ def _run_evolve(payload: dict) -> None:
             # 连 `adoption_runs` 的历史也一起归零——那条曲线的每一格都该同口径。
             same_version = prev_raw.get("model_version") == bt.MODEL_VERSION
             prev = prev_raw if same_version else None
-            result["adoption"] = harness.adopt_verdict(result, prev)
+            # 模拟盘执行质量进门槛：这是**整条闭环里唯一一处「复盘结果回头影响
+            # 策略参数」**的地方。它不是拿一天的复盘去调参（那是拟合噪声），
+            # 而是一票否决——回测假设「挂了单就成交、成交价≈开盘价」，
+            # 模拟盘连续几十张单都成交不了，说明这个前提不成立，此时换参数
+            # 等于把一个没被验证过的结论推到实盘前面。
+            try:
+                from ..autopilot import get_pilot
+                health = get_pilot().status().get("plan_health") or None
+            except Exception:                            # noqa: BLE001
+                health = None
+            result["adoption"] = harness.adopt_verdict(result, prev, paper=health)
             runs = list(prev_raw.get("adoption_runs") or []) if same_version else []
             runs.append({
                 "at": dt.datetime.now().isoformat(timespec="seconds"),

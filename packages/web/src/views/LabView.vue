@@ -14,7 +14,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type LabStrategyDetail } from '@/api'
-import type { LabEvolveState, LabGenome, LabOverview, LabPlanCard, LabStrategyRow } from '@/types'
+import type {
+  AutopilotState,
+  LabEvolveState,
+  LabGenome,
+  LabOverview,
+  LabPlanCard,
+  LabStrategyRow,
+} from '@/types'
 import { fmtMoney, fmtPct, toneOf } from '@/utils/format'
 import Sparkline from '@/components/Sparkline.vue'
 import EquityChart from '@/components/EquityChart.vue'
@@ -30,6 +37,9 @@ const detailTab = ref<'backtest' | 'paper' | 'evolution'>('backtest')
 const planFilter = ref<'ALL' | 'ENTRY' | 'ADD'>('ALL')
 
 const evo = ref<LabEvolveState | null>(null)
+/* 收盘任务的状态机。这一块只读它里面三样东西：开没开、昨天复盘跑没跑、
+ * 今天进化采纳了几个——它们合起来才是「闭环有没有真的在转」。 */
+const pilot = ref<AutopilotState | null>(null)
 /* 回测区间：250 天只能覆盖一种市场状态，牛熊一轮都走不完，
  * 在上头挑参数等于对着一段行情过拟合。默认 5 年——这一段里含两轮下跌
  * （2021-09~2022-12 沪深300 −20%、2022-12~2024-07 −10%）和一轮上涨
@@ -79,6 +89,66 @@ const planOverlap = computed(() => {
   for (const p of overview.value?.plans ?? []) count[p.code] = (count[p.code] ?? 0) + 1
   return count
 })
+
+/* ------------------------------------------------------------ 自进化闭环
+ * 五个环节必须**各自可见**。只写一句「自进化已开启」，用户没法判断今天
+ * 卡在哪一环：策略没选股？计划卡生成了但一张没成交？复盘跑了但进化没采纳？
+ * 每个环节都带上今天的事实值，出问题的那一环会自己浮出来。
+ */
+const health = computed(() => pilot.value?.plan_health ?? null)
+
+const loopSteps = computed(() => {
+  const asOf = overview.value?.as_of ?? ''
+  const started = strategies.value.filter((s) => s.paper).length
+  const rev = pilot.value?.review
+  const evolved = pilot.value?.eod?.evolved ?? []
+  const adopted = evolved.filter((e) => e?.action === 'adopt').length
+  const filled = rev?.plan?.filled_count ?? 0
+  const orders = rev?.plan?.order_count ?? 0
+  const reviewed = !!rev && rev.as_of === asOf
+  return [
+    {
+      key: 'select', label: '选股', value: asOf ? `${started} 条策略` : '未就绪',
+      tone: started ? 'brand' : 'flat',
+      hint: asOf ? `按 ${asOf} 收盘数据选股，每条策略最多 3 只` : '本地库还没有交易日数据',
+    },
+    {
+      key: 'plan', label: '计划卡', value: `${plans.value.length} 张`,
+      tone: plans.value.length ? 'brand' : 'flat',
+      hint: '候选来自选股结果，不是写死的名单',
+    },
+    {
+      key: 'fill', label: '模拟成交',
+      value: reviewed ? `${filled}/${orders} 张` : '待收盘',
+      tone: reviewed && filled ? 'brand' : 'flat',
+      hint: '昨日挂单在今日开盘按市价撮合，一字板买不到',
+    },
+    {
+      key: 'review', label: '收盘复盘',
+      value: reviewed ? '已跑' : '待跑',
+      tone: reviewed ? 'brand' : 'flat',
+      hint: reviewed ? `复盘日期 ${rev?.as_of}` : '15:05 之后自动跑，也可以在盯盘页补跑',
+    },
+    {
+      key: 'evolve', label: '进化换参',
+      value: evolved.length ? `采纳 ${adopted}/${evolved.length}` : '待收盘',
+      tone: adopted ? 'brand' : 'flat',
+      hint: '样本外打赢 + 风控达标 + 模拟盘执行质量无异常，三条同时满足才换参数',
+    },
+  ]
+})
+
+async function togglePilot(enabled: boolean) {
+  busy.value = 'pilot'
+  try {
+    pilot.value = await api.autopilotToggle(enabled)
+    ElMessage.success(enabled ? '自动循环已开启：每个交易日 15:05 自动跑完一整轮' : '自动循环已关闭')
+  } catch {
+    // 失败提示交给响应拦截器统一弹
+  } finally {
+    busy.value = ''
+  }
+}
 
 /** 按策略分组。48 张卡平铺成一张大表读不动，分组之后一眼能看出谁选了谁。 */
 interface PlanGroup {
@@ -313,7 +383,7 @@ const genomeRows = computed<GenomeRow[]>(() => {
     kind: 'weight',
   }))
   const structural: Array<{ key: keyof LabGenome; label: string }> = [
-    { key: 'top_n', label: '持仓数 Top-N' },
+    { key: 'top_n', label: '持仓数上限' },
     { key: 'max_per_industry', label: '每行业上限' },
     { key: 'stop_atr', label: '止损 ATR 倍数' },
     { key: 'tp1_atr', label: 'TP1 ATR 倍数' },
@@ -358,10 +428,68 @@ const planStateTone = (p: LabPlanCard): string => {
   return p.order_tone ?? 'flat'
 }
 
+/**
+ * 委托价：这张计划卡按什么价执行。
+ *
+ * 口径跟计划卡一致——`ref_price` 是生成这张卡时的基准价（信号日收盘），
+ * 委托就是照着它挂、次日开盘按市价成交，所以它就是「委托价」本身；
+ * 不要用 `live_price` 顶替，现价盘中会动，委托价挂了就不动。
+ *
+ * 没有真挂单时（择时关闭 / 已持有 / 仅备选）价格照样显示，但标注清楚
+ * 那只是计划执行价 —— 灰掉一个数字比整列空着更容易被当成「没数据」。
+ */
+const orderPx = (p: LabPlanCard): string | null => px(p.ref_price)
+
+/**
+ * 是否真的挂了单：建仓、加仓、减仓三种状态都是真委托。
+ *
+ * 用**前缀**判「待明日开盘」而不是三个整串相等：后端三种状态共用同一句开头
+ * （明天开盘按市价成交），文案以后加一档（比如「待明日开盘止损」）不该让
+ * 股数在这一列静默消失。
+ */
+const orderLive = (p: LabPlanCard): boolean =>
+  (p.order_state ?? '').startsWith('待明日开盘')
+
+/**
+ * 委托股数只对真挂单有意义。
+ *
+ * 建仓单的股数是 `sizing.shares`（计划仓位）；**加仓/减仓取 `order_shares`**——
+ * 那是本次增量，用 `sizing.shares` 会显示成「减仓 21600 股」，而实际只卖
+ * 1/3。择时关闭 / 已持有 / 仅备选没有单子，就不该带股数。
+ */
+const orderQty = (p: LabPlanCard): string => {
+  if (!orderLive(p)) return ''
+  const qty = p.order_kind === 'ADD' || p.order_kind === 'TRIM'
+    ? p.order_shares
+    : p.sizing.shares
+  return qty ? ` · ${qty} 股` : ''
+}
+
+/**
+ * 委托提示。加仓/减仓的股数是**本次增量**，写清楚免得被当成总仓位：
+ * 「减仓 5800 股」和「剩余持仓 11600 股」是两件事，用户对账时要分得开。
+ */
+const orderTitle = (p: LabPlanCard): string => {
+  if (p.order_kind === 'ADD') {
+    return `加仓委托 ${p.order_shares ?? 0} 股（补到计划仓位 ${p.sizing.shares} 股），次日开盘按市价成交`
+  }
+  if (p.order_kind === 'TRIM') {
+    return `减仓委托 ${p.order_shares ?? 0} 股（浮盈达标兑现 1/3），次日开盘按市价成交`
+  }
+  return `委托价 ${orderPx(p)}，次日开盘按市价成交`
+}
+
 onMounted(async () => {
   try {
     await bootstrap()
     evo.value = await api.labEvolveStatus()
+    // 闭环状态单独拉一次：它来自收盘任务的状态机（autopilot.json），
+    // 不在 /lab/overview 里。拉失败不该让整页报错，所以单独 try。
+    try {
+      pilot.value = await api.autopilot()
+    } catch {
+      pilot.value = null
+    }
     if (evo.value?.running) beginPoll()
   } catch {
     ElMessage.error('实验室数据加载失败')
@@ -396,6 +524,52 @@ onBeforeUnmount(stopPoll)
         <span class="v num">{{ fmtMoney(stats?.paper_nav) }}</span>
         <span class="s-sub num" :class="toneOf(stats?.paper_pnl)">
           盈亏 {{ wan(stats?.paper_pnl) }} · 计划卡 {{ stats?.plan_count ?? 0 }} 张
+        </span>
+      </div>
+    </section>
+
+    <!-- 自进化闭环。五个环节各带今天的事实值：出问题的那一环会自己浮出来，
+         比一句「自进化已开启」有用得多。 -->
+    <section class="panel loop" :class="{ paused: pilot && !pilot.enabled }">
+      <div class="loop-head">
+        <div class="panel-title">
+          自进化闭环
+          <span class="panel-sub">
+            选股 → 计划卡 → 模拟成交 → 收盘复盘 → 进化换参 → 下一个交易日
+          </span>
+        </div>
+        <div class="loop-switch">
+          <span class="muted" :class="{ warn: pilot && !pilot.enabled }">
+            {{ pilot == null ? '状态未知' : pilot.enabled ? '自动循环已开启' : '自动循环已关闭' }}
+          </span>
+          <el-switch
+            :model-value="pilot?.enabled ?? false"
+            :loading="busy === 'pilot'"
+            @change="(v: string | number | boolean) => togglePilot(!!v)"
+          />
+        </div>
+      </div>
+
+      <div class="loop-steps">
+        <div v-for="(s, i) in loopSteps" :key="s.key" class="loop-step" :title="s.hint">
+          <span class="loop-idx num">{{ i + 1 }}</span>
+          <span class="loop-k">{{ s.label }}</span>
+          <span class="loop-v num" :class="s.tone">{{ s.value }}</span>
+        </div>
+      </div>
+
+      <div class="loop-foot">
+        <span class="chip" :class="health?.tone ?? 'flat'">
+          {{ health?.label ?? '还没有成交样本' }}
+        </span>
+        <span v-if="health && health.orders" class="muted num">
+          近 {{ health.days }} 个有挂单的交易日：挂 {{ health.orders }} 张、成交
+          {{ health.filled }} 张（{{ health.fill_rate ?? '—' }}%），平均不利滑点
+          {{ health.avg_adverse_bps ?? '—' }}bp
+        </span>
+        <span v-else class="muted">
+          执行质量要等有委托在真行情上撮合过才算得出来：择时关闭时不开新仓，
+          样本会一直为 0
         </span>
       </div>
     </section>
@@ -591,7 +765,7 @@ onBeforeUnmount(stopPoll)
         <div class="panel-title">
           今日计划卡 · 全策略
           <span class="panel-sub">
-            每条策略各出 Top-N；只有「待明日开盘成交」才真挂单，次日开盘价成交
+            每条策略最多 3 只，宁缺勿滥；只有「待明日开盘…」（建仓 / 加仓 / 减仓）才真挂单，次日开盘价成交
           </span>
         </div>
         <div class="head-tools">
@@ -616,13 +790,13 @@ onBeforeUnmount(stopPoll)
                 <tr>
                   <th>标的</th>
                   <th>类型</th>
-                  <th class="ta-r">建仓区</th>
-                  <th class="ta-r">现价</th>
+                  <th>建仓区</th>
+                  <th>现价</th>
                   <th>委托</th>
-                  <th class="ta-r">距止损</th>
-                  <th class="ta-r">止损</th>
-                  <th class="ta-r">TP1 / TP2</th>
-                  <th class="ta-r">置信</th>
+                  <th>距止损</th>
+                  <th>止损</th>
+                  <th>TP1 / TP2</th>
+                  <th>置信</th>
                 </tr>
               </thead>
               <tbody>
@@ -641,25 +815,35 @@ onBeforeUnmount(stopPoll)
                       {{ p.signal_label }}
                     </span>
                   </td>
-                  <td class="ta-r num">{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</td>
-                  <td class="ta-r num">{{ px(p.live_price ?? p.ref_price) }}</td>
-                  <td>
+                  <td class="num">{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</td>
+                  <td class="num">{{ px(p.live_price ?? p.ref_price) }}</td>
+                  <td
+                    class="c-order"
+                    :title="
+                      orderLive(p)
+                        ? orderTitle(p)
+                        : `${planStateLabel(p)}：今天没有挂单，${orderPx(p)} 只是计划执行价`
+                    "
+                  >
                     <span class="p-status" :class="planStateTone(p)">
                       {{ planStateLabel(p) }}
                     </span>
+                    <span class="p-order num" :class="{ muted: !orderLive(p) }">
+                      {{ orderPx(p) }}{{ orderQty(p) }}
+                    </span>
                   </td>
-                  <td class="ta-r num down">
+                  <td class="num down">
                     {{ p.stop_distance_pct == null ? '—' : fmtPct(p.stop_distance_pct) }}
                   </td>
-                  <td class="ta-r num down">{{ px(p.zones.stop.high) }}</td>
-                  <td class="ta-r num">
+                  <td class="num down">{{ px(p.zones.stop.high) }}</td>
+                  <td class="num">
                     <span class="up">{{ px(p.zones.target[0]?.high) }}</span>
                     <template v-if="p.zones.target[1]">
                       <span class="muted"> / </span>
                       <span class="up">{{ px(p.zones.target[1].high) }}</span>
                     </template>
                   </td>
-                  <td class="ta-r num">{{ p.confidence }}</td>
+                  <td class="num">{{ p.confidence }}</td>
                 </tr>
               </tbody>
             </table>
@@ -673,11 +857,17 @@ onBeforeUnmount(stopPoll)
         <span class="pl-title">口径</span>
         <span>建仓区与止损由 ATR(14) 定标尺</span>
         <span class="dot">·</span>
-        <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘成交」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
+        <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘…」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
+        <span class="dot">·</span>
+        <span>委托价取计划卡基准价（信号日收盘），次日开盘按市价成交，实际成交价会偏离</span>
+        <span class="dot">·</span>
+        <span>只有蓝色状态才带股数；「加仓」「减仓」写的是本次增量，不是总仓位</span>
         <span class="dot">·</span>
         <span>「距止损」才是这张卡的风险成本，逐票不同</span>
         <span class="dot">·</span>
         <span>同一只票被多条策略选中会标出共选数</span>
+        <span class="dot">·</span>
+        <span>候选池按「个人设置 → 购买权限」过滤：未开通的板块不参与选股，也不会挂出委托</span>
         <span class="pl-note">
           共 {{ plans.length }} 张 · {{ planGroups.length }} 条策略
         </span>
@@ -1280,6 +1470,92 @@ onBeforeUnmount(stopPoll)
   color: var(--af-ink-2);
 }
 
+/* ---------------------------------------------------------------- 闭环 */
+/* 一整条流水线压成一行：五个环节 + 执行质量。刻意不做成大卡片——
+   它解释的是「系统在不在转」，不是「今天该买什么」，抢视觉重心会误导。 */
+.loop {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 16px 13px;
+}
+
+/* 关闭时打一条左侧警示线：这是唯一一处「闭环静默停摆」还能被试出来的地方 */
+.loop.paused {
+  border-left: 2px solid var(--af-warn);
+}
+
+.loop-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.loop-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.loop-switch .warn {
+  color: var(--af-warn);
+}
+
+.loop-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.loop-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface);
+  font-size: 12px;
+  color: var(--af-ink-3);
+}
+
+.loop-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--af-surface-3);
+  color: var(--af-ink-3);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.loop-k {
+  color: var(--af-ink-2);
+}
+
+.loop-v {
+  font-weight: 600;
+  color: var(--af-ink-3);
+}
+
+.loop-v.brand {
+  color: var(--af-brand);
+}
+
+.loop-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
 /* ---------------------------------------------------------------- 进度 */
 .progress {
   padding: 12px 16px 13px;
@@ -1524,8 +1800,12 @@ onBeforeUnmount(stopPoll)
   font-size: 12px;
 }
 
+/* 表头与单元格一律居中：这张表九列、全是数字，左右混排时眼睛要来回找基准线，
+ * 统一居中后每列都自成一条中轴，扫读比左对齐快。
+ * 注意优先级——`.ptable th`（0,1,1）要压过旧的 `.ta-r`（0,1,0），
+ * 所以这里直接写在 `.ptable th/td` 上，模板里也不再挂 `ta-r`。 */
 .ptable th {
-  text-align: left;
+  text-align: center;
   font-size: 11px;
   font-weight: 550;
   letter-spacing: 0.02em;
@@ -1537,6 +1817,7 @@ onBeforeUnmount(stopPoll)
 }
 
 .ptable td {
+  text-align: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--af-border);
   vertical-align: middle;
@@ -1553,6 +1834,7 @@ onBeforeUnmount(stopPoll)
 .p-name {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   font-weight: 600;
   white-space: nowrap;
@@ -1562,6 +1844,7 @@ onBeforeUnmount(stopPoll)
   font-size: 10.5px;
   color: var(--af-ink-3);
   margin-top: 1px;
+  text-align: center;
 }
 
 .x2 {
@@ -1574,6 +1857,19 @@ onBeforeUnmount(stopPoll)
   font-size: 11.5px;
   font-weight: 550;
   white-space: nowrap;
+}
+
+/* 委托列两行：状态在上、委托价在下。挤成一行的话「待明日开盘成交」会把列撑到
+ * 150px 以上，其余八列全被压窄；分行后状态与价格各占一行，列宽跟着价格走。 */
+.c-order {
+  white-space: nowrap;
+  line-height: 1.45;
+}
+
+.p-order {
+  display: block;
+  font-size: 10.5px;
+  color: var(--af-ink-2);
 }
 
 .p-status.up {

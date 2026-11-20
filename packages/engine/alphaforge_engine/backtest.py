@@ -36,6 +36,13 @@ from alphaforge_core.metrics import summarize
 from alphaforge_core.universe import pc as price_limit
 
 from .conditions import ConditionError, matches, normalize, normalize_all
+from .gate import board_allow, buyable
+
+# 减仓阈值与模拟盘共用一处定义。写在 `signal.py` 里是因为「浮盈多少算该减」
+# 首先是**计划卡**的语言（卡片上那句「减仓」就是它触发的），回测与模拟盘
+# 只是照着卡执行。两个引擎各抄一个数，某天只改一边，同一只票在实验室里
+# 会「减仓」、在回测里继续拿着——这种分叉比阈值本身取多少重要得多。
+from .signal import TRIM_PNL_PCT
 
 TRADING_DAYS = 252
 
@@ -64,7 +71,17 @@ TRADING_DAYS = 252
 #     ③ `market_ma` 改为读 spec，与模拟盘/今日选股统一。
 #     ①让收益普遍下降、②让回撤普遍收窄，两者方向相反、幅度都不小，
 #     混在一起看只会得到一堆互相矛盾的结论。必须换版本号，让旧存档作废。
-MODEL_VERSION = 7
+# v8：已持仓的票也按计划卡执行「加仓 / 减仓」。
+# 此前只有「建仓」一种动作：已持有的票即便再次进入 Top-N 也只是躺着，
+# 浮盈 30% 也不会减一股。这一版把 `paper._held_action` 的口径搬进来——
+# 同一只票再进 Top-N 就补到计划仓位（受单票上限与现金约束），浮盈到
+# 12% 就减 1/3（TP1 已减半的不再减）。
+# 它直接改变持仓结构、平均仓位、换手与每一笔盈亏，必须算新版本：
+# v7 存下来的回测与 v8 并排显示会让人以为策略没变而成绩变了。
+# v9：删掉两条没有 edge 的策略（强势回踩 / 打板），趋势波段补上量能与中期动量
+# 门槛（命中数 4956 → 33），并把默认出票上限从 8 收到 3。
+# 选股口径变了，回测与模拟盘的结果都不可比，必须换版本号。
+MODEL_VERSION = 9
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -113,7 +130,9 @@ NO_HISTORY: dict[str, str] = {
 FLOW_MIN_COVERAGE = 0.5
 
 DEFAULTS: dict = {
-    "top_n": 8,
+    # 出票上限。一条策略一天 1~3 只：再多就不是「选出来的」，
+    # 而是「排在前面的」——名次靠后的那几个，胜率和前几名不是一个东西。
+    "top_n": 3,
     "max_per_industry": 2,
     "stop_atr": 2.2,      # 止损 = 成交价 − 2.2 × ATR(14)
     "tp1_atr": 2.6,       # 第一目标 = 成交价 + 2.6 × ATR，减半
@@ -155,6 +174,10 @@ MAX_AMOUNT_SHARE = 0.02
 # 改成 0 之后同一批策略的回撤普降 10~18 个百分点，且熊段由亏转平/转盈。
 # 多头策略在下跌趋势里的正确动作是不参与，不是「少参与」。
 REGIME_SCALE = 0.0
+
+# 一次减仓卖多少：1/3。取 1/3 而不是 1/2 是因为 TP1 已经会减半，两档加起来
+# 最多砍掉 2/3，剩下的仓位还跟得住趋势。模拟盘从这里取，不另存一份。
+TRIM_FRAC = 1 / 3
 
 # 目标仓位。单票上限与「等权 1/top_n」取小，避免 top_n=3 时一把梭到 33%
 MAX_SINGLE = RISK_LIMITS["max_single_weight"]
@@ -235,10 +258,17 @@ _PANEL_LOCK = threading.Lock()
 
 
 def build_panel(engine, days: int = 250, max_codes: int = 600,
-                min_amount: float = RISK_LIMITS["min_amount"], force: bool = False) -> Panel:
-    """装面板。同一交易日 + 同样参数复用上一次的结果。"""
+                min_amount: float = RISK_LIMITS["min_amount"], force: bool = False,
+                boards: dict | None = None) -> Panel:
+    """装面板。同一交易日 + 同样参数复用上一次的结果。
+
+    `boards` 是购买权限：回测必须和模拟盘用同一个池子，否则「回测里能买的」
+    和「账户里能买的」是两批票，两条净值不可比。
+    """
     trade_date = engine.repo.trade_date() or ""
-    key = (trade_date, int(days), int(max_codes), float(min_amount))
+    allow = board_allow(boards)
+    key = (trade_date, int(days), int(max_codes), float(min_amount),
+           tuple(sorted(allow.items())) if allow is not None else None)
     if not force:
         hit = _PANEL_CACHE.get(key)
         if hit is not None:
@@ -249,7 +279,7 @@ def build_panel(engine, days: int = 250, max_codes: int = 600,
             hit = _PANEL_CACHE.get(key)
             if hit is not None:
                 return hit
-        panel = _build(engine, days, max_codes, min_amount)
+        panel = _build(engine, days, max_codes, min_amount, allow)
         if len(_PANEL_CACHE) > 6:
             _PANEL_CACHE.clear()
         _PANEL_CACHE[key] = panel
@@ -297,12 +327,16 @@ def slice_panel(panel: Panel, lo: int, hi: int) -> Panel:
     return sub
 
 
-def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
+def _build(engine, days: int, max_codes: int, min_amount: float,
+           allow: dict[str, bool] | None = None) -> Panel:
     panel = Panel()
     panel.min_amount = min_amount
     panel.trade_date = engine.repo.trade_date() or ""
 
     universe = engine.universe()
+    if allow is not None:
+        # 「全市场 5578 只」在只买主板时是假的，按可买的算才对得上选股页的数字
+        universe = [s for s in universe if buyable(s["code"], allow)]
     panel.universe_size = len(universe)
     if not universe:
         return panel
@@ -316,7 +350,13 @@ def _build(engine, days: int, max_codes: int, min_amount: float) -> Panel:
     panel.dates = calendar[start:]
     n_cal = len(calendar)
 
-    codes = _pool_codes(engine, panel.dates[0], max_codes)
+    if allow is None:
+        codes = _pool_codes(engine, panel.dates[0], max_codes)
+    else:
+        # SQL 的 LIMIT 排在筛板块之前，直接筛完只剩一半池子（主板约占六成），
+        # 所以先多取几倍再截到 max_codes——池子大小不变，才和不过滤时可比
+        raw = _pool_codes(engine, panel.dates[0], max_codes * 3)
+        codes = [c for c in raw if buyable(c, allow)][:max_codes]
     panel.pool_size = len(codes)
 
     sym = {s["code"]: s for s in universe}
@@ -779,7 +819,8 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     cfg["time_stop"] = max(3, min(int(cfg["time_stop"]), 120))
 
     if panel is None:
-        panel = build_panel(engine, days=days, max_codes=max_codes)
+        panel = build_panel(engine, days=days, max_codes=max_codes,
+                            boards=normalize_profile(None, profile)["boards"])
 
     weights, dropped = replayable_weights(spec.get("weights"))
     flow_note = None
@@ -863,9 +904,12 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
         date = panel.dates[d]
 
         # ---- 1. 开盘：先成交上一交易日收盘后挂出的单子
+        # 减仓排最前面：同一天既有减仓又有加仓时先卖后买，否则「现金不够」
+        # 会让本来能成交的加仓单被跳过——卖出的钱就在同一次开盘里。
         carry: list[dict] = []
-        for order in pending:
+        for order in sorted(pending, key=lambda o: 0 if o.get("kind") == "TRIM" else 1):
             ci = order["ci"]
+            kind = order.get("kind") or "ENTRY"
             p = panel.bar[d][ci]
             if p < 0:
                 # 停牌：最多等三个交易日，再等下去这只票的区间早就失效了
@@ -875,6 +919,71 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
                 continue
             bars = panel.bars[ci]
             o = bars["o"][p]
+
+            if kind == "TRIM":
+                pos = positions.get(ci)
+                # 一字跌停卖不掉，等下一格再说（和止损那一侧同一判断）。
+                # 减仓不看购买权限：卖出本来就不需要权限，拦了只会把仓位锁死。
+                if pos is None or not _can_sell(bars, p, panel.limit[ci]):
+                    continue
+                qty = min(int(order.get("shares") or 0), pos["shares"])
+                if qty < 100:
+                    continue
+                cash, rec = _sell(panel, ci, pos, d, o, prof, cash,
+                                  order.get("reason") or "计划减仓", seq, shares=qty)
+                seq += 1
+                turnover_amount += rec["amount"]
+                trades.append(rec)
+                pos["shares"] -= qty
+                pos["trimmed"] = True
+                if pos["shares"] <= 0:
+                    positions.pop(ci, None)
+                continue
+
+            if kind == "ADD":
+                pos = positions.get(ci)
+                if pos is None or not _can_buy(bars, p, panel.limit[ci]):
+                    continue
+                equity_now = cash + _market_value(positions, panel, d)
+                if equity_now <= 0:
+                    continue
+                fill = _slipped(o, "BUY", prof)
+                # 加仓的两条硬约束：单票不超过上限（按**当前**市值算，所以
+                # 涨上去的票能加的更少）、现金够付。不再重算 ATR 区间——
+                # 止损/止盈是按最初的风险位定的，跟着均价动会让一次加仓
+                # 把整笔交易的 R 悄悄放大。
+                headroom = equity_now * single_cap(cfg["top_n"]) - pos["shares"] * fill
+                want = int(order.get("shares") or 0)
+                budget = min(headroom, cash)
+                shares = _shares(budget, fill, bars["amt"][p]) if budget > 0 else 0
+                shares = min(shares, want)
+                while shares >= 100:
+                    amount = shares * fill
+                    fee = trade_fee(amount, "BUY", prof)
+                    if amount + fee["total"] <= cash:
+                        break
+                    shares -= 100
+                if shares < 100:
+                    continue
+                amount = shares * fill
+                fee = trade_fee(amount, "BUY", prof)
+                cash -= amount + fee["total"]
+                total_shares = pos["shares"] + shares
+                pos["cost"] = (pos["cost"] * pos["shares"] + fill * shares) / total_shares
+                pos["shares"] = total_shares
+                pos["last"] = fill
+                seq += 1
+                turnover_amount += amount
+                trades.append({
+                    "id": f"B{seq:05d}", "code": panel.codes[ci], "name": panel.names[ci],
+                    "side": "BUY", "date": date, "price": round(fill, 3),
+                    "shares": shares, "amount": round(amount, 2),
+                    "fee": fee["total"], "tax": 0.0, "pnl": None, "pnl_pct": None,
+                    "hold_days": d - pos["d0"],
+                    "reason": order.get("reason", "计划加仓"),
+                })
+                continue
+
             if not _can_buy(bars, p, panel.limit[ci]) or ci in positions:
                 continue
             equity_now = cash + _market_value(positions, panel, d)
@@ -993,20 +1102,31 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
         # 很小、Calmar 刷到 5 以上——那不是选股好，是账户经常空着。
         # 现在按「持仓上限 − 现有持仓」算空缺，和模拟盘完全一致。
         if d < panel.n - 1:
-            # 择时开关：大盘不在均线之上时**降半仓**，而不是停手。
-            # 原来是 `slots=0`——完全不开新仓，结果是行情一弱账户就彻底空着。
-            # 对超短恰恰相反：弱势里资金抱团、板块联动最集中，2026-11 那段
-            # 实测择时一开，模拟盘 100 万现金躺了整整两天一笔没动。
-            # 现在改成「只数不砍、每笔预算砍半」，风险控制还在，账户不至于停摆。
+            # 择时开关：大盘不在均线之上时**不开新仓**（REGIME_SCALE=0），
+            # 已持仓仍按止损/止盈/减仓走完。系数统一放在 `REGIME_SCALE` 一处，
+            # 模拟盘读同一个常量，两边不会各说各话。
             regime_ok = regime is None or (d < len(regime) and regime[d])
-            slots = max(0, cfg["top_n"] - len(positions))
             scale = 1.0 if regime_ok else REGIME_SCALE
-            if slots:
-                held = set(positions)
-                picks = _select(panel, d, weights, cfg, held, slots)
-                for ci, score in picks:
-                    pending.append({"ci": ci, "score": score, "reason": "信号建仓",
-                                    "scale": scale})
+            # 每天扫一遍 Top-N，**已持有的票也在里面**：它今天又排进来了，说明
+            # 信号还在，该补到计划仓位；浮盈到位了，该减一股。此前 `_select`
+            # 把持仓排除在外，账户里的票一旦买进就再也不动，加仓减仓全看
+            # 止损止盈偶然触发——计划卡上写着「加仓」，回测里根本没有这个动作。
+            nav_now = cash + _market_value(positions, panel, d)
+            slots = max(0, cfg["top_n"] - len(positions))
+            for ci, score in _select(panel, d, weights, cfg, cfg["top_n"]):
+                pos = positions.get(ci)
+                if pos is not None:
+                    act = _held_action(panel, ci, pos, d, nav_now, scale, cfg)
+                    if act:
+                        pending.append({"ci": ci, "kind": act["kind"],
+                                        "shares": act["shares"],
+                                        "reason": act["reason"], "scale": scale})
+                    continue
+                if slots <= 0:
+                    continue
+                pending.append({"ci": ci, "score": score, "reason": "信号建仓",
+                                "scale": scale})
+                slots -= 1
 
         # ---- 5. 收盘净值
         value = cash + _market_value(positions, panel, d)
@@ -1120,9 +1240,63 @@ def _filter_cell(panel: Panel, ci: int, p: int, field: str):
     return col[p]
 
 
+def _held_action(panel: Panel, ci: int, pos: dict, d: int, nav: float,
+                 scale: float, cfg: dict) -> dict | None:
+    """已持仓的票，今天的计划卡要不要动手——加仓、减仓，还是什么都不做。
+
+    与 `paper._held_action` **同一套规则**，只是把「计划卡的 sizing.shares」
+    换成等价的「净值 × 单票权重 ÷ 现价」：模拟盘读的是卡片上写好的股数，
+    回测里没有卡片，就直接算同一个数。两边的阈值（`TRIM_PNL_PCT`、`TRIM_FRAC`）、
+    上限（`single_cap`）、择时系数（`scale`）全部共用常量，改一处两边一起变。
+
+    - **减仓**：浮盈到 12% 减 1/3（只减一次）。TP1 已经减过半的票**照样减**：
+      三档合计 1/2 + 1/6 = 2/3，剩下的 1/3 还跟得住趋势。此前把 `tp1_done` 也
+      排除掉，结果是这条规则几乎永不触发——TP1 在 +2.6ATR（多数票 +5% 上下）
+      就先成交了，浮盈根本没机会走到 12%，「减仓」在成交记录里查无此事。
+    - **加仓**：同一只票今天又进了 Top-N（信号还在），补到计划仓位；
+      受单票上限与现金约束（现金在撮合那一刻才判，这里只算股数）。
+      择时关闭时 scale=0，与建仓一样不加——新敞口该被拦。
+    - 其余情况不动，等止损 / 止盈 / 时间止损带走。
+    """
+    bars = panel.bars[ci]
+    p = panel.bar[d][ci]
+    if p < 0:
+        return None
+    price = bars["c"][p]
+    cost = float(pos.get("cost") or 0.0)
+    shares = int(pos.get("shares") or 0)
+    if price <= 0 or cost <= 0 or shares <= 0:
+        return None
+    pnl_pct = (price / cost - 1) * 100
+
+    if pnl_pct >= TRIM_PNL_PCT and not pos.get("trimmed"):
+        qty = int(shares * TRIM_FRAC / 100) * 100
+        if qty >= 100:
+            return {"kind": "TRIM", "shares": qty,
+                    "reason": f"计划减仓（浮盈 {pnl_pct:.1f}%）"}
+
+    if pnl_pct < TRIM_PNL_PCT and scale > 0:
+        top_n = max(1, int(cfg["top_n"]))
+        weight = min(1.0 / top_n, single_cap(top_n))
+        target = int(nav * weight / price / 100) * 100
+        cap_shares = int(nav * single_cap(top_n) / price / 100) * 100
+        delta = min(target - shares, cap_shares - shares)
+        # 择时降仓时加仓预算同样打折，和建仓一个口径
+        delta = int(delta * min(float(scale), 1.0) / 100) * 100
+        if delta >= 100:
+            return {"kind": "ADD", "shares": delta,
+                    "reason": f"计划加仓（浮盈 {pnl_pct:+.1f}%）"}
+
+    return None
+
+
 def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
-            held: set[int], limit: int) -> list[tuple[int, float]]:
-    """当日横截面打分 → 条件过滤 → 行业分散 → 取前 `limit` 个（已持有的不重复买）。
+            limit: int, held: set[int] | None = None) -> list[tuple[int, float]]:
+    """当日横截面打分 → 条件过滤 → 行业分散 → 取前 `limit` 个。
+
+    `held` 传「不要重复买的票」。回测在收盘那一刻传空——已持有的票也要留在
+    候选里，它今天还在 Top-N 里就说明信号还在，据此决定加仓还是减仓
+    （见 `_held_action`）；只在撮合时按 kind 区分动作。
 
     `cfg["pool_limit_min"]` > 0 时先过一道硬门槛：只在连板数 ≥ 该值的票里选。
     打板策略必须靠这道门槛——单纯把连板数当因子加权，在涨停股少于 top_n 的
@@ -1134,6 +1308,7 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
     """
     if limit <= 0:
         return []
+    held = held or set()
     row_ok = panel.eligible[d]
     zs = {k: panel.z[k][d] for k in weights if k in panel.z}
     filters = cfg.get("filters") or []
@@ -1294,6 +1469,10 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
         notes.append("未启用择时：任何行情都满仓参与，熊段回撤会显著放大")
     notes.append(f"每天扫描空缺仓位并补足到 top_n={cfg['top_n']}，不为了换股而换股："
                  f"已持有的标的不会因为排名下滑被卖，只会被止损/止盈/时间止损带走")
+    notes.append(f"已持仓的票同样按计划卡执行：再进 Top-N 且浮盈未到 {TRIM_PNL_PCT:g}% 时"
+                 f"补到计划仓位（受单票上限 {single_cap(cfg['top_n']):.0%} 与现金约束），"
+                 f"浮盈达到 {TRIM_PNL_PCT:g}% 减 {TRIM_FRAC:.0%}"
+                 f"（TP1 已减半的不再减）。与模拟盘同一套规则")
     notes.append("行业分类与 ST 标记为当前值，不是历史值；现金按当日可用处理，未模拟 T+1 交收")
     if avg_exposure < 0.6:
         notes.append(

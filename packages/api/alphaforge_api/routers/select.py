@@ -18,9 +18,19 @@ from alphaforge_core.schemas import QueryRequest, SelectRequest, StrategyPayload
 from alphaforge_engine.nlquery import EXAMPLES, parse
 from alphaforge_engine.selector import STRATEGY_MAP, execute, strategy_list
 
-from ..deps import market, ok, store
+from ..deps import market, ok, profile, store
 
 router = APIRouter(prefix="/select", tags=["select"])
+
+
+def _boards(only_allowed: bool) -> dict | None:
+    """选股池的权限口径。
+
+    默认按「个人设置 → 购买权限」过滤：选股页的用途是挑明天能下单的票，
+    把买不了的板块混在结果里，等于让 Top-N 名额被空占。
+    `only_allowed=false` 用于纯研究，此时传 None（引擎不过滤）。
+    """
+    return profile()["boards"] if only_allowed else None
 
 
 @router.get("/strategies")
@@ -78,18 +88,19 @@ def parse_query(request: Request, payload: QueryRequest):
 
 @router.post("/run")
 def run(request: Request, payload: SelectRequest):
+    boards = _boards(payload.only_allowed)
     if payload.spec:
         spec = {**payload.spec, "id": payload.spec.get("id", "inline")}
-        return ok(execute(market(), spec, top_n=payload.top_n))
+        return ok(execute(market(), spec, top_n=payload.top_n, boards=boards))
 
     strategy_id = payload.strategy
     if strategy_id in STRATEGY_MAP:
         spec = {**STRATEGY_MAP[strategy_id], "id": strategy_id}
-        return ok(execute(market(), spec, top_n=payload.top_n))
+        return ok(execute(market(), spec, top_n=payload.top_n, boards=boards))
 
     for item in store().strategies():
         if item["id"] == strategy_id:
-            return ok(execute(market(), item, top_n=payload.top_n))
+            return ok(execute(market(), item, top_n=payload.top_n, boards=boards))
     raise HTTPException(status_code=404, detail="策略不存在")
 
 
@@ -103,10 +114,11 @@ def query(request: Request, payload: QueryRequest):
         "weights": parsed["weights"],
         "filters": parsed["filters"],
         "sort": parsed["sort"],
-        "top_n": payload.top_n or parsed["top_n"] or 10,
+        "top_n": payload.top_n or parsed["top_n"] or 3,
         "max_per_industry": parsed["max_per_industry"],
         "exclude_st": parsed["exclude_st"],
     }
-    result = execute(market(), spec, top_n=payload.top_n or parsed["top_n"])
+    result = execute(market(), spec, top_n=payload.top_n or parsed["top_n"],
+                     boards=_boards(payload.only_allowed))
     result["parsed"] = parsed
     return ok(result)

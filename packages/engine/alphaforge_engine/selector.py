@@ -26,6 +26,7 @@ from alphaforge_core.indicators import atr, sma
 
 from .conditions import matches, normalize_all
 from .factor_board import get_board
+from .gate import allowed_labels, board_allow, buyable
 from .market import MarketEngine
 from .profile import board_tag
 
@@ -35,13 +36,23 @@ from .profile import board_tag
 # 上，选出来的必然是**已经涨透**的票（实测选出 5 日 +52%、20 日 +60% 的标的）。
 # 对超短来说这是最坏的位置——买在加速末段，赚的是最后一棒，亏起来最快。
 #
-# 现在按「买点位置」分两组：
-#   埋伏组  squeeze / sector / pullback —— 用蓄势、联动、回踩定义买点，
-#           目标是买在启动前或启动第一根，而不是跟在第三根后面；
-#   延续组  trend / limitup —— 保留，但 trend 加了位置约束（mom5 ≤ 12、
-#           mom60 ≤ 45），不允许再选加速末段的票。
+# 现在按「买点位置」分两条：
+#   埋伏组  squeeze / sector —— 用蓄势、板块联动定义买点，目标是买在启动前或
+#           启动第一根，而不是跟在第三根后面；
+#   延续组  trend —— 保留趋势延续，但补上量与位置约束（mom5 ≤ 12、
+#           mom60 ≤ 45、volratio ≥ 1.3、mom20 ≥ 8、站稳 20 日线）。
 #
-# 埋伏组的条件全部由 `filters` 表达，不靠因子加权：像「回踩 5 日线不破」
+# 2026-11 删掉两条：**强势回踩** 与 **打板**。5 年回测（1260 天 / 池 600）上
+#   强势回踩 −2.0% 年化、回撤 −33.4%，打板 +0.6%（几乎为零）、回撤 −49.1%，
+#   卡玛分别是 −0.06 与 0.01——不是「稍差」，是没有 edge，却每条每天还要
+#   占 3 张计划卡、一个模拟账户和一个进化名额。策略多不等于机会多，
+#   摊薄的是注意力和样本。
+#
+# 同一轮还收紧了 trend：它原来只有 2 条过滤，全市场 4956 只命中——那不是
+# 「选股」而是「按动量排序」。加上量能与中期动量两条门槛后命中 33 只，
+# 出票才真的来自一个前提（有量、在涨、还在 20 日线上方）。
+#
+# 埋伏组的条件全部由 `filters` 表达，不靠因子加权：像「三线粘合」
 # 「行业昨天还没联动」这类语义是**区间**和**开关**，加权表达不了。
 # 这依赖 backtest v6 起让 filters 真正生效——此前回测会静默跳过所有条件，
 # 于是埋伏策略在回测里跑的是「无条件的纯动量」，回测与实盘两张皮。
@@ -105,73 +116,29 @@ STRATEGIES: list[dict] = [
         "tp2_atr": 3.0,
     },
     {
-        "id": "pullback",
-        "name": "强势回踩",
-        "desc": "20 日涨幅还在的强势股，缩量回踩 5 日线不破时低吸",
-        # 20 日动量的权重从 30% 降到 16%：`mom20 >= 10` 本来就是下面的一条硬
-        # 过滤，再给 30% 权重等于同一个因子投票两次。实测（5 年样本）把这部分
-        # 让给回踩幅度与均线粘合之后，全期收益基本不变（+30.8% → +31.2%），
-        # 但最差子区间从 −17.5% 收窄到 −3.4%——亏的那一段正是「指数还在
-        # 半年线上方、但强势股已经开始补跌」的窗口，靠降低动量权重躲过去。
-        "weights": {"pullback5": 0.34, "mom20": 0.16,
-                    "ma_converge": 0.26, "ind_strength": 0.24},
-        "filters": [
-            # 前提是强势：20 日有过 10% 以上的涨幅，否则叫「下跌」不叫「回踩」
-            {"field": "mom20", "op": ">=", "value": 10},
-            {"field": "above_ma20", "op": "is", "value": True},
-            # 回踩到位：现价落在 5 日线下方 4.5% 到上方 1% 的窄带里
-            {"field": "dev_ma5", "op": "between", "value": [-4.5, 1]},
-            {"field": "pullback5", "op": "between", "value": [2.5, 12]},
-            # 缩量回踩：放量下跌是出货，不是洗盘
-            {"field": "volratio", "op": "<=", "value": 1.05},
-            # 近 5 日没继续加速，避免在二次冲高时追
-            {"field": "mom5", "op": "<=", "value": 6},
-        ],
-        "top_n": 3,
-        "max_per_industry": 1,
-        "market_ma": 120,
-        "time_stop": 5,
-        "stop_atr": 1.6,
-        "tp1_atr": 2.0,
-        "tp2_atr": 3.8,
-    },
-    {
         "id": "trend",
         "name": "趋势波段",
         "desc": "中期动量 + 量能放大，持有 3~8 天吃趋势延续（已加位置约束，不接末段）",
         "weights": {"mom20": 0.34, "mom60": 0.26, "dist_high": 0.22,
                     "volratio": 0.12, "vol20": 0.06},
         "filters": [
-            # 位置约束是这条策略这次唯一的改动：原来它 82% 的权重都在
-            # 「已经涨了多少」上，等于专门挑加速末段。加两条上限之后，
-            # 它仍然做趋势延续，但不再买最后一棒。
+            # 位置约束：82% 的权重压在「已经涨了多少」上，等于专门挑加速末段。
+            # 两条上限让它不再买最后一棒。
             {"field": "mom5", "op": "<=", "value": 12},
             {"field": "mom60", "op": "<=", "value": 45},
+            # 2026-11 补的三条。原来只有上面两条，全市场命中 4956 只——
+            # 那不是选股，是按动量排序，前 3 名与第 300 名没有本质区别。
+            # 现在要求「有量、中期在涨、站在 20 日线上方」，命中 33 只，
+            # 出票才真的来自一个可复述的前提。
+            {"field": "volratio", "op": ">=", "value": 1.3},
+            {"field": "mom20", "op": ">=", "value": 8},
+            {"field": "above_ma20", "op": "is", "value": True},
         ],
         "top_n": 3,
         "max_per_industry": 1,
         # 原先是 20 日线。20 日线太短：2026-11 沪深300 一跌破，趋势账户就整两天
         # 一张委托都不挂，看起来像「模拟盘坏了」。改成 120 日与其余策略统一口径，
         # 也顺带避开了短均线来回穿越带来的反复开关。
-        "market_ma": 120,
-    },
-    {
-        "id": "limitup",
-        "name": "打板",
-        "desc": "昨日涨停池里选，按连板数与封成色排序，赚次日溢价",
-        "weights": {"limit_cnt": 0.55, "volratio": 0.25, "mom5": 0.20},
-        "filters": [],
-        "top_n": 3,
-        "max_per_industry": 1,
-        # 硬门槛：连板数 ≥ 1，只在昨日涨停的票里选。
-        # 没有它，涨停家数少于 top_n 的日子会补进普通股，那不是打板。
-        "pool_limit_min": 1,
-        # 打板也要择时，而且比别的策略更需要：连板溢价只在情绪高位有钱赚，
-        # 熊市反弹里的涨停第二天基本都是低开。关掉择时（=0）在 5 年样本上
-        # 是全策略里最惨的（−32.8%，回撤 −54.2%）。
-        #
-        # 这里取 120 而不是实测更优的 200（+87.9% / 三段全正），是为了保持
-        # 全策略同一口径：一条策略单独取最优值，等于给它留了一个按样本调出来的后门。
         "market_ma": 120,
     },
 ]
@@ -230,7 +197,9 @@ def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
         "weights": _clean_weights(merged.get("weights")),
         "filters": normalize_all(merged.get("filters") or []),
         "sort": merged.get("sort") or None,
-        "top_n": max(1, min(int(top_n or merged.get("top_n") or 10), 40)),
+        # 兜底 3：一条策略一天选 1~3 只才是有意义的决策。显式传 top_n（研究页/接口）
+        # 仍然可以放大到 40。
+        "top_n": max(1, min(int(top_n or merged.get("top_n") or 3), 40)),
         "max_per_industry": max(1, min(int(merged.get("max_per_industry") or 2), 20)),
         # 两条撮合开关：池门槛（打板用）与择时（趋势用）。
         # 不进 `weights`，也不参与打分，只是往下传给回测/模拟盘。
@@ -241,10 +210,18 @@ def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
     }
 
 
-def execute(engine: MarketEngine, spec: dict, top_n: int | None = None) -> dict:
+def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
+            boards: dict | None = None) -> dict:
+    """跑一遍选股。
+
+    `boards` 是「个人设置 → 购买权限」里的那份字典；给了就只在已开通板块里选。
+    过滤落在 `mask` 上而不是重切 `pool`：因子表按池子代码元组做缓存，
+    重切池等于每次换权限都要重算一整套因子表（几百只 × 上百列）。
+    """
     cfg = normalize_spec(spec, top_n)
     weights = cfg["weights"]
     filters = cfg["filters"]
+    allow = board_allow(boards)
 
     # 条件里显式要求 ST 时不再无条件排除，否则「只看 ST」会永远选不出东西
     explicit_st = any(f["field"] == "is_st" for f in filters)
@@ -265,6 +242,15 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None) -> dict:
         return _empty(engine, cfg, "因子表还没生成，先跑 sync --only factor")
 
     mask = [True] * len(pool)
+    blocked = 0
+    if allow is not None:
+        for i, sym in enumerate(pool):
+            if not buyable(sym["code"], allow):
+                mask[i] = False
+                blocked += 1
+        if blocked == len(pool):
+            return _empty(engine, cfg, "「个人设置 → 购买权限」里没有开通任何板块，"
+                                      "开通后才能选股")
     for cond in filters:
         column = board.column(cond["field"])
         for i, cell in enumerate(column):
@@ -406,13 +392,22 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None) -> dict:
 
     mode = "hybrid" if (weights and filters) else ("factor" if weights else "filter")
     trade_date = engine.trade_date
+    # 池子大小按「可买的」算：写着「全 A 股 5578 只」而实际只在 3200 只里选，
+    # 匹配数看着对不上，是这类口径最容易招骂的地方
+    pool_size = len(pool) - blocked if allow is not None else len(pool)
     return {
         "strategy_id": cfg["id"],
         "strategy_name": cfg["name"],
         "mode": mode,
         "as_of": trade_date.isoformat() if trade_date else None,
-        "universe": f"全 A 股（{len(pool)} 只）",
-        "universe_size": len(pool),
+        "universe": (f"全 A 股（{pool_size} 只）" if allow is None
+                     else f"可买板块（{pool_size} 只）"),
+        "universe_size": pool_size,
+        "board_filter": {
+            "applied": allow is not None,
+            "allowed": allowed_labels(allow),
+            "blocked": blocked,
+        },
         "top_n": cfg["top_n"],
         "items": items,
         "weights": weights,
@@ -443,6 +438,7 @@ def _empty(engine: MarketEngine, cfg: dict, message: str) -> dict:
         "matched_count": 0,
         "max_per_industry": cfg["max_per_industry"],
         "exclude_st": cfg["exclude_st"],
+        "board_filter": {"applied": False, "allowed": [], "blocked": 0},
         "rank_hint": message,
         "notice": message,
     }

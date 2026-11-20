@@ -44,7 +44,12 @@ const strategies = ref<Strategy[]>([])
 const fields = ref<FieldMeta[]>([])
 const examples = ref<string[]>([])
 const activeId = ref('')
-const topN = ref(10)
+// 出票上限默认 3：一条策略一天选出来的票，1~3 只才是有意义的决策，
+// 再多就是「排在前面的」，第 8 名和第 3 名不是一个东西。研究时可以调大。
+const topN = ref(3)
+/* 只看可买板块：默认开。选股页的用途是挑明天能下单的票，
+ * 把买不了的板块混进 Top N，名额就被白白占掉了。关掉是纯研究。 */
+const onlyAllowed = ref(true)
 
 const result = ref<SelectResult | null>(null)
 const selected = ref<Candidate | null>(null)
@@ -103,7 +108,7 @@ function targetText(target: unknown): string {
 
 /* ------------------------------------------------------------ 运行 */
 function payloadSpec(spec: Record<string, unknown>) {
-  return api.runSelect({ spec, top_n: topN.value })
+  return api.runSelect({ spec, top_n: topN.value, only_allowed: onlyAllowed.value })
 }
 
 function filterSpec(): Record<string, unknown> {
@@ -147,7 +152,7 @@ async function run() {
         apply(await payloadSpec(aiSpec()))
         return
       }
-      const res = await api.runQuery(text, topN.value)
+      const res = await api.runQuery(text, topN.value, onlyAllowed.value)
       parsed.value = res.parsed ?? null
       parsedText.value = text
       aiFilters.value = parsed.value?.filters ?? []
@@ -158,7 +163,11 @@ async function run() {
     }
     const res =
       mode.value === 'factor'
-        ? await api.runSelect({ strategy: activeId.value, top_n: topN.value })
+        ? await api.runSelect({
+            strategy: activeId.value,
+            top_n: topN.value,
+            only_allowed: onlyAllowed.value,
+          })
         : await payloadSpec(filterSpec())
     apply(res)
   } finally {
@@ -322,6 +331,17 @@ onMounted(async () => {
         </el-radio-group>
         <span class="q-hint hide-mobile">{{ modeHint }}</span>
         <div class="q-actions">
+          <el-tooltip
+            content="按「个人设置 → 购买权限」过滤候选池；关掉可以研究买不了的板块"
+            placement="top"
+          >
+            <el-switch
+              v-model="onlyAllowed"
+              size="small"
+              active-text="只看可买"
+              @change="run"
+            />
+          </el-tooltip>
           <div class="topn">
             <span class="muted">Top N</span>
             <el-input-number v-model="topN" :min="1" :max="40" :step="5" size="small" controls-position="right" />
@@ -424,6 +444,10 @@ onMounted(async () => {
             候选列表
             <span class="panel-sub">{{ result?.strategy_name ?? '—' }} · {{ mode === 'factor' ? '已做行业分散' : `命中 ${result?.matched_count ?? 0} 只` }}</span>
           </div>
+          <span v-if="result?.board_filter?.applied" class="chip">
+            仅 {{ result.board_filter.allowed.join(' / ') }}
+          </span>
+          <span v-else-if="result?.board_filter" class="chip warn">含未开通板块</span>
           <span class="chip brand">{{ result?.items.length ?? 0 }} 只</span>
         </div>
 

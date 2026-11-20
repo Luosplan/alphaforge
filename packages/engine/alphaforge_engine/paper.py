@@ -25,9 +25,10 @@ from __future__ import annotations
 
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
 
-from .backtest import DEFAULTS, REGIME_SCALE, single_cap
+from .backtest import DEFAULTS, REGIME_SCALE, TRIM_FRAC, single_cap
+from .gate import blocked_label, board_allow, buyable
 from .selector import execute
-from .signal import build_plan
+from .signal import TRIM_PNL_PCT, build_plan
 
 LIVE_CAPITAL = 1_000_000.0
 # 单票上限统一走 `backtest.single_cap(top_n)`：模拟盘和回测必须用同一个数，
@@ -44,7 +45,9 @@ PARAM_KEYS = ("top_n", "max_per_industry", "stop_atr", "tp1_atr",
 # 不用 `live_status` 顶替——那是「现价落在建仓区哪一段」，当日新卡恒为区间内，
 # 跟买没买着没有关系。
 ORDER_WAITING = "待明日开盘成交"
-ORDER_HELD = "已持有 · 加仓不自动执行"
+ORDER_HELD = "已持有 · 不动"
+ORDER_ADD = "待明日开盘加仓"
+ORDER_TRIM = "待明日开盘减仓"
 ORDER_NOSLOT = "仅备选 · 仓位已满"
 # 持仓数已经超过 `top_n` 时不能再叫「仓位已满」：进化允许把 top_n 往下调
 # （只能变集中、不能变多），调小之后账户里可能还留着更多票。这时限的是
@@ -57,6 +60,10 @@ ORDER_OVER = "已超持仓上限 · 只减不增"
 # 弱势里半仓照样吃满跌幅，回撤只降 5 个点，而收益掉得更多。
 # 文案带上「半年线」是为了让人一眼看出当前用的是哪个口径，不必回来翻代码。
 ORDER_REGIME = "择时关闭 · 指数在半年线下方"
+
+# 减仓一次卖多少（1/3）与「浮盈多少算该减」（`TRIM_PNL_PCT`）都从上层取：
+# 回测和模拟盘必须用同一对数，否则同一只票在实验室里减仓、在回测里继续拿着。
+# 见 `backtest.TRIM_FRAC` / `signal.TRIM_PNL_PCT` 的注释。
 
 
 def empty_account(strategy_id: str, name: str, spec: dict,
@@ -183,7 +190,8 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
     plans, orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                regime_scale=_regime_scale(engine, date_s, params))
+                                regime_scale=_regime_scale(engine, date_s, params),
+                                boards=prof.get("boards"))
     equity = list(account.get("equity") or [])
     if equity:
         equity[-1] = {"date": date_s, "value": round(nav, 2)}
@@ -200,6 +208,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     positions = [dict(p) for p in account.get("positions") or []]
     trades = list(account.get("trades") or [])
     cash = float(account.get("cash") or 0.0)
+    allow = board_allow(prof.get("boards"))
     log: list[str] = []
     seq = len(trades)
 
@@ -258,12 +267,22 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     positions = [p for p in positions if p["shares"] > 0]
 
     # ---- 2. 开盘：成交上一交易日挂出的委托
+    # 减仓排在最前面：同一天既有减仓又有加仓时，先卖出再买，否则「现金不够」
+    # 会让本来能成交的加仓单被跳过（卖出的钱就在同一次开盘里）。
     orders = list(account.get("orders") or [])
     held_codes = {p["code"] for p in positions}
+    pos_by_code = {p["code"]: p for p in positions}
     nav_open = cash + _market_value(positions, feed)
-    for order in orders:
+    for order in sorted(orders, key=lambda o: 0 if o.get("kind") == "TRIM" else 1):
         code = order["code"]
-        if code in held_codes:
+        kind = order.get("kind") or "ENTRY"
+        if kind == "ENTRY" and code in held_codes:
+            continue
+        # 购买权限：委托可能是「权限还没关」或「旧版本遗留」时挂上的，
+        # 撮合这一步必须再拦一道——否则夜里改了权限，明早照样成交。
+        # 减仓不拦：卖出不需要购买权限，拦了只会把仓位锁死。
+        if kind != "TRIM" and not buyable(code, allow):
+            log.append(f"跳过 {code}：{blocked_label(code)}未开通购买权限，委托作废")
             continue
         bar, prev = feed.bar(code, date_s)
         if not bar:
@@ -271,11 +290,72 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         o = float(bar["open"])
         hi = float(bar["high"])
         prev_close = float(prev["close"]) if prev else o
+        if o <= 0:
+            continue
+
+        if kind == "TRIM":
+            pos = pos_by_code.get(code)
+            if not pos or pos["shares"] <= 0:
+                continue
+            # 一字跌停卖不掉，等下一格再说（和止损那一侧同一判断）
+            if prev_close > 0 and o <= prev_close * 0.9001 and hi <= o * 1.001:
+                log.append(f"跳过 {code}：一字跌停，减仓卖不掉")
+                continue
+            qty = min(int(order.get("shares") or 0), pos["shares"])
+            if qty < 100:
+                continue
+            sell(pos, o, order.get("reason") or "计划减仓", qty=qty)
+            pos["trimmed"] = True
+            # 不再补一条「减仓 …」：`sell()` 已经写过「卖出 …」，两条连着出现
+            # 会让人以为卖了两笔（实测日志里就是这样，一对就多出一笔）。
+            if pos["shares"] <= 0:
+                positions.remove(pos)
+                pos_by_code.pop(code, None)
+                held_codes.discard(code)
+            continue
+
+        # 一字涨停买不到（加仓同样买不到）
         if prev_close > 0 and o >= prev_close * 1.0999 and hi <= o * 1.001:
             log.append(f"跳过 {code}：开盘一字涨停，买不到")
             continue
-        if o <= 0:
+        if kind == "ADD":
+            pos = pos_by_code.get(code)
+            if not pos:
+                continue
+            # 加仓不改止损/止盈：那两条是按最初的风险位定的，跟着均价动会让
+            # 一次加仓把整笔交易的 R 悄悄放大。
+            cap_value = nav_open * RISK_LIMITS["max_single_weight"]
+            headroom = cap_value - pos["shares"] * o
+            want = int(order.get("shares") or 0)
+            budget = min(headroom, cash)
+            qty = min(want, int(budget / o / 100) * 100)
+            while qty >= 100:
+                amount = qty * o
+                fee = trade_fee(amount, "BUY", prof)
+                if amount + fee["total"] <= cash:
+                    break
+                qty -= 100
+            if qty < 100:
+                log.append(f"跳过 {code}：现金或单票上限不够，加仓不执行")
+                continue
+            amount = qty * o
+            fee = trade_fee(amount, "BUY", prof)
+            cash -= amount + fee["total"]
+            total = pos["shares"] + qty
+            pos["cost"] = round((pos["cost"] * pos["shares"] + o * qty) / total, 4)
+            pos["shares"] = total
+            pos["last"] = o
+            seq += 1
+            trades.append({
+                "id": f"P{seq:05d}", "code": code, "name": order.get("name", ""),
+                "side": "BUY", "date": date_s, "price": round(o, 3),
+                "shares": qty, "amount": round(amount, 2), "fee": fee["total"],
+                "tax": 0.0, "pnl": None, "pnl_pct": None,
+                "reason": order.get("reason", "计划加仓"),
+            })
+            log.append(f"加仓 {code} {qty} 股 @{o:.2f}（{order.get('reason', '计划加仓')}）")
             continue
+
         weight = min(1.0 / int(params["top_n"]), single_cap(int(params["top_n"])))
         # 择时降仓：弱市里每笔预算折半，而不是一张都不买。
         grep = (nav_open - cash) / nav_open if nav_open else 1.0
@@ -321,7 +401,8 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
     plans, new_orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                    regime_scale=_regime_scale(engine, date_s, params))
+                                    regime_scale=_regime_scale(engine, date_s, params),
+                                    boards=prof.get("boards"))
 
     # ---- 4. 记账
     equity = list(account.get("equity") or [])
@@ -347,18 +428,61 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     }
 
 
+def _held_action(plan: dict, pos: dict, nav: float,
+                 regime_scale: float) -> dict | None:
+    """已持仓的票，这张计划卡要不要动手——加仓、减仓，还是什么都不做。
+
+    口径就是计划卡自己说的话，不另立一套规则：
+    - **加仓**：同一只票今天又进了 Top-N，说明信号还在，就补到计划仓位
+      （`sizing.shares`）。受两条硬约束：单票不超过 15% 净值、现金够付；
+      择时关闭时不加（新敞口和建仓一样该被拦）。
+    - **减仓**：浮盈到了 12% 就减 1/3，只减一次。TP1 已经减过半的票照样减：
+      三档合计 2/3，剩下的 1/3 还跟得住趋势。此前把 `tp1_done` 也排除在外，
+      这条规则几乎永不触发——TP1 在 +2.6ATR 就先成交了，浮盈走不到 12%。
+    - 其余情况只标注「已持有 · 不动」。
+    """
+    price = float(plan.get("ref_price") or 0)
+    cost = float(pos.get("cost") or 0)
+    shares = int(pos.get("shares") or 0)
+    if price <= 0 or cost <= 0 or shares <= 0:
+        return None
+    pnl_pct = (price / cost - 1) * 100
+
+    if pnl_pct >= TRIM_PNL_PCT and not pos.get("trimmed"):
+        qty = int(shares * TRIM_FRAC / 100) * 100
+        if qty >= 100:
+            return {"kind": "TRIM", "state": ORDER_TRIM, "shares": qty,
+                    "reason": f"计划减仓（浮盈 {pnl_pct:.1f}%）"}
+
+    if pnl_pct < TRIM_PNL_PCT and regime_scale > 0:
+        target = int((plan.get("sizing") or {}).get("shares") or 0)
+        cap_shares = int(nav * RISK_LIMITS["max_single_weight"] / price / 100) * 100
+        delta = min(target - shares, cap_shares - shares)
+        # 择时降仓时加仓预算同样打折，和建仓一个口径
+        delta = int(delta * min(regime_scale, 1.0) / 100) * 100
+        if delta >= 100:
+            return {"kind": "ADD", "state": ORDER_ADD, "shares": delta,
+                    "reason": f"计划加仓（浮盈 {pnl_pct:+.1f}%）"}
+
+    return None
+
+
 def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
                 positions: list[dict], nav: float,
-                date_s: str, regime_scale: float = 1.0) -> tuple[list[dict], list[dict]]:
+                date_s: str, regime_scale: float = 1.0,
+                boards: dict | None = None) -> tuple[list[dict], list[dict]]:
     """按今日收盘选股 → 计划卡 + 明日委托。
 
     `regime_scale < 1`（大盘在均线下方）时**照常挂单，但预算打折**。
     以前这里是「一张委托都不挂」，页面上只剩一句「择时关闭」——用户看到的是
     「模拟盘从来不买」，而且弱势行情恰恰是超短的主场。现在保留风控但不拦死：
     卡片上照实写「择时降仓 · 半仓建仓」，委托带着 scale 一起下去。
+
+    `boards` 传购买权限：模拟盘的委托是照这张卡真挂出去的（次日开盘成交），
+    所以候选池必须先按权限过一遍——买不了的票进了卡，第二天照样会被成交。
     """
     try:
-        selection = execute(engine, spec, top_n=int(params["top_n"]))
+        selection = execute(engine, spec, top_n=int(params["top_n"]), boards=boards)
     except Exception:                                   # noqa: BLE001 - 选股失败不该拖垮记账
         return [], []
     items = selection.get("items") or []
@@ -366,6 +490,7 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         return [], []
 
     held = {p["code"] for p in positions}
+    pos_by_code = {p["code"]: p for p in positions}
     slots = max(int(params["top_n"]) - len(held), 0)
     plans: list[dict] = []
     orders: list[dict] = []
@@ -391,11 +516,31 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         plans.append(plan)
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
         if code in held:
-            plan["order_state"] = ORDER_HELD
-            plan["order_tone"] = "flat"
+            pos = pos_by_code.get(code) or {}
+            act = _held_action(plan, pos, nav, regime_scale)
+            if not act:
+                plan["order_state"] = ORDER_HELD
+                plan["order_tone"] = "flat"
+                continue
+            plan["order_kind"] = act["kind"]
+            plan["order_shares"] = act["shares"]
+            plan["order_state"] = act["state"]
+            plan["order_tone"] = "brand"
+            orders.append({"code": code, "name": item["name"], "kind": act["kind"],
+                           "shares": act["shares"], "reason": act["reason"],
+                           "created": date_s, "atr": round(atr, 4),
+                           "score": item.get("score"),
+                           "scale": round(regime_scale, 2)})
             continue
         if slots <= 0:
             plan["order_state"] = ORDER_NOSLOT if len(held) <= int(params["top_n"]) else ORDER_OVER
+            plan["order_tone"] = "flat"
+            continue
+        # 择时关闭（REGIME_SCALE=0）时根本不挂单：以前照样往 orders 里塞一张
+        # scale=0 的委托，明早按 0 股静默跳过，抽屉里却一直列着「待成交委托」，
+        # 页面上说「会成交」而账户里永远不会成交——看到的就是假的。
+        if regime_scale <= 0:
+            plan["order_state"] = ORDER_REGIME
             plan["order_tone"] = "flat"
             continue
         plan["order_state"] = ORDER_REGIME if regime_scale < 1.0 else ORDER_WAITING
@@ -545,6 +690,108 @@ def ensure_order_state(plans: list[dict], positions: list[dict],
             plan["order_tone"] = "brand"
             slots -= 1
     return plans
+
+
+ORDER_KIND_LABEL = {"ENTRY": "建仓", "ADD": "加仓", "TRIM": "减仓"}
+
+
+def match_orders(prev_orders: list[dict], prev_plans: list[dict],
+                 trades: list[dict], date_s: str,
+                 log: list[str] | None = None) -> dict:
+    """把「昨天收盘挂出的委托」与「今天实际成交」逐张对起来。
+
+    复盘要回答的第一个问题不是「今天赚了多少」，而是「说的话算不算数」：
+    计划卡上写着「待明日开盘成交」，第二天到底成交了没有？没成交是因为
+    一字板买不到、现金不够，还是这张委托本来就不该挂？这个数不报出来，
+    「计划」和「账户」就成了两套互不相干的叙事——卡上天天有票，账户里
+    从来不动，看的人只能猜是规则还是程序。
+
+    成交价与委托价的偏离记成**不利滑点**（正数 = 对你不利）：
+    买单成交得比委托价高、卖单成交得比委托价低都算不利。两边同一个符号，
+    平均下来才有意义——否则「买单平均 +30bp、卖单平均 +30bp」会被读成
+    同一件事，实际一个是成本、一个是收益。
+    """
+    plan_px: dict[str, float] = {}
+    for plan in prev_plans or []:
+        code = plan.get("code")
+        price = plan.get("ref_price")
+        if code and price:
+            plan_px[code] = float(price)
+
+    pool = list(trades or [])
+    used = [False] * len(pool)
+    log_lines = [str(x) for x in (log or [])]
+    rows: list[dict] = []
+    missed: list[dict] = []
+    orders_by_kind: dict[str, int] = {}
+    filled_by_kind: dict[str, int] = {}
+
+    for order in prev_orders or []:
+        code = order.get("code") or ""
+        kind = order.get("kind") or "ENTRY"
+        side = "SELL" if kind == "TRIM" else "BUY"
+        orders_by_kind[kind] = orders_by_kind.get(kind, 0) + 1
+        ref = plan_px.get(code) or 0.0
+        # 先按成交原因对号：同一只票今天可能既被止损卖出、又被计划减仓卖出，
+        # 随便抓一张 SELL 会把止损算成「计划减仓成交了」。对不上再退回
+        # 「同代码同方向」——建仓单可能被一字板跳过，走到这里是撮合成功后
+        # 的补记，顺序取第一张就够了。
+        tag = ORDER_KIND_LABEL.get(kind, "")
+        hit = None
+        for i, trade in enumerate(pool):
+            if used[i] or trade.get("code") != code or trade.get("side") != side:
+                continue
+            if tag and tag in str(trade.get("reason") or ""):
+                hit = i
+                break
+        if hit is None:
+            for i, trade in enumerate(pool):
+                if used[i] or trade.get("code") != code or trade.get("side") != side:
+                    continue
+                hit = i
+                break
+        if hit is None:
+            reason = next((ln.split("：", 1)[1] for ln in log_lines
+                           if code in ln and "跳过" in ln), "")
+            item = {"code": code, "name": order.get("name", ""), "kind": kind,
+                    "kind_label": ORDER_KIND_LABEL.get(kind, kind),
+                    "plan_price": round(ref, 3) or None,
+                    "shares": int(order.get("shares") or 0),
+                    "reason": reason or "当日无对应成交（委托作废或未到价）"}
+            missed.append(item)
+            rows.append({**item, "status": "未成交", "fill_price": None,
+                         "adverse_bps": None})
+            continue
+        used[hit] = True
+        trade = pool[hit]
+        filled_by_kind[kind] = filled_by_kind.get(kind, 0) + 1
+        fill = float(trade.get("price") or 0)
+        bps = None
+        if ref > 0 and fill > 0:
+            diff = (fill - ref) / ref * 10000
+            bps = round(diff if side == "BUY" else -diff, 1)
+        rows.append({"code": code, "name": order.get("name", ""), "kind": kind,
+                     "kind_label": ORDER_KIND_LABEL.get(kind, kind),
+                     "plan_price": round(ref, 3) or None,
+                     "fill_price": round(fill, 3), "shares": int(trade.get("shares") or 0),
+                     "adverse_bps": bps, "status": "成交", "reason": ""})
+
+    total = len(prev_orders or [])
+    filled = sum(filled_by_kind.values())
+    bps_all = [r["adverse_bps"] for r in rows if r["adverse_bps"] is not None]
+    return {
+        "date": date_s,
+        "order_count": total,
+        "filled_count": filled,
+        "fill_rate": round(filled / total * 100, 1) if total else None,
+        "avg_adverse_bps": round(sum(bps_all) / len(bps_all), 1) if bps_all else None,
+        "kinds": [{"kind": k, "label": ORDER_KIND_LABEL.get(k, k),
+                   "orders": orders_by_kind.get(k, 0),
+                   "filled": filled_by_kind.get(k, 0)}
+                  for k in ORDER_KIND_LABEL if orders_by_kind.get(k)],
+        "rows": rows,
+        "missed": missed,
+    }
 
 
 def _market_value(positions: list[dict], feed: _Feed) -> float:

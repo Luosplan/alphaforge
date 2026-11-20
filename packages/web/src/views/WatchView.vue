@@ -15,7 +15,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
 import type { AutopilotState } from '@/types'
-import { fmtPct, fmtStamp, toneOf } from '@/utils/format'
+import { fmtNum, fmtPct, fmtStamp, toneOf } from '@/utils/format'
 
 const state = ref<AutopilotState | null>(null)
 const loading = ref(true)
@@ -84,6 +84,10 @@ const maxPct = computed(() => {
  */
 const ORDER_LABELS: [string, string, string][] = [
   ['待明日开盘成交', '待成交', 'brand'],
+  // 加仓 / 减仓也是真委托（次日开盘按市价成交），配色要与建仓区分：
+  // 减仓是卖出，用 warn；加仓与建仓同为买入，用 brand。
+  ['待明日开盘加仓', '加仓', 'brand'],
+  ['待明日开盘减仓', '减仓', 'warn'],
   ['已持有', '已持有', 'flat'],
   ['仅备选', '仓位已满', 'flat'],
   ['已超持仓上限', '超上限', 'warn'],
@@ -121,7 +125,10 @@ const rows = computed(() => {
     const entryLow = Number(zones.entry?.low ?? 0)
     const entryHigh = Number(zones.entry?.high ?? 0)
     const sizing = (r.sizing ?? {}) as { shares?: number }
-    const shares = Number(sizing.shares ?? 0)
+    // 加仓/减仓挂的是**本次增量**股数（`order_shares`），不是计划总仓位。
+    // 用 sizing.shares 顶替会写出「减仓 21600 股」而实际只卖 1/3，对账时对不上。
+    const orderShares = Number(r.order_shares ?? 0)
+    const shares = orderShares > 0 ? orderShares : Number(sizing.shares ?? 0)
     // 跌破建仓区下沿 = 这张计划买入的前提已经不成立。
     // 只对**真的挂了委托**的行显示「已跌破」：没挂单的行（择时关闭/仓位已满）
     // 本来就不会成交，标成「已跌破」只会让人以为出了问题。
@@ -430,6 +437,69 @@ onBeforeUnmount(() => {
           <ul class="rv-list tomorrow">
             <li v-for="(t, i) in review.text.tomorrow" :key="'t' + i">{{ t }}</li>
           </ul>
+
+          <!--
+            计划 vs 实际：这一块回答的是「计划卡到底有没有在按说的执行」。
+            放在明天注意之后、不抢头条，是因为它不解释行情；但必须有——
+            没有它，卡上天天有票、账户里从来不动，也只能靠猜。
+          -->
+          <template v-if="review.plan && review.plan.order_count">
+            <div class="block-title">计划执行 · 今日对账</div>
+            <div class="pr-strip">
+              <span class="pr-k">挂单 <b class="num">{{ review.plan.order_count }}</b></span>
+              <span class="pr-k">
+                成交 <b class="num">{{ review.plan.filled_count }}</b>
+              </span>
+              <span class="pr-k">
+                执行率
+                <b class="num">{{ review.plan.fill_rate == null ? '—' : `${review.plan.fill_rate.toFixed(0)}%` }}</b>
+              </span>
+              <span class="pr-k">
+                平均不利滑点
+                <b class="num" :class="review.plan.avg_adverse_bps == null ? '' : review.plan.avg_adverse_bps > 0 ? 'down' : 'up'">
+                  {{ review.plan.avg_adverse_bps == null ? '—' : `${review.plan.avg_adverse_bps.toFixed(0)}bp` }}
+                </b>
+                <i class="pr-tip" title="买单成交价高于委托价、卖单低于委托价都算不利；负数代表成交比计划更好">?</i>
+              </span>
+              <span
+                v-for="k in review.plan.kinds"
+                :key="k.kind"
+                class="pr-k"
+                :title="`${k.label}：挂 ${k.orders} 张，成交 ${k.filled} 张`"
+              >
+                {{ k.label }} <b class="num">{{ k.filled }}/{{ k.orders }}</b>
+              </span>
+            </div>
+            <div v-if="review.plan.missed.length" class="pr-miss">
+              <span class="pr-miss-k">未成交</span>
+              <span v-for="m in review.plan.missed" :key="`${m.code}-${m.kind_label}`" class="pr-miss-i">
+                {{ m.name || m.code }} · {{ m.kind_label }} · {{ m.reason }}
+              </span>
+            </div>
+            <table v-if="review.plan.by_exit.length" class="pr-table">
+              <thead>
+                <tr>
+                  <th>今日了结</th>
+                  <th class="ta-r">笔数</th>
+                  <th class="ta-r">胜率</th>
+                  <th class="ta-r">平均盈亏</th>
+                  <th class="ta-r">合计盈亏</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="e in review.plan.by_exit" :key="e.reason">
+                  <td>{{ e.reason }}</td>
+                  <td class="ta-r num">{{ e.count }}</td>
+                  <td class="ta-r num">{{ e.win_rate.toFixed(0) }}%</td>
+                  <td class="ta-r num" :class="toneOf(e.avg_pnl_pct)">{{ fmtPct(e.avg_pnl_pct) }}</td>
+                  <td class="ta-r num" :class="toneOf(e.pnl)">{{ fmtNum(e.pnl, 0) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="pr-foot">
+              只统计、不改参数：参数只由「进化 + 样本外门槛」决定，一天的成交噪声不该动模型。
+            </p>
+          </template>
         </template>
         <div v-else class="empty">
           还没有复盘。今天收盘后（15:05）会自动生成，也可以点上方「补跑收盘」。
@@ -687,6 +757,101 @@ onBeforeUnmount(() => {
 .wtable th.ta-r,
 .wtable td.ta-r {
   text-align: right;
+}
+
+/* ---------------- 计划执行对账 ----------------
+   一排 KPI + 一张小表。刻意不做成大卡片：它是对账，不是结论，
+   抢了「明天注意」的位置反而会让人以为这是当天的判断。 */
+.pr-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--af-surface-2);
+  font-size: 12px;
+  color: var(--af-ink-2);
+}
+
+.pr-k b {
+  margin-left: 3px;
+  color: var(--af-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「不利滑点」的符号容易被读反：负数是好事（成交比计划好），
+   加一个小问号把口径挂在原地，比在脚注里解释更近。 */
+.pr-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 3px;
+  border: 1px solid var(--af-border);
+  border-radius: 50%;
+  font-size: 9px;
+  font-style: normal;
+  color: var(--af-ink-3);
+  cursor: help;
+}
+
+.pr-miss {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--af-ink-2);
+}
+
+.pr-miss-k {
+  color: var(--af-ink-3);
+}
+
+.pr-miss-i {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--af-down) 10%, transparent);
+  color: var(--af-ink-2);
+}
+
+.pr-table {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pr-table th,
+.pr-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--af-border);
+  text-align: left;
+  color: var(--af-ink-2);
+}
+
+.pr-table th {
+  font-weight: 500;
+  color: var(--af-ink-3);
+}
+
+/* 数字列的表头要跟数字同侧，理由同上面的 `.wtable th.ta-r` */
+.pr-table th.ta-r,
+.pr-table td.ta-r {
+  text-align: right;
+}
+
+.pr-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pr-foot {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--af-ink-3);
 }
 
 @media (max-width: 760px) {

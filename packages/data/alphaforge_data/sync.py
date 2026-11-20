@@ -394,6 +394,78 @@ class Syncer:
         conn.execute("COMMIT")
         return n
 
+    def flush_today(self) -> tuple[str, int]:
+        """把「当日那一根 K 线」用全市场快照直接拼出来落库。
+
+        为什么值得单独做这一步：收盘后快照里的 open/high/low/price/volume/amount
+        已经**就是**当日终值，而逐只抓日线只是为了拿到这一根——5579 次请求换
+        5579 行数据，实测 150s。快照本来就是同步链路的第一步（一次请求拿全市场），
+        拿它拼这些行等于把 150s 变成 2s。
+
+        三个前提，缺一个就不写：
+        1. 快照时间必须在 15:00 之后。盘中那根是高开低走的半成品，写进日线会被
+           `paper.step` 当成收盘价成交（`run_eod` 的 force 校验防的就是这个）。
+        2. 开高低收都得大于 0、成交量大于 0（停牌票的快照是「昨天的价格 + 今天的
+           时间戳」，照着写会凭空多出一根假 K 线；这类票交给逐只抓取兜底）。
+        3. 当天没有除权事件的票才走快照。除权会改写**全部**历史复权因子，
+           这种票必须整段重建，走快照等于把新旧因子拼出断层。
+
+        返回 (日期, 写入行数)。
+        """
+        conn = self.repo.conn
+        row = conn.execute("SELECT MAX(ts) FROM snapshot").fetchone()
+        ts = (row[0] if row else "") or ""
+        if len(ts) < 16:
+            return "", 0
+        date_s = ts[:10]
+        if int(ts[11:13] or 0) < 15:
+            return "", 0
+
+        ex_rights = {
+            code.split(".")[0]
+            for code, events in self._bonus.items()
+            if any(ev["date"] >= date_s for ev in events)
+        }
+        rows = []
+        for r in conn.execute(
+            "SELECT code, open, high, low, price, volume, amount FROM snapshot "
+            "WHERE open>0 AND high>0 AND low>0 AND price>0 AND volume>0"
+        ):
+            if r[0].split(".")[0] in ex_rights:
+                continue
+            rows.append((r[0], date_s, r[1], r[2], r[3], r[4],
+                         r[5] or 0.0, r[6] or 0.0, 1.0))
+        if not rows:
+            return "", 0
+        conn.execute("BEGIN")
+        conn.executemany(
+            "INSERT INTO daily(code, date, open, high, low, close, volume, amount, adj) "
+            "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(code, date) DO UPDATE SET "
+            "open=excluded.open, high=excluded.high, low=excluded.low, "
+            "close=excluded.close, volume=excluded.volume, amount=excluded.amount",
+            rows,
+        )
+        conn.execute("COMMIT")
+        dbm.set_meta(conn, "daily_snapshot", date_s)
+        self.log(f"  当日 K 线由快照直接落库 {len(rows)} 只（{date_s}）")
+        return date_s, len(rows)
+
+    def _covered_by_snapshot(self) -> set[str]:
+        """当日那根已由快照写好、且前一交易日也在库里的票。
+
+        这类票不需要再发日线请求：12 根增量里唯一缺的就是今天这根。
+        隔了几天没同步的票**不**在其中——它们确实有缺口，必须逐只补。
+        """
+        conn = self.repo.conn
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT date FROM daily ORDER BY date DESC LIMIT 2")]
+        snap_date = dbm.get_meta(conn, "daily_snapshot") or ""
+        if len(dates) < 2 or dates[0] != snap_date:
+            return set()
+        return {r[0] for r in conn.execute(
+            "SELECT code FROM daily WHERE date IN (?,?) GROUP BY code HAVING COUNT(*)=2",
+            (dates[0], dates[1]))}
+
     def _settled(self, meta_key: str, table: str = "daily") -> str:
         """上次同步是否已经把**最后一根 K 线**拿全了。
 
@@ -461,6 +533,10 @@ class Syncer:
             except Exception:                              # noqa: BLE001
                 self._bonus = {}
         incremental = not full
+        # 收盘后：当日那根先用快照拼出来落库。这一步把「5579 次逐只请求」
+        # 压成「0 次」，后面的逐只抓取只负责补快照覆盖不到的票（停牌/新股）。
+        if incremental:
+            self.flush_today()
         # 库里还没有的票必须整段拉，否则增量模式只给它 12 根，画不出图也进不了因子表
         have = {
             r[0] for r in self.repo.conn.execute("SELECT DISTINCT code FROM daily").fetchall()
@@ -475,9 +551,15 @@ class Syncer:
         # 早盘 9:31 同步过的票，15:00 之后再跑一遍必须重新拉，否则留下的
         # 是一根只有半天的 K 线。
         skipped = self._skip_fresh(pending, incremental)
+        if incremental:
+            covered = self._covered_by_snapshot()
+            extra = [c for c in pending if c in covered and c not in skipped]
+            if extra:
+                skipped |= set(extra)
+                self.log(f"  {len(extra)} 只当日 K 线已由快照补齐，跳过逐只抓取")
         if skipped:
             pending = [c for c in pending if c not in skipped]
-            self.log(f"  {len(skipped)} 只已是收盘后数据，跳过")
+            self.log(f"  共 {len(skipped)} 只已是当日终值，跳过")
         # 先把分母告诉界面：前端一进来就能画「0 / 5580」，而不是空条
         self.emit(
             "daily", len(skipped), total,

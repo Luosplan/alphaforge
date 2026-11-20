@@ -85,9 +85,15 @@ class SortSpec(BaseModel):
 
 class SelectRequest(BaseModel):
     strategy: str = "multifactor"
-    top_n: int = Field(default=10, ge=1, le=40)
+    # 不传就听策略自己声明的 `top_n`。写死 10 的时候，内置策略里声明的
+    # `top_n=3` 会被这个默认值顶掉——「策略说最多 3 只」在接口这一层就失效了，
+    # 页面上看到 10 只、计划卡里却是 3 只，两处对不上。
+    top_n: int | None = Field(default=None, ge=1, le=40)
     universe: str = "all"
     exclude_st: bool = True
+    # 只看已开通购买的板块（个人设置 → 购买权限）。默认开——选股页是拿来选
+    # 能买的票的；关掉是为了纯研究（比如看科创板今天有没有机会）。
+    only_allowed: bool = True
     # 内联 spec：编辑器里未保存的策略、AI 解析结果都从这里进来
     spec: dict | None = None
 
@@ -95,6 +101,7 @@ class SelectRequest(BaseModel):
 class QueryRequest(BaseModel):
     text: str = Field(min_length=1, max_length=120)
     top_n: int | None = Field(default=None, ge=1, le=40)
+    only_allowed: bool = True
 
 
 class StrategyPayload(BaseModel):
@@ -105,7 +112,7 @@ class StrategyPayload(BaseModel):
     weights: dict[str, float] = Field(default_factory=dict)
     filters: list[dict] = Field(default_factory=list)
     sort: SortSpec | None = None
-    top_n: int = Field(default=10, ge=1, le=40)
+    top_n: int = Field(default=3, ge=1, le=40)
     max_per_industry: int = Field(default=2, ge=1, le=20)
     exclude_st: bool = True
 

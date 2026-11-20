@@ -332,6 +332,10 @@ onMounted(async () => {
                 : `全池打分取前 ${source.top_n}` }}
             </template>
             <template v-else>信号 T 日收盘生成，最早 T+1 开盘可执行</template>
+            <!-- 候选池按购买权限过滤：不写出来，用户会以为是选股变少了 -->
+            <span v-if="source?.board_filter?.applied" class="chip">
+              仅 {{ source.board_filter.allowed.join(' / ') }}
+            </span>
           </span>
         </div>
         <div class="head-tools">

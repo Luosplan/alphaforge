@@ -171,10 +171,11 @@ TRIM_PNL_PCT = 12.0
 # 兜底这一层不能省——`multifactor` 在策略精简时就被删掉了，而这里原本
 # `STRATEGY_MAP.get("multifactor")` 恒为 None，于是落到一个没有 weights
 # 的空壳 spec，走「纯条件筛选」分支，排序时撞上 None 直接 500。
-PLAN_FALLBACK: tuple[str, ...] = ("squeeze", "pullback", "trend")
+PLAN_FALLBACK: tuple[str, ...] = ("squeeze", "sector", "trend")
 
 
-def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int = 6) -> dict:
+def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int = 3,
+                    boards: dict | None = None) -> dict:
     """计划卡的候选池来自选股引擎，而不是代码里写死的名单。
 
     选股结果本身已经是「因子打分 + 行业分散 + ST 过滤」的产物，拿它当输入，
@@ -184,36 +185,41 @@ def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int =
     没指定策略时按 `PLAN_FALLBACK` 依次试，第一个凑出候选的就用：
     缩量蓄势在普跌日可能一只都选不出，此时若直接返回空，首屏计划卡整片空白，
     用户会以为功能坏了。
+
+    `boards` 传购买权限：计划卡是**要下单的东西**，所以这里不做「先选出来再标灰」，
+    不可买的板块直接不进候选——否则 Top-N 名额被科创板占掉，用户真正能买的
+    那只反而排不进来。
     """
     from .selector import STRATEGY_MAP, execute
 
     if spec:
-        return execute(engine, spec, top_n=top_n)
+        return execute(engine, spec, top_n=top_n, boards=boards)
 
     last: dict | None = None
     for sid in PLAN_FALLBACK:
         base = STRATEGY_MAP.get(sid)
         if not base:
             continue
-        got = execute(engine, base, top_n=top_n)
+        got = execute(engine, base, top_n=top_n, boards=boards)
         last = got
         if got.get("items"):
             return got
     # 三条策略都选不出票（极端普跌或因子表未就绪）：把最后一次结果返回，
     # 它的 notice / rank_hint 会说清为什么空，比抛异常或返回 None 有用。
-    return last or execute(engine, {"id": "plan", "name": "今日计划"}, top_n=top_n)
+    return last or execute(engine, {"id": "plan", "name": "今日计划"},
+                           top_n=top_n, boards=boards)
 
 
 def active_plans(engine: MarketEngine, nav: float = 1_000_000,
                  holdings: list[dict] | None = None, spec: dict | None = None,
-                 top_n: int = 6) -> dict:
+                 top_n: int = 3, boards: dict | None = None) -> dict:
     """当日计划卡：候选取自选股 Top-N，动作由持仓状态推导。
 
     返回 `{"items": [...], "source": {...}}`。source 记录「这批卡是从哪个策略、
     多大的股票池、多少只匹配里选出来的」，前端据此把来源写在标题边上——
     只说「今日计划卡」而不交代来源，用户没法判断它该不该信。
     """
-    selection = plan_candidates(engine, spec, top_n)
+    selection = plan_candidates(engine, spec, top_n, boards=boards)
     held = {h["code"]: h for h in (holdings or [])}
 
     plans: list[dict] = []
@@ -255,5 +261,8 @@ def active_plans(engine: MarketEngine, nav: float = 1_000_000,
             "matched_count": selection.get("matched_count"),
             "top_n": top_n,
             "notice": selection.get("notice"),
+            # 这批卡是在哪个权限范围内选出来的：不写清的话，用户没法解释
+            # 「为什么今天只有 3 只」——是他的权限砍掉了另外一半
+            "board_filter": selection.get("board_filter"),
         },
     }

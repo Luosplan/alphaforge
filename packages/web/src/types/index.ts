@@ -186,6 +186,8 @@ export interface PlanSource {
   matched_count: number
   top_n: number
   notice?: string | null
+  /** 这批计划卡是在哪个购买权限范围内选出来的 */
+  board_filter?: BoardFilter
 }
 
 /** 已移除的计划卡快照（不存点位，恢复时重算） */
@@ -623,7 +625,16 @@ export interface SelectResult {
   max_per_industry: number
   exclude_st: boolean
   rank_hint: string
+  /** 选股池的购买权限口径：applied=false 表示这次没按权限过滤（纯研究） */
+  board_filter?: BoardFilter
   parsed?: AiParse
+}
+
+/** 购买权限对候选池的影响：allowed 是已开通板块名，blocked 是被挡掉的只数 */
+export interface BoardFilter {
+  applied: boolean
+  allowed: string[]
+  blocked: number
 }
 
 export type Strategy = StrategySpec
@@ -912,10 +923,14 @@ export interface LabPlanCard extends PlanCard {
   live_price?: number | null
   /** 现价距止损上沿的百分比（负数为下方空间），逐票变化，是这张卡的风险成本 */
   stop_distance_pct?: number | null
-  /** 这张卡到底有没有真的挂出委托：待明日开盘成交 / 已持有 / 仅备选 */
+  /** 这张卡到底有没有真的挂出委托：待明日开盘成交 / 加仓 / 减仓 / 已持有 / 仅备选 */
   order_state?: string
   /** 与 order_state 配套的配色：brand 表示真挂了单，flat 表示没挂 */
   order_tone?: string
+  /** 挂单动作：ENTRY 建仓 / ADD 加仓 / TRIM 减仓。只有 ENTRY·ADD·TRIM 才是真委托 */
+  order_kind?: string
+  /** 这张委托的股数。加仓/减仓是**增量**，不等于 sizing.shares（那是总计划仓位） */
+  order_shares?: number
   strategy_generation?: number
 }
 
@@ -1260,6 +1275,58 @@ export interface ReviewDoc {
   }
   market: Record<string, number>
   account: Record<string, number>
+  /** 计划 vs 实际：昨天挂的单今天成交了几张、滑点多少、没成交为什么 */
+  plan?: ReviewPlanStats | null
+}
+
+/** 复盘里「计划执行」那一段的统计。只统计，不回写策略参数 */
+export interface ReviewPlanStats {
+  date: string
+  order_count: number
+  filled_count: number
+  /** 执行率（%）。当天没有挂单时为 null，不是 0 */
+  fill_rate: number | null
+  /** 平均**不利**滑点（bp）：买单成交价高于委托价、卖单低于委托价为正 */
+  avg_adverse_bps: number | null
+  kinds: Array<{ kind: string; label: string; orders: number; filled: number }>
+  rows: Array<{
+    code: string
+    name: string
+    kind: string
+    kind_label: string
+    plan_price: number | null
+    fill_price: number | null
+    shares: number
+    adverse_bps: number | null
+    status: string
+    reason: string
+    strategy_id?: string
+    strategy_name?: string
+  }>
+  missed: Array<{
+    code: string
+    name: string
+    kind_label: string
+    reason: string
+    strategy_name?: string
+  }>
+  /** 今日了结的交易按退出原因归堆：哪种动作真的在赚钱 */
+  by_exit: Array<{
+    reason: string
+    count: number
+    win_rate: number
+    pnl: number
+    avg_pnl_pct: number
+  }>
+  by_strategy: Array<{
+    strategy_id: string
+    strategy_name: string
+    orders: number
+    filled: number
+    fill_rate: number | null
+    trades: number
+    realized_pnl: number
+  }>
 }
 
 /** 模型接入状态。`last_error` 是「配了 key 但调不通」的唯一线索 */
@@ -1301,5 +1368,28 @@ export interface AutopilotState {
     error?: string
   } | null
   history: Array<{ at: string; mood: string; summary: string; source: string }>
+  /** 每日「计划 vs 实际」的对账，留最近 60 天 */
+  plan_history?: Array<{
+    date: string
+    order_count: number
+    filled_count: number
+    fill_rate: number | null
+    avg_adverse_bps: number | null
+  }>
+  /** 滚成一体的执行质量，进化采纳参数前会读它（一票否决） */
+  plan_health?: PlanHealth | null
   error: string | null
+}
+
+/** 模拟盘执行质量：成交率与实现滑点，只在有挂单的交易日上统计 */
+export interface PlanHealth {
+  days: number
+  orders: number
+  filled: number
+  fill_rate: number | null
+  avg_adverse_bps: number | null
+  from: string | null
+  to: string | null
+  label: string
+  tone: string
 }

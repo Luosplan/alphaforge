@@ -26,7 +26,9 @@ def overview(request: Request, days: int = 90):
     bench_base = bench[0]["value"] if bench else 1
 
     # 计划卡与信号页共用同一套生成逻辑：候选来自选股结果，已移除的不再出现
-    board = active_plans(engine, nav=nav, holdings=pf["holdings"])
+    # boards：首页这几张卡就是「今天要动手的票」，必须只出能买的板块
+    board = active_plans(engine, nav=nav, holdings=pf["holdings"],
+                         boards=store().profile()["boards"])
     hidden = {r["plan_id"] for r in store().dismissed_plans()}
     plans = [p for p in board["items"] if p["plan_id"] not in hidden]
     pending = [p for p in plans if p["status"] == "PENDING"]
