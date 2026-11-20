@@ -96,6 +96,8 @@ def empty_account(strategy_id: str, name: str, spec: dict,
     # 弱市做不做是**策略的性质**，不在 DEFAULTS 里（它不该被当成全局默认值，
     # 更不该进遗传搜索）。缺省 False = 停手，宁可保守。
     base["weak_participate"] = bool(spec.get("weak_participate", False))
+    # 开盘跳空闸同理：抓动量的策略不该被高开拦下，缺省开。
+    base["gap_gate"] = bool(spec.get("gap_gate", True))
     for key in PARAM_KEYS:
         value = spec.get(key)
         if value is not None:
@@ -219,11 +221,16 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
 
 def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tuple[dict, dict]:
     params = {**DEFAULTS, **(account.get("params") or {})}
-    # `weak_participate` 是 v10 新加的策略性质，老账户落盘的 params 里没有。
-    # 不补的话，老账户会一直按「弱市停手」跑，而新口径里「板块联动首日」本该
-    # 继续打抱团——同一条策略，新建的账户和升级前建的账户行为不一样。
-    if "weak_participate" not in (account.get("params") or {}):
-        params["weak_participate"] = bool((account.get("spec") or {}).get("weak_participate"))
+    # `weak_participate` / `gap_gate` 是 v10 新加的策略性质，老账户落盘的
+    # params 里没有。不补的话，老账户会一直按「弱市停手 + 跳空闸开到最紧」跑，
+    # 而同一条策略新建的账户行为不一样——同一个页面上并排两个数，谁也不知道
+    # 差在哪。
+    saved = account.get("params") or {}
+    spec_raw = account.get("spec") or {}
+    if "weak_participate" not in saved:
+        params["weak_participate"] = bool(spec_raw.get("weak_participate"))
+    if "gap_gate" not in saved:
+        params["gap_gate"] = bool(spec_raw.get("gap_gate", True))
     positions = [dict(p) for p in account.get("positions") or []]
     trades = list(account.get("trades") or [])
     cash = float(account.get("cash") or 0.0)
@@ -253,6 +260,11 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         log.append(f"卖出 {pos['code']} {shares} 股 @{price:.2f}（{reason}）")
 
     # ---- 1. 盘中：止损 / 分档止盈 / 时间止损（止损优先，按坏的算）
+    #
+    # 这一步跑在「撮合」之前，所以天然满足 T+1：这里遍历的是**昨天及更早**
+    # 建立的仓位，今天开盘才建的仓要到第 2 步才进 `positions`，今天就碰不到。
+    # 顺序不能为了「先买后判」好看而对调——对调之后，早上买进、下午打穿止损
+    # 离场这种实盘挂不出卖单的事就会在模拟盘里成立（回测踩过，v11 已修）。
     for pos in list(positions):
         bar, prev = feed.bar(pos["code"], date_s)
         if not bar:
@@ -341,14 +353,16 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         # 昨天收盘做的计划，到今天开盘可能已经不成立了：
         #   高开太多 → 情绪已经透支，追进去就是给别人抬轿；
         #   低开太多 → 跳空破位，说明昨天的信号已被证伪。
-        # 和回测 `_buy_block` 同一组常量，两边不会各说各话。
-        gap_pct = (o / prev_close - 1) * 100 if prev_close > 0 else 0.0
-        if gap_pct > GAP_MAX_PCT:
-            log.append(f"跳过 {code}：高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
-            continue
-        if gap_pct < GAP_MIN_PCT:
-            log.append(f"跳过 {code}：低开 {gap_pct:.1f}%，跳空破位（信号已证伪）")
-            continue
+        # `gap_gate=False` 的策略（趋势波段）跳过这一段：它赚的是动量延续，
+        # 高开就是确认。和回测 `_buy_block` 同一组常量，两边不会各说各话。
+        if params.get("gap_gate", True):
+            gap_pct = (o / prev_close - 1) * 100 if prev_close > 0 else 0.0
+            if gap_pct > GAP_MAX_PCT:
+                log.append(f"跳过 {code}：高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
+                continue
+            if gap_pct < GAP_MIN_PCT:
+                log.append(f"跳过 {code}：低开 {gap_pct:.1f}%，跳空破位（信号已证伪）")
+                continue
         if kind == "ADD":
             pos = pos_by_code.get(code)
             if not pos:
@@ -473,7 +487,8 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         # 只放在局部 `params` 里的话，`regime_state` 读账户落盘的 params
         # 永远是 None，页面上会一直显示「弱势停手」——而账户其实在挂单。
         "params": {**(account.get("params") or {}),
-                   "weak_participate": bool(params.get("weak_participate"))},
+                   "weak_participate": bool(params.get("weak_participate")),
+                   "gap_gate": bool(params.get("gap_gate", True))},
         "cash": round(cash, 2),
         "positions": positions,
         "orders": new_orders,

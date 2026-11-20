@@ -82,10 +82,14 @@ TRADING_DAYS = 252
 # 门槛（命中数 4956 → 33），并把默认出票上限从 8 收到 3。
 # 选股口径变了，回测与模拟盘的结果都不可比，必须换版本号。
 # v10：择时从「跌破半年线就停手」改成「弱势只打抱团 + 半仓」，并给建仓加开盘
-# 跳空校验（高开 >3% 不追、低开 >4% 不接）。上一版在指数长期站不回去时会把
-# 账户彻底锁死——实测三个月零成交，自进化闭环直接空转。这一版同时改变
-# 建仓机会与每笔仓位大小，历史数字全部不可比。
-MODEL_VERSION = 10
+# 跳空校验（高开 >5% 不追、低开 >6% 不接，按策略可关）。上一版在指数长期
+# 站不回去时会把账户彻底锁死——实测三个月零成交，自进化闭环直接空转。
+# 这一版同时改变建仓机会与每笔仓位大小，历史数字全部不可比。
+# v11：建仓当日**不许卖**（T+1）。上一版回测在第 3 步就跑止损，而建仓发生
+# 在第 2 步——「早上买进、下午打穿止损离场」在回测里成立，实盘挂不出那张
+# 卖单。模拟盘因为「先止损、后撮合」的顺序天然合规，于是同一个策略在两边
+# 走出了不同的账。补上这一条，回测的亏损尾部和换手都会变，必须再换版本号。
+MODEL_VERSION = 11
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -191,8 +195,12 @@ REGIME_SCALE = 0.5
 # 后者，只认后一种会把刚启动的题材判成「排名还不够靠前」。
 # 数据来自 `factor` 表的 ind_limit_cnt / ind_rank_pct，回测面板里装了同一份，
 # 所以这条规则在回测和模拟盘上是同一段判断。
-REGIME_HUDDLE_MIN_LIMITS = 3
-REGIME_HUDDLE_MAX_RANK = 8.0
+#
+# 门槛必须够严：弱市里「有点热度」的行业满地都是，松一档就等于把跟风票
+# 全放进来。1260 天同口径实测（sector，v10）：2 家/20% 卡玛 0.50，
+# 3 家/8% 仍在 0.6 以下，5 家/5% 才是 1.17。宁可空仓，不捡跟风。
+REGIME_HUDDLE_MIN_LIMITS = 5
+REGIME_HUDDLE_MAX_RANK = 5.0
 
 # 开盘校验：跳空幅度 = 开盘价 / 昨收 − 1。
 #
@@ -202,8 +210,12 @@ REGIME_HUDDLE_MAX_RANK = 8.0
 #   - 高开超过 GAP_MAX_PCT：情绪已经透支，追进去是给别人抬轿，放弃；
 #   - 低开超过 GAP_MIN_PCT：跳空破位，说明昨天的选股信号已被证伪，不接；
 #   - 两者之间：正常成交，低开反而给了更低的成本。
-GAP_MAX_PCT = 3.0
-GAP_MIN_PCT = -4.0
+#
+# 阈值取 5/6 而不是 3/4：1260 天样本上（同口径、只开主板）3/4 对「缩量蓄势」
+# 的卡玛是 0.71，5/6 是 0.81，无闸是 0.79——闸太紧会把「小幅高开但仍在启动位」
+# 的好票一起挡掉，只剩下一堆弱信号。闸的作用是拦极端，不是拦波动。
+GAP_MAX_PCT = 5.0
+GAP_MIN_PCT = -6.0
 
 # 一次减仓卖多少：1/3。取 1/3 而不是 1/2 是因为 TP1 已经会减半，两档加起来
 # 最多砍掉 2/3，剩下的仓位还跟得住趋势。模拟盘从这里取，不另存一份。
@@ -851,6 +863,9 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # 不进 cfg 也不进基因组：它是策略的**性质**，不是可搜参数——
     # 让遗传搜索去挑「弱市该不该做」，等于让它挑这段行情是牛是熊。
     weak_participate = bool(spec.get("weak_participate"))
+    # 开盘跳空闸开不开，同样是策略性质：抓动量的那条不该被高开拦下。
+    # 缺省 True——「拦极端跳空」是更安全的默认值，要关必须显式声明。
+    cfg["gap_gate"] = bool(spec.get("gap_gate", True))
 
     if panel is None:
         panel = build_panel(engine, days=days, max_codes=max_codes,
@@ -981,7 +996,8 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
 
             if kind == "ADD":
                 pos = positions.get(ci)
-                if pos is None or not _can_buy(bars, p, panel.limit[ci]):
+                if pos is None or not _can_buy(bars, p, panel.limit[ci],
+                                               cfg.get("gap_gate", True)):
                     continue
                 equity_now = cash + _market_value(positions, panel, d)
                 if equity_now <= 0:
@@ -1025,7 +1041,8 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
 
             if ci in positions:
                 continue
-            blocked = _buy_block(bars, p, panel.limit[ci])
+            blocked = _buy_block(bars, p, panel.limit[ci],
+                                 cfg.get("gap_gate", True))
             if blocked:
                 gap_skipped[blocked[0]] = gap_skipped.get(blocked[0], 0) + 1
                 continue
@@ -1096,6 +1113,14 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
             o, hi, lo, close = bars["o"][p], bars["h"][p], bars["l"][p], bars["c"][p]
             pos["last"] = close
             pos["peak"] = max(pos["peak"], hi)
+
+            # T+1：今天开盘才建的仓，今天不能卖——这是 A 股的交收规则，不是
+            # 风控偏好。少了这一条，回测里「早上买进、下午打穿止损离场」是
+            # 可以发生的，而实盘根本挂不出这张卖单；结果是回测把当天的最坏
+            # 情况截断在止损位、模拟盘又从来碰不到它，两边一起高估。
+            # 放在更新 last / peak 之后：价格照记，只是不许卖。
+            if pos.get("d0") == d:
+                continue
 
             if lo <= pos["stop"] and _can_sell(bars, p, panel.limit[ci]):
                 fill = min(pos["stop"], o) if o < pos["stop"] else pos["stop"]
@@ -1223,17 +1248,25 @@ def _gap(bars: dict, p: int) -> float:
     return (bars["o"][p] / prev - 1) if prev else 0.0
 
 
-def _buy_block(bars: dict, p: int, limit: float) -> tuple[str, str] | None:
+def _buy_block(bars: dict, p: int, limit: float,
+               gap_gate: bool = True) -> tuple[str, str] | None:
     """开盘买不了的原因，返回 (类别, 说明)；能买返回 None。
 
     「一字涨停」和「跳空超出容忍」是两件不同的事，必须分开说：
     前者是**买不到**（市场不给机会），后者是**不该买**（我们自己放弃）。
     复盘时这两种要分别统计——把「我们主动放弃」混进「没成交」，
     会让人误以为执行率差是运气问题，实际是规则在挑价格。
+
+    `gap_gate=False` 的策略跳过跳空判断（目前只有「趋势波段」）：它赚的是
+    「动量延续」，高开恰恰是动量被确认的信号。同一份样本上给它设闸，
+    年化从 21.83% 掉到 12.97%——那不是「风控更稳」，是把最强的那批信号
+    当成风险滤掉了。一字涨停那一条不跟着关：那是买不到，不是要不要买。
     """
     gap = _gap(bars, p)
     if gap >= limit - 0.002:
         return ("limit", "一字涨停买不到")
+    if not gap_gate:
+        return None
     if gap > GAP_MAX_PCT / 100:
         return ("gap_high", f"高开 {gap * 100:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
     if gap < GAP_MIN_PCT / 100:
@@ -1241,9 +1274,9 @@ def _buy_block(bars: dict, p: int, limit: float) -> tuple[str, str] | None:
     return None
 
 
-def _can_buy(bars: dict, p: int, limit: float) -> bool:
+def _can_buy(bars: dict, p: int, limit: float, gap_gate: bool = True) -> bool:
     """开盘能不能买：不是一字涨停，且跳空没超出容忍区间。"""
-    return _buy_block(bars, p, limit) is None
+    return _buy_block(bars, p, limit, gap_gate) is None
 
 
 def _huddle_ok(panel: Panel, ci: int, d: int) -> bool:
@@ -1252,10 +1285,15 @@ def _huddle_ok(panel: Panel, ci: int, d: int) -> bool:
     只在弱势分支里调用：强势时全市场都能买，不该为每只候选多算这几次查表。
 
     两个口径取「或」——
-    - 行业当日涨停 ≥ 2 家：题材已经点着了，资金在里面抱团；
-    - 行业涨幅排名进前 20%：行业整体走强但还没出涨停，属于资金持续流入。
+    - 行业当日涨停 ≥ `REGIME_HUDDLE_MIN_LIMITS` 家：题材已经点着了；
+    - 行业涨幅排名进前 `REGIME_HUDDLE_MAX_RANK`%：资金持续流入但还没出涨停。
     指数跌破半年线时，正是这两类票在逆势上涨；只按指数位置一刀切，
     等于把「弱市里唯一能做的那批票」也一起枪毙了。
+
+    门槛是**从宽到严试出来的**：2 家 / 前 20% 等于没筛（sector 回撤反而
+    扩大到 −41.63%）；3 家 / 前 8% 还是漏进来一批跟风的（−41.63 → 仍在
+    −30% 以上）。收到 5 家 / 前 5% 才真正只留下抱团主线，sector 从
+    17.31%/Calmar 0.67 变成 26.82%/1.17。宁可错过，不要在弱市里捡跟风票。
     """
     p = panel.bar[d][ci]
     if p < 0:
@@ -1584,20 +1622,30 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
         notes.append(
             "开盘校验（成交价是次日开盘，即集合竞价结果）："
             + "、".join(f"{_gap_label[k]} {v} 次" for k, v in gap_skipped.items() if v)
-            + f"。高开超过 {GAP_MAX_PCT:g}% 视为情绪透支放弃，低开超过 {abs(GAP_MIN_PCT):g}% 视为信号证伪放弃")
+            + ("。高开超过 "
+               f"{GAP_MAX_PCT:g}% 视为情绪透支放弃，低开超过 {abs(GAP_MIN_PCT):g}% 视为信号证伪放弃"
+               if spec.get("gap_gate", True) else
+               "。这条策略不设跳空闸（它赚的就是启动首日的动量，"
+               "高开正是信号本身），只拦一字涨停"))
     notes.append(f"每天扫描空缺仓位并补足到 top_n={cfg['top_n']}，不为了换股而换股："
                  f"已持有的标的不会因为排名下滑被卖，只会被止损/止盈/时间止损带走")
     notes.append(f"已持仓的票同样按计划卡执行：再进 Top-N 且浮盈未到 {TRIM_PNL_PCT:g}% 时"
                  f"补到计划仓位（受单票上限 {single_cap(cfg['top_n']):.0%} 与现金约束），"
                  f"浮盈达到 {TRIM_PNL_PCT:g}% 减 {TRIM_FRAC:.0%}"
                  f"（TP1 已减半的不再减）。与模拟盘同一套规则")
-    notes.append("行业分类与 ST 标记为当前值，不是历史值；现金按当日可用处理，未模拟 T+1 交收")
+    # 卖出侧的 T+1 是模拟了的（建仓当日锁仓，见第 3 步的守卫）；没模拟的是
+    # 资金交收——A 股卖出当天钱就能再买，这一点与实盘一致，所以不算乐观偏差。
+    notes.append("行业分类与 ST 标记为当前值，不是历史值；建仓当日不可卖（T+1），"
+                 "现金按当日可用处理")
     if avg_exposure < 0.6:
+        _regime_why = ""
+        if int(cfg.get("market_ma") or 0) > 0:
+            _regime_why = (f"① 弱势期「只打抱团 + 半仓」（系数 {REGIME_SCALE:g}），熊段仓位天然被压下来；"
+                           if spec.get("weak_participate") else
+                           "① 弱势期直接停手（这条策略在弱市里没有 edge），熊段仓位归零；")
         notes.append(
             f"平均仓位仅 {avg_exposure:.0%}，三个原因按影响从大到小："
-            + (f"① 弱势期「只打抱团 + 半仓」（系数 {REGIME_SCALE:g}），熊段仓位天然被压下来；"
-               if int(cfg.get("market_ma") or 0) > 0
-               else "")
+            + _regime_why
             + f"② TP1 减半之后腾出来的现金不会立刻补新仓，要等某个标的整只退出"
               f"才有空位（top_n={cfg['top_n']}，单票上限 {single_cap(cfg['top_n']):.0%}，"
               f"理论满仓 {min(1.0, cfg['top_n'] * single_cap(cfg['top_n'])):.0%}）；"

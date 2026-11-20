@@ -39,6 +39,10 @@ TICK_SECONDS = 30          # 巡检间隔
 INTRADAY_SECONDS = 300     # 盘中分析间隔（用户选的是 5 分钟）
 EOD_HOUR, EOD_MINUTE = 15, 5
 
+# 收盘任务同一天最多自动重试几次。失败多半是数据源抖动，重试一两次就能过；
+# 真有更严重的问题（源改版、库锁死）时反复重试只会把后台线程占满。
+EOD_MAX_RETRY = 3
+
 # 盘中时段（含端点）。A 股 11:30–13:00 休市，这一段不跑。
 SESSIONS = [((9, 30), (11, 30)), ((13, 0), (15, 0))]
 
@@ -61,6 +65,10 @@ def _default_state() -> dict:
         # 而「复盘日记」页要看的是连续几十天怎么想、怎么改。
         "reviews": [],
         "eod": None,                # 最近一次收盘任务的结果
+        # 收盘任务今天连续失败了几次。不设上限的后果是实测过的：新浪快照接口
+        # 偶发 connection refused，巡检每 30 秒重来一遍、每遍跑几分钟，
+        # 整个后台线程被占满，盘中分析也跟着停摆，页面上「收盘任务」转圈不停。
+        "eod_retry": {"date": None, "count": 0},
         "history": [],              # 盘中分析留最近 60 条
         # 每日「计划 vs 实际」的执行质量，留最近 60 天。它不只是给人看的：
         # 进化采纳参数前要读它（`harness.paper_verdict`）——回测假设的三件事
@@ -205,6 +213,11 @@ class Autopilot:
             old = base["review"]
             if old.get("as_of"):
                 base["reviews"] = [old]
+        # `running` 是「进程内正在干什么」，不是一个该被持久化的状态：
+        # 进程重启（开发时的 --reload 尤其常见）会把正在跑的收盘任务直接
+        # 打断，`finally` 来不及执行，于是 `running` 永远停在「收盘任务」，
+        # 页面上转圈转到用户来问。新进程刚起来时它一定是空的。
+        base["running"] = None
         return base
 
     def _save(self) -> None:
@@ -435,7 +448,15 @@ class Autopilot:
         try:
             mkt = get_market()
             syncer = Syncer(mkt.repo, workers=16)
-            steps.append({"step": "刷新快照", "rows": syncer.refresh_snapshot()})
+            # 快照只服务「盘中看当前价」，收盘链路真正要用的是日线。新浪这个
+            # 接口偶发 connection refused（实测 2026-11-20 15:07 那次就是），
+            # 它挂在最外层时一次抖动就能把推进、复盘、进化全炸掉——当天
+            # 复盘日记直接空一天，正是用户最先发现的那种「日报没了」。
+            try:
+                steps.append({"step": "刷新快照", "rows": syncer.refresh_snapshot()})
+            except Exception as exc:                     # noqa: BLE001
+                steps.append({"step": "刷新快照",
+                              "error": f"{type(exc).__name__}: {exc}"})
             # 收盘链路原来只跑「日线 + 因子」：资金流和指数都不更新，于是
             # ① 资金类因子用的是昨天的数；② 择时看的是昨天的沪深300 ——
             # 两个都会让「明天买什么」和「今天收盘的事实」对不上。
@@ -592,14 +613,30 @@ class Autopilot:
                 self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
                                      "date": today, "steps": steps, "evolved": evolved}
                 self.state["last_eod_date"] = today
+                self.state["eod_retry"] = {"date": None, "count": 0}
                 self.state["error"] = None
             self._save()
             return self.state["eod"]
         except Exception as exc:                         # noqa: BLE001
+            retry = dict(self.state.get("eod_retry") or {})
+            if retry.get("date") != today:
+                retry = {"date": today, "count": 0}
+            retry["count"] = int(retry.get("count") or 0) + 1
+            exhausted = retry["count"] >= EOD_MAX_RETRY
             with self._lock:
+                self.state["eod_retry"] = retry
                 self.state["error"] = f"{type(exc).__name__}: {exc}"
+                if exhausted:
+                    # 用尽自动重试后必须把 last_eod_date 补上，否则巡检会继续
+                    # 每 30 秒硬撞一次；同时留一句话告诉用户该怎么手动补。
+                    steps.append({
+                        "step": "自动重试已用尽",
+                        "reason": f"今天已连续失败 {retry['count']} 次，不再自动重试。"
+                                  "处理完数据源问题后，点页面上的「补跑收盘」手动跑一次"})
+                    self.state["last_eod_date"] = today
                 self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
                                      "date": today, "steps": steps,
+                                     "retry": retry["count"],
                                      "error": self.state["error"]}
             self._save()
             raise
@@ -612,6 +649,9 @@ class Autopilot:
         """清掉「今天已跑过收盘」的标记，用于手动补跑。"""
         with self._lock:
             self.state["last_eod_date"] = None
+            # 手动补跑是用户明确要求的，重试计数跟着清零，否则下一次
+            # 自动重试还没开始就已经被判成「用尽」。
+            self.state["eod_retry"] = {"date": None, "count": 0}
         self._save()
         return self.status()
 
