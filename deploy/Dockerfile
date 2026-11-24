@@ -10,15 +10,26 @@ RUN npm run build
 
 FROM python:3.12-slim AS runtime
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+# 时区必须显式设：自动驾驶按进程本地时间判断「15:05 之后跑收盘」，
+# 容器默认 UTC 会让它在北京时间 23:05 才跑，当天的委托要等第二天才撮合。
+ENV TZ=Asia/Shanghai \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app/packages/core:/app/packages/engine:/app/packages/api
+    PYTHONPATH=/app/packages/core:/app/packages/data:/app/packages/engine:/app/packages/api
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2,<3"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY packages/core ./packages/core
+COPY packages/data ./packages/data
 COPY packages/engine ./packages/engine
 COPY packages/api ./packages/api
 COPY --from=web /build/dist ./packages/web/dist

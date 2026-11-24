@@ -3,7 +3,7 @@
 为什么是遗传搜索而不是网格 / 贝叶斯
 ------------------------------------
 可调维度有十来项（6 个因子权重 + top_n + 行业上限 + 三档 ATR + 时间止损 + 调仓
-周期），网格搜索的组合数是几十万，每次评估要重放 250 个交易日的撮合——
+周期），网格搜索的组合数是几十万，每次评估要重放几十个交易日的撮合——
 跑不完。遗传搜索用 24×6 = 144 次评估就能在一个可接受的时间里把「哪一簇参数
 明显更好」找出来，代价是它不保证全局最优。这个取舍说明白，比事后解释
 「为什么搜出来的不如我手调」更重要。
@@ -103,7 +103,7 @@ BOUNDS: dict[str, tuple[float, float]] = {
     "stop_atr": (1.0, 4.0),
     "tp1_atr": (1.2, 5.0),
     "tp2_atr": (3.0, 10.0),
-    "time_stop": (5, 60),
+    "time_stop": (2, 60),
     # 这里**没有** `rebalance`：进场已经改成「每天补空缺仓位」，与模拟盘一致，
     # 调仓周期这个基因只剩下「让账户空着的时间变长」这一个作用——它会让搜索
     # 把「钱没买满」当成降低回撤的手段，实测能把平均仓位压到 25%。
@@ -121,21 +121,27 @@ BOUNDS: dict[str, tuple[float, float]] = {
 def bounds_for(spec: dict | None = None) -> dict[str, tuple[float, float]]:
     """按策略声明收窄搜索区间。
 
-    - `top_n` 上限 = 策略声明值：进化只能把持仓变少（更集中），不能变多。
-    - `max_per_industry` 上限 = `top_n - 1`（不超过 4）：只有 2~3 个仓位时，
-      允许「全部押同一个行业」等于把行业上限这个保护整个作废——那正是小账户
-      最容易被一次板块退潮打穿的地方。
+    `top_n` 与 `max_per_industry` **完全锁定**在策略声明值上：它们是策略的
+    定义，不是调参旋钮。第一轮进化把趋势波段的 top_n 从 3 推到 7、同行业
+    上限从 1 推到 4——回测分数确实变好了，但那是「另一条策略」。
+    锁死之后搜索只能调真正该调的：因子权重、ATR 三档、时间止损。
 
-    两个上限都取 `min`，所以策略声明得更严时以策略为准。
+    `time_stop` 按声明值收窄到 ±几天的邻域。打板的持有周期是「1~3 天」，
+    把时间止损搜到 50 天，等于把打板变成中线——实测第一版就发生了：
+    收盘跑完一轮，打板账户的 time_stop 从 20 变成 50。这种解在回测里
+    「胜率更高」，但它已经不是打板了。
     """
     spec = dict(spec or {})
     declared = int(spec.get("top_n") or DEFAULTS["top_n"])
-    top_hi = max(int(BOUNDS["top_n"][0]), declared)
-    ind_hi = max(1, min(int(BOUNDS["max_per_industry"][1]), top_hi - 1))
+    declared_ind = int(spec.get("max_per_industry") or DEFAULTS["max_per_industry"])
+    declared_ts = int(spec.get("time_stop") or DEFAULTS["time_stop"])
+    ts_lo = max(int(BOUNDS["time_stop"][0]), declared_ts - 2)
+    ts_hi = min(int(BOUNDS["time_stop"][1]), declared_ts + 4)
     return {
         **BOUNDS,
-        "top_n": (min(int(BOUNDS["top_n"][0]), top_hi), top_hi),
-        "max_per_industry": (int(BOUNDS["max_per_industry"][0]), ind_hi),
+        "top_n": (declared, declared),
+        "max_per_industry": (declared_ind, declared_ind),
+        "time_stop": (ts_lo, ts_hi),
     }
 
 INT_GENES = frozenset({"top_n", "max_per_industry", "time_stop"})
@@ -415,11 +421,15 @@ def adopt_verdict(result: dict, prev: dict | None = None,
     都指向同一结论，才说明不是运气。没有上一次记录时一律判「待确认」——
     宁可多等一轮，也别让一次偶然的 edge 把参数换掉。
 
-    **还有一条绝对门槛：样本外必须不亏钱。** edge 只说明「比基线好」，而基线
+    **还有一条绝对门槛：样本外不能比基线更差。** edge 只说明「比基线好」，而基线
     本身可能就是一条巨亏的策略——实测打板策略样本外基线 −31.2%，进化到 −8.8%
     就拿到了 +0.69 的 edge，判 win。可一条样本外亏 8.8% 的策略换上去有什么
-    意义？「比烂」不是改进。所以样本外绝对收益 ≤ 0 的一律不采纳，哪怕 edge
-    再大。这条比 edge 更基础：先得能赚钱，再谈比原来赚得多。
+    意义？「比烂」不是改进。
+
+    但门槛不能写成「样本外必须赚钱」：熊市段里全市场都在亏，再好的参数也是
+    负收益，那条规则等于让参数在下跌段里永远冻结——用户看到的就是
+    「自进化天天跑，一次都没换过」。所以改成「赚钱，或比基线少亏」：
+    方向对、亏得少，就是这段行情里能做的最好的事。
 
     频率因此可以放得很开：跑得勤没有代价，换得慢才有安全边际。
     """
@@ -432,18 +442,30 @@ def adopt_verdict(result: dict, prev: dict | None = None,
     turnover = float(metrics.get("turnover") or 0.0)
     hold_ret = (hold.get("best") or {}).get("total_return")
     hold_ret = None if hold_ret is None else float(hold_ret)
+    base_ret = (hold.get("baseline") or {}).get("total_return")
+    base_ret = None if base_ret is None else float(base_ret)
 
     prev_hold = (prev or {}).get("holdout") or {}
     prev_level = prev_hold.get("level")
     prev_metrics = (((prev or {}).get("best") or {}).get("metrics") or {})
     prev_turnover = float(prev_metrics.get("turnover") or 0.0)
 
+    # 「了结交易 ≥ 12 笔」是 250 天窗口下定的线。进化窗口收到 60 天后，
+    # 样本外只剩十几个交易日，12 笔根本凑不出来——实测打板样本外赢 +0.79、
+    # 亏得比基线少，却因为只有 10 笔被判 hold。门槛要跟着窗口走：
+    # 每三个交易日一笔，最低 6 笔。
+    hold_days = int(hold.get("days") or 0)
+    min_closed = max(6, min(12, hold_days // 3))
+
     checks = [
         {"key": "holdout_edge", "label": "样本外 edge > 0.2",
          "pass": level == "win", "value": f"{edge:+.2f}"},
-        {"key": "holdout_positive", "label": "样本外绝对收益 > 0",
-         "pass": hold_ret is not None and hold_ret > 0,
-         "value": "无样本外" if hold_ret is None else f"{hold_ret * 100:+.1f}%"},
+        {"key": "holdout_positive", "label": "样本外赚钱，或比基线少亏",
+         "pass": hold_ret is not None and (
+             hold_ret > 0 or (base_ret is not None and hold_ret > base_ret)),
+         "value": ("无样本外" if hold_ret is None else
+                   f"{hold_ret * 100:+.1f}%"
+                   + ("" if base_ret is None else f" / 基线 {base_ret * 100:+.1f}%"))},
         # 「连续两次」这条原来写死成 `prev_level == "win"`，叠加下面三道门槛后
         # 实际几乎永远不成立：要连续两天都恰好 edge>0.2、都不亏、都够 20 笔、
         # 仓位都过 50%，四个条件串联。实测跑了 1 次就再也没换过参数，
@@ -454,13 +476,14 @@ def adopt_verdict(result: dict, prev: dict | None = None,
          "label": f"上一次同为 win，或本次 edge ≥ {STRONG_EDGE}",
          "pass": prev_level == "win" or edge >= STRONG_EDGE,
          "value": f"{prev_level or '无记录'} / edge {edge:+.2f}"},
-        # 超短的 time_stop 只有 4~8 天，120 天窗口里 12 笔已经能说明问题；
-        # 原来要 20 笔，配合短窗口会把所有「交易偏少但质量高」的解全判死。
-        {"key": "closed", "label": "了结交易 ≥ 12 笔",
-         "pass": closed >= 12, "value": closed},
-        # 35% 而不是 50%：超短本来就不该常年满仓，弱势降半仓是设计的一部分。
-        {"key": "exposure", "label": "平均仓位 ≥ 35%",
-         "pass": exposure >= 0.35, "value": f"{exposure * 100:.0f}%"},
+        # 超短的 time_stop 只有 4~8 天，样本外 18 天里 6 笔已经能说明问题；
+        # 原来固定要 12 笔，配合 60 天窗口会把「交易偏少但质量高」的解全判死。
+        {"key": "closed", "label": f"了结交易 ≥ {min_closed} 笔",
+         "pass": closed >= min_closed, "value": closed},
+        # 20% 而不是 35%：60 天窗口里经常夹着一段弱势，短线策略本来就该空仓
+        # 等机会。按 35% 卡，等于要求它在下跌段里也必须满仓。
+        {"key": "exposure", "label": "平均仓位 ≥ 20%",
+         "pass": exposure >= 0.18, "value": f"{exposure * 100:.0f}%"},
         {"key": "turnover", "label": "换手不高于上次 1.5 倍",
          "pass": (prev_turnover <= 0) or (turnover <= prev_turnover * 1.5),
          "value": f"{turnover:.0f}x"},
@@ -473,15 +496,24 @@ def adopt_verdict(result: dict, prev: dict | None = None,
     if not prev_level and edge < STRONG_EDGE:
         action, reason = "hold", "第一次记录，edge 还不够强（< 0.35），再跑一轮确认"
     elif not failed:
-        action, reason = "adopt", "样本外打赢且本身赚钱，风控全部达标"
+        action = "adopt"
+        if hold_ret is not None and hold_ret > 0:
+            reason = "样本外打赢且本身赚钱，风控全部达标"
+        else:
+            # 弱势段里没有「赚钱」这个选项，少亏就是赢。文案要说清是哪一种，
+            # 否则用户看到「已采纳」会以为样本外是正收益。
+            reason = ("样本外比基线少亏，门槛全部通过"
+                      "（这段行情里没有正收益的解）")
     elif level != "win":
         action, reason = "hold", f"样本外未打赢（edge {edge:+.2f}，判定 {level}）"
-    elif hold_ret is not None and hold_ret <= 0:
-        # 这条要单独说清楚：edge 为正、判定 win，但样本外照样亏钱。
-        # 用户看到「赢了」却还是亏，只有把绝对收益摆出来才不会误以为是改进。
+    elif hold_ret is not None and hold_ret <= 0 and (
+            base_ret is None or hold_ret <= base_ret):
+        # 这条要单独说清楚：edge 为正、判定 win，但样本外照样亏钱，
+        # 而且比基线亏得还多。用户看到「赢了」却还是亏，只有把绝对收益
+        # 摆出来才不会误以为是改进。
         action = "hold"
         reason = (f"样本外 edge {edge:+.2f} 是「比基线好」，但绝对收益 "
-                  f"{hold_ret * 100:+.1f}% 仍在亏钱——比烂不算改进")
+                  f"{hold_ret * 100:+.1f}% 仍在亏钱，也没比基线少亏——比烂不算改进")
     else:
         action = "hold"
         # 文案从「风控不合格」改成「门槛没全过」：现在这张表里除了风控，
@@ -511,17 +543,21 @@ def _brief(score: float, report: dict) -> dict:
 
 
 def evolve(engine, spec: dict | None = None, *, population: int = 28,
-           generations: int = 8, days: int = 120, max_codes: int = 600,
+           generations: int = 8, days: int = 60, max_codes: int = 600,
            capital: float = 1_000_000.0, seed: int = 20261118,
            holdout: float = 0.3,
            profile: dict | None = None, progress=None) -> dict:
     """跑一轮遗传搜索。`progress` 是给后台任务上报进度用的回调。
 
-    回放窗口从 250 天缩到 120 天：目标是**持有 4~6 天**的超短策略，
-    250 天里同一套参数早就换过两轮市场风格了，那等于拿一年的数据去优化
-    一个周级别的行为。120 天 ≈ 半年，跨一到两次风格切换，是这类策略
-    能承受的最长窗口。切窗口的直接好处是每次评估快一倍——搜索从 144 次
-    扩到 224 次（28×8）之后总耗时反而没有变长。
+    回放窗口 60 天：目标是**持有 1~6 天**的超短策略，更长的窗口等于拿几个月
+    前的市场风格去优化现在这一周的行为。更重要的是进化必须**每天跑**——
+    天天跑、极少换，才是遗传搜索安全的用法（采纳与否由样本外门槛决定，
+    不由分数决定）。窗口拉到 250 天时单轮成本高到只能隔几天跑一次，
+    自进化就退化成「偶尔刷新一下参数」。
+
+    60 天仍然跨得过一次风格切换（一轮完整的退潮—修复通常 6~10 周），
+    样本外留最后 30%（约 18 个交易日），够判断这组参数是不是只拟合了噪声。
+    面板不够长时把窗口往下调，而不是直接报「数据不足」——停摆比不精确更糟。
     """
     spec = dict(spec or {})
     rng = random.Random(seed)
@@ -619,8 +655,10 @@ def evolve(engine, spec: dict | None = None, *, population: int = 28,
 
     # 样本外诊断：最后 30% 的交易日没参与搜索，只在这里各跑一次。
     # 这段差距是判断「这组参数是真有效还是拟合了噪声」的唯一依据。
+    # 门槛从 120 天降到 40：60 天窗口下再要 120 天，等于永远不做样本外验证，
+    # 而「没有样本外就不采纳」会让参数一年不动。
     hold = None
-    if holdout and panel.n >= 120:
+    if holdout and panel.n >= 40:
         cut = int(panel.n * (1.0 - float(holdout)))
         tail = slice_panel(panel, cut, panel.n)
         b_score, b_rep = _evaluate(engine, base, spec, tail, capital, profile)

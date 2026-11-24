@@ -160,9 +160,11 @@ class LabEvolveRequest(BaseModel):
     spec: dict | None = None
     population: int = Field(default=24, ge=6, le=64)
     generations: int = Field(default=6, ge=1, le=20)
-    # 进化比单次回测慢 N 倍（种群 × 代数），默认用 2 年；
-    # 但上限放开到 5 年，长周期验证时手动调大。
-    days: int = Field(default=500, ge=60, le=1260)
+    # 进化是「每天跑一轮」的东西，不是「攒够两年数据再跑一次」。
+    # 默认窗口 60 天（约三个月）：持有 1~6 天的超短策略在这个尺度上
+    # 才谈得上「当前市场风格」，再长就是拿几个季度前的行情调今天的参数。
+    # 上限仍放开到 5 年，做长周期对照时手动调大。
+    days: int = Field(default=60, ge=20, le=1260)
     capital: float = Field(default=1_000_000, gt=0, le=100_000_000)
     max_codes: int = Field(default=600, ge=100, le=1500)
     seed: int = Field(default=20261118, ge=0, le=2**31 - 1)

@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-WEB_DIST = ROOT / "packages" / "web" / "dist"
+# AF_ROOT / AF_WEB_DIST 由桌面壳注入：PyInstaller 的 onedir 产物里本文件位于
+# `_internal/alphaforge_api/`，`parents[3]` 会指到 exe 目录之外，`.env` 与前端
+# 产物一起找不到，服务起来就是一个只有 API 的空页面。
+ROOT = Path(os.environ.get("AF_ROOT") or Path(__file__).resolve().parents[3])
+WEB_DIST = Path(os.environ.get("AF_WEB_DIST") or (ROOT / "packages" / "web" / "dist"))
 API_PREFIX = "/api/v1"
 
 

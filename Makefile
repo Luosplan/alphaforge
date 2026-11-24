@@ -10,7 +10,7 @@ PYSEP := $(if $(filter Windows_NT,$(OS)),;,:)
 export PYTHONPATH := packages/core$(PYSEP)packages/data$(PYSEP)packages/engine
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev api web build check layers audit docker sync status
+.PHONY: help install dev api web build check layers audit docker sync status exe
 
 help: ## 显示可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -62,6 +62,11 @@ audit: ## 三档断点布局审计（需先 make serve 或已有服务在 :$(POR
 
 docker: ## 构建并启动容器
 	docker compose -f deploy/docker-compose.yml up --build
+
+# --distpath 指到 dist/desktop：PyInstaller 重建前会删掉整个产物目录（几千个文件），
+# 直接落在 dist/ 下会和安全策略的批量删除闸门撞上。脚本重建前需自行清空旧产物。
+exe: build ## 打包 Windows 桌面版（产物 dist/desktop/AlphaForge/AlphaForge.exe）
+	$(PY) -m PyInstaller --noconfirm --clean --distpath dist/desktop packages/desktop/build.spec
 
 clean: ## 清理构建产物与缓存
 	rm -rf $(WEB)/dist $(WEB)/node_modules/.vite

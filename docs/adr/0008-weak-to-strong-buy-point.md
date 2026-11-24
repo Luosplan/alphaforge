@@ -1,6 +1,6 @@
 # 0008 · 把短线买点收到「弱转强」
 
-- 状态：已采纳
+- 状态：已采纳（第 2、3 节把弱转强做成独立策略的部分被 [0009](0009-two-strategies-limit-up-and-swing.md) 取代）
 - 日期：2026-11-20
 - 影响：`selector.STRATEGIES` 新增 `w2s`；`conditions` 增加条件组；`factor` 表新增
   `failed_limit`；`backtest` / `paper` 增加「跳空区间带」与「未封板离场」；

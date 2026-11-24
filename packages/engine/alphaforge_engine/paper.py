@@ -104,6 +104,11 @@ def empty_account(strategy_id: str, name: str, spec: dict,
     base["gap_band"] = list(spec["gap_band"]) if spec.get("gap_band") else None
     base["need_limit_close"] = bool(spec.get("need_limit_close"))
     base["limit_close_frac"] = float(spec.get("limit_close_frac") or 1.0)
+    # 打板不加仓（见 `backtest.run_backtest` 里的同一条）。波段照常。
+    base["allow_add"] = bool(spec.get("allow_add", True))
+    # 弱市要不要再要求行业抱团。缺省 True（板块联动型策略的口径），
+    # 波段显式声明 False——它靠个股动量，不靠题材。
+    base["weak_huddle"] = bool(spec.get("weak_huddle", True))
     for key in PARAM_KEYS:
         value = spec.get(key)
         if value is not None:
@@ -235,7 +240,8 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     spec_raw = account.get("spec") or {}
     for key, default in (("weak_participate", False), ("gap_gate", True),
                          ("gap_band", None), ("need_limit_close", False),
-                         ("limit_close_frac", 1.0)):
+                         ("limit_close_frac", 1.0), ("allow_add", True),
+                         ("weak_huddle", True)):
         if key not in saved:
             value = spec_raw.get(key)
             params[key] = default if value is None else value
@@ -542,7 +548,9 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
                    "gap_gate": bool(params.get("gap_gate", True)),
                    "gap_band": params.get("gap_band"),
                    "need_limit_close": bool(params.get("need_limit_close")),
-                   "limit_close_frac": float(params.get("limit_close_frac") or 1.0)},
+                   "limit_close_frac": float(params.get("limit_close_frac") or 1.0),
+                   "allow_add": bool(params.get("allow_add", True)),
+                   "weak_huddle": bool(params.get("weak_huddle", True))},
         "cash": round(cash, 2),
         "positions": positions,
         "orders": new_orders,
@@ -561,7 +569,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
 
 
 def _held_action(plan: dict, pos: dict, nav: float,
-                 regime_scale: float) -> dict | None:
+                 regime_scale: float, allow_add: bool = True) -> dict | None:
     """已持仓的票，这张计划卡要不要动手——加仓、减仓，还是什么都不做。
 
     口径就是计划卡自己说的话，不另立一套规则：
@@ -586,7 +594,7 @@ def _held_action(plan: dict, pos: dict, nav: float,
             return {"kind": "TRIM", "state": ORDER_TRIM, "shares": qty,
                     "reason": f"计划减仓（浮盈 {pnl_pct:.1f}%）"}
 
-    if pnl_pct < TRIM_PNL_PCT and regime_scale > 0:
+    if pnl_pct < TRIM_PNL_PCT and regime_scale > 0 and allow_add:
         target = int((plan.get("sizing") or {}).get("shares") or 0)
         cap_shares = int(nav * RISK_LIMITS["max_single_weight"] / price / 100) * 100
         delta = min(target - shares, cap_shares - shares)
@@ -744,7 +752,8 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
         if code in held:
             pos = pos_by_code.get(code) or {}
-            act = _held_action(plan, pos, nav, regime_scale)
+            act = _held_action(plan, pos, nav, regime_scale,
+                               allow_add=bool(params.get("allow_add", True)))
             if not act:
                 plan["order_state"] = ORDER_HELD
                 plan["order_tone"] = "flat"
@@ -773,7 +782,8 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         # 行业当日涨停 ≥ N 家、或涨幅排名进前 M% 才建仓。
         # 判断口径与回测 `_huddle_ok` 同一组常量，回测调阈值这里自动跟着变。
         # 因子缺行（次新 / 停牌复牌）当「不抱团」：弱市里宁可错过。
-        if regime_scale < 1.0:
+        # `weak_huddle=False` 的策略（波段）跳过这一道，只留半仓。
+        if regime_scale < 1.0 and params.get("weak_huddle", True):
             huddle = item.get("huddle") or {}
             cnt = float(huddle.get("ind_limit_cnt") or 0)
             # `ind_rank_pct` 的 0 表示行业最强，不能用 `or 100` 兜底
@@ -881,7 +891,12 @@ def regime_state(engine, date_s: str, params: dict) -> dict:
     if ok:
         label = "可开新仓"
     elif params.get("weak_participate"):
-        label = f"弱势 · 只打抱团（{REGIME_SCALE:g} 成仓）"
+        # 两条「弱势参与」路线要分开说：打抱团的只有板块联动型策略，
+        # 波段是直接半仓买动量票（`weak_huddle=False`）。都写成「只打抱团」，
+        # 用户会以为波段也在按行业涨停筛，然后奇怪为什么它买的票行业没涨停。
+        label = (f"弱势 · 只打抱团（{REGIME_SCALE:g} 成仓）"
+                 if params.get("weak_huddle", True)
+                 else f"弱势 · 半仓参与（{REGIME_SCALE:g} 成仓）")
     else:
         label = "弱势停手 · 该策略在弱市无 edge"
     state.update({

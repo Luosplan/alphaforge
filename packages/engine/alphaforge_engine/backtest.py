@@ -92,7 +92,12 @@ TRADING_DAYS = 252
 # v12：新增「弱转强」买点（v11 及以前的策略集合里没有这一类），并给建仓加
 # 「跳空区间带」与「当日未封板次日离场」两条按策略生效的规则；`factor` 表
 # 新增 `failed_limit`（烂板）一列。选股口径变了，旧回测全部不可比。
-MODEL_VERSION = 12
+# v13：策略集收敛为「打板 + 波段」两条，弱转强不再是独立策略，而是打板的
+# 出手时机。打板改成从**今日涨停池**按连板数取前 3，不再用「昨日烂板/放量
+# 滞涨」定义买点——那是低吸的语义，不是打板。同时打板不再受大盘位置约束
+# （market_ma=0），出手沿用高开 1%~7% 区间与「当日不封板次日走」的纪律。
+# 选股池与撮合条件同时变，v12 及以前的存档与进化结论全部不可比。
+MODEL_VERSION = 13
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -883,6 +888,13 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # `limit_close_frac` 决定走多少：1.0 清仓，0.5 只走一半。
     cfg["need_limit_close"] = bool(spec.get("need_limit_close"))
     cfg["limit_close_frac"] = float(spec.get("limit_close_frac") or 1.0)
+    # 已持仓要不要加仓。打板不加：它的持仓只有「封住了继续拿 / 没封住次日走」
+    # 两种结局，中途往里加钱等于把一次确认过的下注改成两次没确认的下注。
+    # 波段照常加（信号还在就补到计划仓位）。
+    cfg["allow_add"] = bool(spec.get("allow_add", True))
+    # 弱市里要不要再要求「行业抱团」。板块联动型策略靠题材抱团成立，
+    # 波段靠个股中期动量——给它套抱团准入，弱市里会一只都选不出。
+    cfg["weak_huddle"] = bool(spec.get("weak_huddle", True))
 
     if panel is None:
         panel = build_panel(engine, days=days, max_codes=max_codes,
@@ -1246,7 +1258,8 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
                     continue
                 # 弱势只打抱团：行业里没有涨停潮、涨幅排名也不靠前的票，
                 # 在大盘跌破半年线期间不进候选。这不是「停手」，是「只做最硬的」。
-                if weak_on and not _huddle_ok(panel, ci, d):
+                # 声明了 `weak_huddle=False` 的策略跳过这一道，只留半仓。
+                if weak_on and cfg.get("weak_huddle", True) and not _huddle_ok(panel, ci, d):
                     weak_skipped += 1
                     continue
                 pending.append({"ci": ci, "score": score, "reason": "信号建仓",
@@ -1485,7 +1498,7 @@ def _held_action(panel: Panel, ci: int, pos: dict, d: int, nav: float,
             return {"kind": "TRIM", "shares": qty,
                     "reason": f"计划减仓（浮盈 {pnl_pct:.1f}%）"}
 
-    if pnl_pct < TRIM_PNL_PCT and scale > 0:
+    if pnl_pct < TRIM_PNL_PCT and scale > 0 and cfg.get("allow_add", True):
         top_n = max(1, int(cfg["top_n"]))
         weight = min(1.0 / top_n, single_cap(top_n))
         target = int(nav * weight / price / 100) * 100
@@ -1670,11 +1683,14 @@ def _report(panel: Panel, spec: dict, cfg: dict, weights: dict, dropped: list,
     # 实际是「弱势只做抱团 + 半仓」，两种情况的风险完全不同。
     ma_cfg = int(cfg.get("market_ma") or 0)
     if ma_cfg > 0 and spec.get("weak_participate"):
+        huddle = cfg.get("weak_huddle", True)
         notes.append(
-            f"择时：沪深300 在 {ma_cfg} 日线下方时**不停手**，改为「只打抱团 + 半仓」——"
-            f"候选所在行业当日涨停 ≥ {REGIME_HUDDLE_MIN_LIMITS} 家、或涨幅排名进前 "
-            f"{REGIME_HUDDLE_MAX_RANK:.0f}% 才建仓，预算乘 {REGIME_SCALE:g}。"
-            f"与模拟盘同一口径。"
+            f"择时：沪深300 在 {ma_cfg} 日线下方时**不停手**，改为"
+            + ("「只打抱团 + 半仓」——候选所在行业当日涨停 ≥ "
+               f"{REGIME_HUDDLE_MIN_LIMITS} 家、或涨幅排名进前 "
+               f"{REGIME_HUDDLE_MAX_RANK:.0f}% 才建仓，预算乘 {REGIME_SCALE:g}。"
+               if huddle else f"半仓（预算乘 {REGIME_SCALE:g}），不加行业抱团门槛。")
+            + "与模拟盘同一口径。"
             + (f"本期因此放弃 {weak_skipped} 个候选。" if weak_skipped else ""))
     elif ma_cfg > 0:
         notes.append(

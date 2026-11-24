@@ -167,11 +167,11 @@ TRIM_PNL_PCT = 12.0
 
 
 # 计划卡默认策略的尝试顺序：从信号最强的往下退。
-# 缩量蓄势最严（弱势行情可能当天一只都没有），强势回踩次之，趋势波段兜底。
+# 打板最严（没有涨停潮的日子可能一只都选不出），波段兜底。
 # 兜底这一层不能省——`multifactor` 在策略精简时就被删掉了，而这里原本
 # `STRATEGY_MAP.get("multifactor")` 恒为 None，于是落到一个没有 weights
 # 的空壳 spec，走「纯条件筛选」分支，排序时撞上 None 直接 500。
-PLAN_FALLBACK: tuple[str, ...] = ("squeeze", "sector", "trend")
+PLAN_FALLBACK: tuple[str, ...] = ("daban", "trend")
 
 
 def plan_candidates(engine: MarketEngine, spec: dict | None = None, top_n: int = 3,

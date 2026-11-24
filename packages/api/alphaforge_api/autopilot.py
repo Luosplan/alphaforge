@@ -11,8 +11,7 @@
 ----------------------------
 进化要吃「截至今天的完整日线」。收盘后数据一到就能跑，跑完的参数正好用来
 生成次日计划——顺序不能反，否则明天用的是用前天数据搜出来的参数。
-实测两条策略各 24×6=144 次评估、每次 250 天回放，总共约 60 秒，
-在这个时间点完全不必异步。
+窗口 60 天 × 24×6=144 次评估，两条策略几十秒内跑完，这个时间点完全不必异步。
 
 为什么每天进化不会把参数调坏
 ----------------------------
@@ -305,17 +304,25 @@ class Autopilot:
     # ---------------------------------------------------------------- 对象
     @staticmethod
     def _strategy_ids() -> list[str]:
-        """盯盘/推进/进化的对象：**所有已开立的账户**。
+        """盯盘/推进/进化的对象：**当前策略集里的账户**。
 
         之前写死 `("trend", "limitup")`（两条都已删除），新增的策略即使开了户也永远不会被
         盯盘、不会被推进、不会进化——用户看到的就是「新策略是死的」。
         改成读账户表之后，开一个账户就自动进入这条流水线。
+
+        还要再按当前策略集过一道：已删除策略（缩量蓄势 / 板块联动 / 弱转强）
+        的旧账户留在 lab.json 里，如果照样推进，页面上会多出三个永远不动的
+        账户，进化也会把预算花在已经不存在的策略上。
         """
+        from alphaforge_engine.selector import STRATEGY_MAP
+
         try:
             from .lab_store import get_lab
-            return list((get_lab().state.get("accounts") or {}).keys())
+            ids = list((get_lab().state.get("accounts") or {}).keys())
         except Exception:                                # noqa: BLE001
-            return ["squeeze", "sector", "trend"]
+            ids = list(STRATEGY_MAP)
+        live = [sid for sid in ids if sid in STRATEGY_MAP]
+        return live or list(STRATEGY_MAP)
 
     # ---------------------------------------------------------------- 盘中
     def run_intraday(self) -> dict:

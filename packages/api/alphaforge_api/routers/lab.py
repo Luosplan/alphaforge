@@ -91,6 +91,15 @@ def _account(strategy: str, spec: dict, capital: float | None = None) -> dict:
             for key in paper.PARAM_KEYS:
                 if spec.get(key) is not None:
                     params[key] = spec[key]
+            # 买点属性也要跟着策略走。空账户没有历史包袱，但它落盘的那份
+            # params 是开户那天抄的；策略改了出手窗口（比如打板从「昨日烂板」
+            # 改成「今日涨停池 + 高开 1%~7%」），不同步就会出现「账户还在按
+            # 上一版规则挂单」——页面上看不出任何异常，成交价却对不上。
+            for key in ("gap_band", "gap_gate", "weak_participate",
+                        "need_limit_close", "limit_close_frac", "allow_add",
+                        "weak_huddle"):
+                if key in spec:
+                    params[key] = spec[key]
             acc["params"] = params
             # 参数被换回策略定义，那一次「已采纳」就不再适用
             acc["generation"] = 0
@@ -416,8 +425,11 @@ def run_evolve_blocking(strategy_id: str, *, apply: bool = True) -> dict:
                 "edge": None, "applied": False}
     try:
         spec = _spec_of(strategy_id)
+        # 收盘任务每天为每条策略跑一轮，所以窗口必须小：60 天 × 24×6 次评估
+        # 在收盘后几分钟内跑得完。以前这里是 250 天，一轮要几分钟，
+        # 两条策略串起来十几分钟，收盘任务经常撞上「自动重试用尽」。
         args = _begin_evolve(spec["id"], spec, population=24, generations=6,
-                             days=250, max_codes=600, capital=1_000_000,
+                             days=60, max_codes=600, capital=1_000_000,
                              seed=20261118, apply=apply)
         _run_evolve(args)
         res = _EVOLVE.get("result") or {}

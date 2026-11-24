@@ -67,10 +67,9 @@ const FACTOR_LABEL: Record<string, string> = {
 const stats = computed(() => overview.value?.stats)
 const strategies = computed<LabStrategyRow[]>(() => overview.value?.strategies ?? [])
 
-/* 择时状态。以前所有策略共用 120 日口径，取任意一条都行；v10 起「弱市做不做」
- * 按策略区分（板块联动打抱团、另两条停手），所以不能随便取第一条——
- * 优先展示「还在做」的那条：用户想知道的不是谁停手了，而是现在有没有在做。
- * 停手的条数放进 hint 里，不藏着。 */
+/* 择时状态。打板不设大盘闸（market_ma=0），波段跌破半年线就停手，所以不能
+ * 随便取第一条——优先展示「还在做」的那条：用户想知道的不是谁停手了，
+ * 而是现在有没有在做。停手的条数放进 hint 里，不藏着。 */
 const regime = computed(() => {
   const rows = strategies.value
     .map((s) => s.paper?.regime)
@@ -92,10 +91,9 @@ const regimeHint = computed(() => {
   const r = regime.value
   if (!r) return ''
   if (r.open_new) return '回测与模拟盘同一口径：正常开新仓，已持仓按止损 / 止盈走完'
-  return '弱势只打抱团：行业有涨停潮、或涨幅排名靠前才建仓，仓位减半；已持仓照常止损 / 止盈'
-    + (regimeStopped.value ? `。另有 ${regimeStopped.value} 条策略弱市停手（放开实测更差）` : '')
+  return '波段在弱势期停手（指数回到半年线上方自动恢复）；打板不设大盘闸，照常按今日涨停池出手'
+    + (regimeStopped.value ? `。当前有 ${regimeStopped.value} 条策略停手` : '')
 })
-
 const plans = computed<LabPlanCard[]>(() => {
   const all = overview.value?.plans ?? []
   if (planFilter.value === 'ALL') return all
@@ -887,7 +885,7 @@ onBeforeUnmount(stopPoll)
       </div>
       <div v-if="plans.length" class="p-legend">
         <span class="pl-title">口径</span>
-        <span>建仓区与止损由 ATR(14) 定标尺；弱转强的买点是次日高开幅度，显示为「高开 x%~y%」</span>
+        <span>建仓区与止损由 ATR(14) 定标尺；打板的买点是次日高开幅度，显示为「高开 x%~y%」</span>
         <span class="dot">·</span>
         <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘…」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
         <span class="dot">·</span>

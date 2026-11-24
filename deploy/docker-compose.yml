@@ -4,19 +4,20 @@ services:
       # 构建上下文是仓库根目录，Dockerfile 在 deploy/ 下
       context: ..
       dockerfile: deploy/Dockerfile
-    image: alphaforge:0.5.0
+    image: alphaforge:0.6.0
     container_name: alphaforge
     restart: unless-stopped
     ports:
       - "${AF_PORT:-8000}:8000"
     environment:
-      AF_END_DATE: ${AF_END_DATE:-2026-11-06}
+      # 容器内必须显式指定时区，否则收盘任务按 UTC 跑（见 Dockerfile 顶部注释）
+      TZ: Asia/Shanghai
       AF_BARS: ${AF_BARS:-520}
-      AF_SALT: ${AF_SALT:-v1}
       AF_STORE_PATH: /app/data/store.json
       AF_CORS_ORIGINS: ${AF_CORS_ORIGINS:-http://localhost:8000}
+      AF_LLM_BASE_URL: ${AF_LLM_BASE_URL:-}
+      AF_LLM_API_KEY: ${AF_LLM_API_KEY:-}
+      AF_LLM_MODEL: ${AF_LLM_MODEL:-}
     volumes:
-      - alphaforge-data:/app/data
-
-volumes:
-  alphaforge-data:
+      # bind mount 而不是命名卷：行情库与账户状态要能直接备份、直接看
+      - ../data:/app/data
