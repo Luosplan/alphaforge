@@ -332,7 +332,7 @@ onMounted(async () => {
         <span class="q-hint hide-mobile">{{ modeHint }}</span>
         <div class="q-actions">
           <el-tooltip
-            content="按「个人设置 → 购买权限」过滤候选池；关掉可以研究买不了的板块"
+            content="按「购买权限」过滤候选池；关掉可研究买不了的板块"
             placement="top"
           >
             <el-switch

@@ -68,7 +68,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=None,
+    icon=str(PKGS / "desktop" / "alphaforge.ico"),
 )
 
 coll = COLLECT(

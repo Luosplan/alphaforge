@@ -249,7 +249,7 @@ async function loadPlans() {
 async function removePlan(plan: PlanCard) {
   try {
     await ElMessageBox.confirm(
-      `移除后「${plan.name}」不再出现在计划卡列表，随时可以在「已移除」里恢复。`,
+      `「${plan.name}」将从今日列表移除，可在「已移除」恢复。`,
       '移除计划卡',
       { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
     )

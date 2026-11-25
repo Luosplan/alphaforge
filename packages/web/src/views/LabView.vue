@@ -90,9 +90,9 @@ const regimeStopped = computed(
 const regimeHint = computed(() => {
   const r = regime.value
   if (!r) return ''
-  if (r.open_new) return '回测与模拟盘同一口径：正常开新仓，已持仓按止损 / 止盈走完'
-  return '波段在弱势期停手（指数回到半年线上方自动恢复）；打板不设大盘闸，照常按今日涨停池出手'
-    + (regimeStopped.value ? `。当前有 ${regimeStopped.value} 条策略停手` : '')
+  if (r.open_new) return '正常开新仓，已持仓按止损止盈走完'
+  return '波段弱市停手，打板照常出手'
+    + (regimeStopped.value ? `；当前 ${regimeStopped.value} 条策略停手` : '')
 })
 const plans = computed<LabPlanCard[]>(() => {
   const all = overview.value?.plans ?? []
@@ -151,7 +151,7 @@ const loopSteps = computed(() => {
       key: 'evolve', label: '进化换参',
       value: evolved.length ? `采纳 ${adopted}/${evolved.length}` : '待收盘',
       tone: adopted ? 'brand' : 'flat',
-      hint: '样本外打赢 + 风控达标 + 模拟盘执行质量无异常，三条同时满足才换参数',
+      hint: '样本外打赢 + 风控达标 + 执行无异常才换参',
     },
   ]
 })
@@ -263,7 +263,7 @@ async function resetPaper(id?: string) {
   const label = id ? '这条策略的模拟盘账户' : '全部模拟盘账户'
   try {
     await ElMessageBox.confirm(
-      `清空${label}：持仓、成交流水、净值曲线都会归零，下一天重新从 100 万起步。回测结果不受影响。`,
+      `清空${label}：持仓、流水、净值归零，下一天从 100 万起步。回测不受影响。`,
       '清空模拟盘',
       { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
     )
@@ -279,9 +279,9 @@ async function resetPaper(id?: string) {
 function startEvolve(id: string) {
   const row = strategies.value.find((s) => s.id === id)
   ElMessageBox.confirm(
-    `对「${row?.name ?? id}」做遗传搜索：${evoForm.value.population} 个基因组 × ` +
-      `${evoForm.value.generations} 代 = ${evoForm.value.population * evoForm.value.generations} 次回测评估。` +
-      '搜完只给结论，不会自动覆盖当前参数——你可以先看对比再决定采不采纳。',
+    `对「${row?.name ?? id}」遗传搜索：${evoForm.value.population} 个基因组 × ` +
+      `${evoForm.value.generations} 代 = ${evoForm.value.population * evoForm.value.generations} 次回测。` +
+      '搜完只给结论，不自动覆盖参数。',
     '开始自进化',
     { type: 'info', confirmButtonText: '开始', cancelButtonText: '取消' },
   )
@@ -319,8 +319,7 @@ function stopPoll() {
 async function applyEvolution(id: string) {
   try {
     await ElMessageBox.confirm(
-      '采纳后：这条策略的因子权重与结构参数换成搜索结果，模拟盘从下一次选股开始按新参数运行。' +
-        '已有持仓不动，净值曲线不断。',
+      '采纳后因子权重与结构参数换成搜索结果，下一次选股起生效。已有持仓不动。',
       '采纳进化结果',
       { type: 'warning', confirmButtonText: '采纳', cancelButtonText: '取消' },
     )
@@ -489,10 +488,10 @@ const orderQty = (p: LabPlanCard): string => {
  */
 const orderTitle = (p: LabPlanCard): string => {
   if (p.order_kind === 'ADD') {
-    return `加仓委托 ${p.order_shares ?? 0} 股（补到计划仓位 ${p.sizing.shares} 股），次日开盘按市价成交`
+    return `加仓 ${p.order_shares ?? 0} 股（补到计划 ${p.sizing.shares} 股），次日开盘市价成交`
   }
   if (p.order_kind === 'TRIM') {
-    return `减仓委托 ${p.order_shares ?? 0} 股（浮盈达标兑现 1/3），次日开盘按市价成交`
+    return `减仓 ${p.order_shares ?? 0} 股（兑现 1/3 浮盈），次日开盘市价成交`
   }
   return `委托价 ${orderPx(p)}，次日开盘按市价成交`
 }
@@ -839,7 +838,7 @@ onBeforeUnmount(stopPoll)
                     class="num"
                     :title="
                       p.entry_rule
-                        ? `次日开盘价较今收落在 ${p.entry_rule} 区间才建仓；ATR 区间 ${px(p.zones.entry.low)} – ${px(p.zones.entry.high)} 在这里只用来定止损`
+                        ? `次日开盘落在 ${p.entry_rule} 区间才建仓；ATR 区间只用来定止损`
                         : '建仓区由 ATR(14) 定标尺'
                     "
                   >
@@ -852,7 +851,7 @@ onBeforeUnmount(stopPoll)
                     :title="
                       orderLive(p)
                         ? orderTitle(p)
-                        : `${planStateLabel(p)}：今天没有挂单，${orderPx(p)} 只是计划执行价`
+                        : `${planStateLabel(p)}：今日未挂单，${orderPx(p)} 为计划价`
                     "
                   >
                     <span class="p-status" :class="planStateTone(p)">

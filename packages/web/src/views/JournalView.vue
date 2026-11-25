@@ -111,7 +111,7 @@ onMounted(load)
       <div class="panel-title">
         复盘日记
         <span class="panel-sub">
-          每个交易日收盘后自动写一篇：市场什么样、计划执行得如何、明天注意什么
+          收盘后自动写一篇：市场、执行、明天
         </span>
       </div>
       <div class="head-right">
@@ -254,8 +254,7 @@ onMounted(load)
             </table>
           </div>
           <p class="j-hold-foot">
-            今日盈亏：今天买的按买入价算，此前持有的按昨收算——两者相加才是账户今天真实的浮动。
-            T+1 规则下今天买的今天不能卖，动作最早明天开盘执行。
+            今日盈亏 = 今天买入按买入价 + 此前持有按昨收。T+1 下今天买的明天才能卖。
           </p>
         </template>
 
@@ -286,7 +285,7 @@ onMounted(load)
           </div>
         </template>
         <p v-else class="j-no-plan">
-          这天没有挂单（择时关闭或仓位已满），所以没有「计划 vs 实际」可对。
+          这天没有挂单，无「计划 vs 实际」可对。
         </p>
 
         <div v-if="active.text.tomorrow?.length" class="j-block-title">明天注意</div>
@@ -300,8 +299,7 @@ onMounted(load)
 
     <section v-else class="panel empty-panel">
       <div class="empty">
-        还没有复盘日记。收盘任务每天 15:05 会写一篇，写完这里就有第一篇了；
-        也可以到盯盘页点「补跑收盘」立刻生成。
+        还没有复盘。每天 15:05 收盘任务自动写一篇，也可在盯盘页「补跑收盘」。
       </div>
     </section>
   </div>

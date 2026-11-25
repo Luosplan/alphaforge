@@ -63,10 +63,13 @@ audit: ## 三档断点布局审计（需先 make serve 或已有服务在 :$(POR
 docker: ## 构建并启动容器
 	docker compose -f deploy/docker-compose.yml up --build
 
-# --distpath 指到 dist/desktop：PyInstaller 重建前会删掉整个产物目录（几千个文件），
-# 直接落在 dist/ 下会和安全策略的批量删除闸门撞上。脚本重建前需自行清空旧产物。
+# 先落到 .cache/exe，再整体换进 dist/desktop：PyInstaller 重建前会把旧的产物目录
+# 整个 rmtree（近千个文件），本机的删除闸门会卡住它。改名换位没有删除动作。
 exe: build ## 打包 Windows 桌面版（产物 dist/desktop/AlphaForge/AlphaForge.exe）
-	$(PY) -m PyInstaller --noconfirm --clean --distpath dist/desktop packages/desktop/build.spec
+	$(PY) -m PyInstaller --noconfirm --clean --distpath .cache/exe packages/desktop/build.spec
+	@if [ -d dist/desktop/AlphaForge ]; then mv dist/desktop/AlphaForge "dist/desktop/AlphaForge.prev.$$(date +%s)"; fi
+	mv .cache/exe/AlphaForge dist/desktop/AlphaForge
+	@echo "旧产物已改名为 dist/desktop/AlphaForge.prev.*，确认新版可用后可手动删除"
 
 clean: ## 清理构建产物与缓存
 	rm -rf $(WEB)/dist $(WEB)/node_modules/.vite

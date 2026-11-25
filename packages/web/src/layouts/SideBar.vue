@@ -69,7 +69,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--af-surface);
+  background: var(--af-surface-2);
   border-right: 1px solid var(--af-border);
   transition: width 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
@@ -100,11 +100,11 @@ const initial = computed(() => accountName.value.slice(0, 1))
   flex: 0 0 27px;
   width: 27px;
   height: 27px;
-  border-radius: 5px;
+  border-radius: 8px;
   background: var(--af-ink);
   color: #fff;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
   letter-spacing: 0.02em;
   display: grid;
   place-items: center;
@@ -121,7 +121,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
 
 .wordmark {
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--af-ink);
   white-space: nowrap;
@@ -153,7 +153,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
   gap: 10px;
   height: 36px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--af-ink-2);
   font-size: 13px;
   font-weight: 500;
@@ -167,22 +167,9 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .item.active {
-  background: var(--af-brand-soft);
-  color: var(--af-brand);
-  font-weight: 650;
-}
-
-/* 选中态左侧短竖条，比整块高亮更克制 */
-.item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 16px;
-  border-radius: 0 2px 2px 0;
-  background: var(--af-brand);
+  background: var(--af-surface-3);
+  color: var(--af-ink);
+  font-weight: 500;
 }
 
 .ico {
@@ -213,7 +200,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
   gap: 8px;
   padding: 5px 6px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   font-family: inherit;
   text-align: left;
@@ -231,10 +218,10 @@ const initial = computed(() => accountName.value.slice(0, 1))
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #4368e2, var(--af-brand));
+  background: var(--af-ink);
   color: #fff;
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .acc-text {
@@ -246,7 +233,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
 
 .acc-name {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.35;
   color: var(--af-ink);
   overflow: hidden;

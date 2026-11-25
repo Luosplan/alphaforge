@@ -1,43 +1,54 @@
 :root {
-  /* 纸面：冷灰仪器面板，而非奶油底 */
-  --af-bg: #eef0f4;
+  /* 纸面：纯白，靠留白和字号分层，不靠底色和阴影 */
+  --af-bg: #ffffff;
   --af-surface: #ffffff;
-  --af-surface-2: #f6f7f9;
-  --af-surface-3: #eceff4;
-  --af-bg-deep: #e4e8ef;
+  --af-surface-2: #fafafa;
+  --af-surface-3: #f2f3f5;
+  --af-bg-deep: #f7f8f9;
 
   /* 墨色阶 */
-  --af-ink: #0e1117;
-  --af-ink-2: #474e5c;
-  --af-ink-3: #878e9e;
-  --af-ink-4: #a9afbb;
+  --af-ink: #1a1a1a;
+  --af-ink-2: #4c4f6b;
+  --af-ink-3: #9aa0ac;
+  --af-ink-4: #c3c6ce;
 
-  /* 分隔线 */
-  --af-border: #e2e5eb;
-  --af-border-strong: #cdd2dc;
+  /* 分隔线：淡到几乎看不见，只用来分栏不画框 */
+  --af-border: #f0f0f0;
+  --af-border-strong: #e5e5e5;
 
-  /* 系统色：一个主色，红绿只留给涨跌 */
-  --af-brand: #1f4fd8;
-  --af-brand-soft: #edf1fe;
-  --af-brand-ink: #16347f;
-  --af-up: #d92d20;
-  --af-up-soft: #fdeceb;
-  --af-down: #039855;
-  --af-down-soft: #e7f6ef;
-  --af-warn: #b54708;
-  --af-warn-soft: #fdf3e7;
+  /* 系统色：主色就是黑，红绿只留给涨跌。
+   * 这里刻意不引入彩色品牌色——A 股绿色代表下跌，任何绿色类强调都会被读成跌。
+   * 需要「强调」时用字重和留白，不用颜色。 */
+  --af-brand: #1a1a1a;
+  --af-brand-soft: #f2f3f5;
+  --af-brand-ink: #1a1a1a;
+  --af-up: #e5453d;
+  --af-up-soft: #fdeeed;
+  --af-down: #12a05c;
+  --af-down-soft: #eaf7f1;
+  --af-warn: #b45309;
+  --af-warn-soft: #fdf4e7;
 
-  --af-radius: 8px;
-  --af-radius-sm: 5px;
+  --af-radius: 12px;
+  --af-radius-sm: 8px;
   --af-chrome: 58px;
 
-  --el-color-primary: #1f4fd8;
-  --el-color-primary-light-3: #5c7fe2;
-  --el-color-primary-light-5: #8ba4ea;
-  --el-color-primary-light-7: #b9c8f2;
-  --el-color-primary-light-8: #d0daf6;
-  --el-color-primary-light-9: #edf1fe;
-  --el-border-radius-base: 5px;
+  --el-color-primary: #1a1a1a;
+  --el-color-primary-light-3: #3d3d3d;
+  --el-color-primary-light-5: #666666;
+  --el-color-primary-light-7: #a3a3a3;
+  --el-color-primary-light-8: #c7c7c7;
+  --el-color-primary-light-9: #f2f3f5;
+  --el-color-primary-dark-2: #000000;
+  --el-border-radius-base: 8px;
+  --el-border-color: #e5e5e5;
+  --el-border-color-light: #f0f0f0;
+  --el-border-color-lighter: #f5f5f5;
+  --el-text-color-primary: #1a1a1a;
+  --el-text-color-regular: #4c4f6b;
+  --el-text-color-secondary: #9aa0ac;
+  --el-fill-color-light: #fafafa;
+  --el-fill-color-blank: #ffffff;
   --el-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
 }
@@ -72,13 +83,13 @@ a {
   height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #ced3dd;
+  background: #dcdcdc;
   border-radius: 9px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #b6bdc9;
+  background: #c4c4c4;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
@@ -115,10 +126,9 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 16px;
+  padding: 0 18px;
   height: 46px;
   border-bottom: 1px solid var(--af-border);
-  background: linear-gradient(180deg, #ffffff 0%, #fcfcfd 100%);
 }
 
 .panel-title {
@@ -126,7 +136,7 @@ a {
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   letter-spacing: 0.005em;
   color: var(--af-ink);
   min-width: 0;
@@ -143,7 +153,7 @@ a {
 }
 
 .panel-body {
-  padding: 16px;
+  padding: 18px;
 }
 
 .panel-body.flush {
@@ -211,8 +221,8 @@ a {
   align-items: center;
   gap: 4px;
   height: 21px;
-  padding: 0 7px;
-  border-radius: 4px;
+  padding: 0 8px;
+  border-radius: 999px;
   font-size: 11.5px;
   font-weight: 500;
   background: var(--af-surface-3);
@@ -229,8 +239,8 @@ a {
   color: var(--af-down);
 }
 .chip.brand {
-  background: var(--af-brand-soft);
-  color: var(--af-brand);
+  background: var(--af-surface-3);
+  color: var(--af-ink);
 }
 .chip.warn {
   background: var(--af-warn-soft);
@@ -240,18 +250,19 @@ a {
 /* 上市板 tag：沪 / 深 / 创 / 科 / 北。
  * 中文单字比 SH/SZ 读得快，且一行放得下。主板只分沪深，走描边（安静）；
  * 创业板 / 科创板 / 北交所涨跌幅是 20% / 30%，同样的 ATR 止损位含义不同，
- * 所以用品牌色块提亮。红绿不能用来做这个区分——那是涨跌的语义。 */
+ * 所以用底色提亮。红绿不能用来做这个区分——那是涨跌的语义。
+ * 提亮用的是中性灰：主色已经是黑，再叠一层彩色只会变成噪点。 */
 .btag {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   min-width: 15px;
-  padding: 1px 3px;
+  padding: 1px 4px;
   border: 1px solid var(--af-border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.35;
   color: var(--af-ink-2);
   background: transparent;
@@ -262,18 +273,18 @@ a {
 .btag.star,
 .btag.bse {
   border-color: transparent;
-  color: var(--af-brand-ink);
-  background: var(--af-brand-soft);
+  color: var(--af-ink);
+  background: var(--af-surface-3);
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px 2px 7px;
-  border-radius: 4px;
+  padding: 2px 9px 2px 8px;
+  border-radius: 999px;
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 17px;
   border: 1px solid transparent;
 }
@@ -292,9 +303,9 @@ a {
   border-color: #f3ddc2;
 }
 .pill.triggered {
-  background: var(--af-brand-soft);
-  color: var(--af-brand);
-  border-color: #d5defb;
+  background: var(--af-surface-3);
+  color: var(--af-ink);
+  border-color: var(--af-border-strong);
 }
 .pill.holding {
   background: var(--af-down-soft);
@@ -320,13 +331,30 @@ a {
 
 /* ------------------------------------------------------------- Element 覆盖 */
 .el-button {
-  font-weight: 550;
+  font-weight: 500;
   --el-button-border-color: var(--af-border-strong);
+  --el-button-text-color: var(--af-ink);
+  --el-button-hover-text-color: var(--af-ink);
+  --el-button-hover-bg-color: var(--af-surface-2);
+  --el-button-hover-border-color: var(--af-ink-4);
+}
+
+/* 主操作是黑底全圆角药丸。文字按钮不做药丸，否则会胖得没法看 */
+.el-button:not(.is-text):not(.is-link) {
+  border-radius: 999px;
 }
 
 .el-button--primary {
-  --el-button-bg-color: var(--af-brand);
-  --el-button-border-color: var(--af-brand);
+  --el-button-bg-color: var(--af-ink);
+  --el-button-border-color: var(--af-ink);
+  --el-button-text-color: #ffffff;
+  --el-button-hover-bg-color: #3d3d3d;
+  --el-button-hover-border-color: #3d3d3d;
+  --el-button-active-bg-color: #000000;
+  --el-button-active-border-color: #000000;
+  --el-button-disabled-bg-color: #c7c7c7;
+  --el-button-disabled-border-color: #c7c7c7;
+  --el-button-disabled-text-color: #ffffff;
 }
 
 .el-button.is-text {
@@ -337,13 +365,13 @@ a {
   --el-table-border-color: var(--af-border);
   --el-table-header-bg-color: var(--af-surface-2);
   --el-table-header-text-color: var(--af-ink-3);
-  --el-table-row-hover-bg-color: #f7f9fd;
+  --el-table-row-hover-bg-color: #fafafa;
   --el-table-text-color: var(--af-ink);
   font-size: 12.5px;
 }
 
 .el-table th.el-table__cell {
-  font-weight: 550;
+  font-weight: 400;
   font-size: 11.5px;
   letter-spacing: 0.02em;
   height: 34px;
@@ -351,7 +379,7 @@ a {
 }
 
 .el-table td.el-table__cell {
-  padding: 6px 0;
+  padding: 7px 0;
 }
 
 .el-table__inner-wrapper::before {
@@ -395,35 +423,47 @@ a {
 
 .el-input__wrapper:hover,
 .el-select__wrapper:hover {
-  box-shadow: 0 0 0 1px var(--af-ink-3) inset;
+  box-shadow: 0 0 0 1px var(--af-ink-4) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--af-ink) inset !important;
+}
+
+.el-switch.is-checked .el-switch__core {
+  background: var(--af-ink);
+  border-color: var(--af-ink);
 }
 
 .el-dialog,
 .el-drawer {
-  --el-dialog-border-radius: 10px;
+  --el-dialog-border-radius: 14px;
+}
+
+.el-dialog {
+  border-radius: 14px;
 }
 
 .el-dialog__header {
-  padding: 18px 20px 10px;
+  padding: 20px 22px 8px;
 }
 
 .el-drawer__header {
   margin-bottom: 0;
-  padding: 18px 22px 14px;
+  padding: 0;
   border-bottom: 1px solid var(--af-border);
-  font-weight: 650;
-  font-size: 12px;
   color: var(--af-ink);
-  letter-spacing: 0.02em;
 }
 
 .el-drawer__body {
-  padding: 18px 22px 28px;
+  padding: 0;
+  overflow: auto;
 }
 
 .el-tabs__item {
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 500;
   height: 34px;
   color: var(--af-ink-3);
 }
@@ -443,8 +483,7 @@ a {
 }
 
 .el-loading-mask {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(1px);
+  background: rgba(255, 255, 255, 0.7);
 }
 
 /* ------------------------------------------------------------------ 响应式 */

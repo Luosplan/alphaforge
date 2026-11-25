@@ -100,11 +100,11 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   flex: 0 0 27px;
   width: 27px;
   height: 27px;
-  border-radius: 5px;
+  border-radius: 8px;
   background: var(--af-ink);
   color: #fff;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
   letter-spacing: 0.02em;
   display: grid;
   place-items: center;
@@ -119,7 +119,7 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 
 .page-title {
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--af-ink);
   white-space: nowrap;
@@ -142,9 +142,9 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 4px 12px;
   border: 1px solid var(--af-border);
-  border-radius: 5px;
+  border-radius: 999px;
   background: var(--af-surface-2);
 }
 
@@ -153,11 +153,11 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 }
 
 .t-val {
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .t-chg {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .t-sep {
@@ -174,7 +174,7 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 }
 
 .t-breadth b {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 11px;
 }
 
@@ -184,7 +184,7 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   display: grid;
   place-items: center;
   border: 1px solid var(--af-border);
-  border-radius: 5px;
+  border-radius: 8px;
   background: var(--af-surface);
   color: var(--af-ink-2);
   font-size: 16px;
@@ -216,11 +216,11 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 
 .avatar-btn {
   border-radius: 50%;
-  background: linear-gradient(135deg, #4368e2, var(--af-brand));
+  background: var(--af-ink);
   border-color: transparent;
   color: #fff;
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .avatar-btn:hover {

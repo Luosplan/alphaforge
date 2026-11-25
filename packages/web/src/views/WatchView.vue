@@ -90,9 +90,9 @@ const regimeNote = computed(() => {
   if (!r) return ''
   if (r.open_new) return '按规则正常开新仓'
   if (regimeScale.value > 0) {
-    return `弱势只打抱团：行业有涨停潮、或涨幅排名靠前才建仓，仓位减半；已持仓照常止损 / 止盈`
+    return '弱势只打抱团：行业有涨停潮或涨幅靠前才建仓，仓位减半'
   }
-  return `该策略在弱市停手（放开实测更差），其他策略仍在打抱团；指数回到${r.ma} 日线上方即恢复满额`
+  return `弱市停手，指数回到 ${r.ma} 日线上方即恢复`
 })
 
 /**
@@ -484,7 +484,7 @@ onBeforeUnmount(() => {
                 <b class="num" :class="review.plan.avg_adverse_bps == null ? '' : review.plan.avg_adverse_bps > 0 ? 'down' : 'up'">
                   {{ review.plan.avg_adverse_bps == null ? '—' : `${review.plan.avg_adverse_bps.toFixed(0)}bp` }}
                 </b>
-                <i class="pr-tip" title="买单成交价高于委托价、卖单低于委托价都算不利；负数代表成交比计划更好">?</i>
+                <i class="pr-tip" title="买单高于委托价、卖单低于委托价都算不利；负数代表成交更好">?</i>
               </span>
               <span
                 v-for="k in review.plan.kinds"

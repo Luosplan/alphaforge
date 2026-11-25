@@ -25,7 +25,6 @@ const store = useAppStore()
         </router-view>
         <footer class="foot">
           <span>AlphaForge 0.8.0</span>
-          <span>行情来自新浪财经 / 腾讯行情 / 东方财富公开接口，本地 SQLite 缓存</span>
           <span>仅供研究，不构成投资建议</span>
         </footer>
       </main>
@@ -55,10 +54,10 @@ const store = useAppStore()
   width: 100%;
   max-width: 1640px;
   margin: 0 auto;
-  padding: 16px 20px 0;
+  padding: 20px 24px 0;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
 }
 
 .foot {
