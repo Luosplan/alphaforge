@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { Bar, IndicatorSet, PlanCard } from '@/types'
-import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
+import { axisBase, chartColors, tooltipBase, useEChart, withAlpha } from '@/composables/useEChart'
 import { useAppStore } from '@/stores/app'
 
 const props = withDefaults(
@@ -38,10 +38,10 @@ const zones = computed(() => {
   if (!plan) return []
   const z = plan.zones
   return [
-    { name: '建仓区', low: z.entry.low, high: z.entry.high, color: '#1f4fd8', opacity: 0.22 },
-    { name: '加仓区', low: z.add.low, high: z.add.high, color: '#b54708', opacity: 0.18 },
-    { name: '止损区', low: z.stop.low, high: z.stop.high, color: '#039855', opacity: 0.2 },
-    { name: '目标区', low: z.target[0].low, high: z.target[1] ? z.target[1].high : z.target[0].high, color: '#d92d20', opacity: 0.16 },
+    { name: '建仓区', low: z.entry.low, high: z.entry.high, color: chartColors.brand, opacity: 0.2 },
+    { name: '加仓区', low: z.add.low, high: z.add.high, color: chartColors.warn, opacity: 0.16 },
+    { name: '止损区', low: z.stop.low, high: z.stop.high, color: chartColors.down, opacity: 0.18 },
+    { name: '目标区', low: z.target[0].low, high: z.target[1] ? z.target[1].high : z.target[0].high, color: chartColors.up, opacity: 0.14 },
   ]
     .filter((z2) => z2.low > 0 && z2.high > z2.low)
     .map((z2) => ({ ...z2, mid: Number(((z2.low + z2.high) / 2).toFixed(2)) }))
@@ -64,8 +64,8 @@ const { getChart } = useEChart(
         data: props.indicators[k] as (number | null)[],
         smooth: true,
         symbol: 'none' as const,
-        lineStyle: { width: 1.1, color: ['#b54708', '#1f4fd8', '#5b6b8c', '#039855'][i] },
-        itemStyle: { color: ['#b54708', '#1f4fd8', '#5b6b8c', '#039855'][i] },
+        lineStyle: { width: 1.1, color: [chartColors.warn, chartColors.brand, chartColors.ink3, chartColors.down][i] },
+        itemStyle: { color: [chartColors.warn, chartColors.brand, chartColors.ink3, chartColors.down][i] },
         z: 3,
       }))
 
@@ -76,7 +76,7 @@ const { getChart } = useEChart(
             type: 'line' as const,
             data: props.indicators.boll.upper,
             symbol: 'none' as const,
-            lineStyle: { width: 1, type: 'dashed' as const, color: '#c3c9d6' },
+            lineStyle: { width: 1, type: 'dashed' as const, color: chartColors.ink4 },
             z: 2,
           },
           {
@@ -84,7 +84,7 @@ const { getChart } = useEChart(
             type: 'line' as const,
             data: props.indicators.boll.lower,
             symbol: 'none' as const,
-            lineStyle: { width: 1, type: 'dashed' as const, color: '#c3c9d6' },
+            lineStyle: { width: 1, type: 'dashed' as const, color: chartColors.ink4 },
             z: 2,
           },
         ]
@@ -107,7 +107,7 @@ const { getChart } = useEChart(
       },
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross', crossStyle: { color: '#cdd2dc' }, lineStyle: { color: '#cdd2dc', type: 'dashed' } },
+        axisPointer: { type: 'cross', crossStyle: { color: chartColors.line }, lineStyle: { color: chartColors.line, type: 'dashed' } },
         ...tooltipBase,
         formatter: (params: any) => {
           const list = Array.isArray(params) ? params : [params]
@@ -119,24 +119,24 @@ const { getChart } = useEChart(
           const prev = idx > 0 ? bars[idx - 1].close : null
           const diff = prev === null ? null : b.close - prev
           const pct = prev ? (b.close / prev - 1) * 100 : null
-          const tone = diff === null ? '#8b95a7' : diff >= 0 ? chartColors.up : chartColors.down
+          const tone = diff === null ? chartColors.ink3 : diff >= 0 ? chartColors.up : chartColors.down
           const sign = diff !== null && diff > 0 ? '+' : ''
           // 振幅的标准口径也是除昨收，不是除开盘
           const base = prev || b.open
           const amp = base ? ((b.high - b.low) / base) * 100 : 0
           return `
             <div style="font-weight:600;margin-bottom:6px">${b.date}${
-              b.provisional ? '<span style="font-weight:400;font-size:11px;color:#8b95a7"> · 盘中实时</span>' : ''
+              b.provisional ? '<span style="font-weight:400;font-size:11px;color:${chartColors.ink3}"> · 盘中实时</span>' : ''
             }</div>
             <div style="display:grid;grid-template-columns:auto auto;gap:3px 16px;font-size:12px">
-              <span style="color:#8b95a7">开</span><span>${b.open.toFixed(2)}</span>
-              <span style="color:#8b95a7">高</span><span>${b.high.toFixed(2)}</span>
-              <span style="color:#8b95a7">低</span><span>${b.low.toFixed(2)}</span>
-              <span style="color:#8b95a7">收</span><span style="color:${tone};font-weight:600">${b.close.toFixed(2)}</span>
-              <span style="color:#8b95a7">涨跌</span><span style="color:${tone}">${diff === null ? '—' : sign + diff.toFixed(2)}</span>
-              <span style="color:#8b95a7">涨跌幅</span><span style="color:${tone};font-weight:600">${pct === null ? '—' : sign + pct.toFixed(2) + '%'}</span>
-              <span style="color:#8b95a7">振幅</span><span>${amp.toFixed(2)}%</span>
-              <span style="color:#8b95a7">量</span><span>${(b.volume / 1e4).toFixed(1)} 万手</span>
+              <span style="color:${chartColors.ink3}">开</span><span>${b.open.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">高</span><span>${b.high.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">低</span><span>${b.low.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">收</span><span style="color:${tone};font-weight:600">${b.close.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">涨跌</span><span style="color:${tone}">${diff === null ? '—' : sign + diff.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">涨跌幅</span><span style="color:${tone};font-weight:600">${pct === null ? '—' : sign + pct.toFixed(2) + '%'}</span>
+              <span style="color:${chartColors.ink3}">振幅</span><span>${amp.toFixed(2)}%</span>
+              <span style="color:${chartColors.ink3}">量</span><span>${(b.volume / 1e4).toFixed(1)} 万手</span>
             </div>`
         },
       },
@@ -204,19 +204,19 @@ const { getChart } = useEChart(
                 borderColor: 'transparent',
                 borderRadius: 4,
                 backgroundColor: 'transparent',
-                fillerColor: 'rgba(31,79,216,0.07)',
+                fillerColor: withAlpha(chartColors.brand, 0.08),
                 handleSize: 14,
-                handleStyle: { color: '#ffffff', borderColor: '#b9c2d4', borderWidth: 1, shadowBlur: 0 },
+                handleStyle: { color: '#ffffff', borderColor: chartColors.ink4, borderWidth: 1, shadowBlur: 0 },
                 moveHandleSize: 0,
                 moveHandleStyle: { color: 'transparent' },
                 textStyle: { color: chartColors.ink3, fontSize: 10 },
                 dataBackground: {
-                  lineStyle: { color: '#d6dbe6', width: 1 },
-                  areaStyle: { color: '#e9edf4' },
+                  lineStyle: { color: chartColors.line, width: 1 },
+                  areaStyle: { color: chartColors.grid },
                 },
                 selectedDataBackground: {
-                  lineStyle: { color: '#a8b8e8', width: 1 },
-                  areaStyle: { color: '#dbe4f8' },
+                  lineStyle: { color: withAlpha(chartColors.brand, 0.45), width: 1 },
+                  areaStyle: { color: withAlpha(chartColors.brand, 0.12) },
                 },
               },
             ]),
@@ -256,7 +256,7 @@ const { getChart } = useEChart(
               name: z.name === '建仓区' || z.name === '止损区' ? `${z.name} ${z.mid.toFixed(2)}` : '',
               yAxis: z.mid,
               lineStyle: { color: z.color, type: 'dashed', width: 1, opacity: 0.75 },
-              label: { color: z.color, fontSize: 10, opacity: 1, backgroundColor: 'rgba(255,255,255,0.86)', padding: [1, 3], borderRadius: 3 },
+              label: { color: z.color, fontSize: 10, opacity: 1, backgroundColor: 'rgba(255,255,255,0.9)', padding: [1, 3], borderRadius: 4 },
             })),
           },
           z: 4,
@@ -270,7 +270,7 @@ const { getChart } = useEChart(
           yAxisIndex: 1,
           data: bars.map((b) => ({
             value: b.volume,
-            itemStyle: { color: b.close >= b.open ? 'rgba(217,45,32,0.5)' : 'rgba(3,152,85,0.45)' },
+            itemStyle: { color: b.close >= b.open ? withAlpha(chartColors.up, 0.5) : withAlpha(chartColors.down, 0.45) },
           })),
           barWidth: '58%',
         },

@@ -14,8 +14,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from alphaforge_core.constants import BOARD_META, normalize_profile, trade_fee
-from alphaforge_core.universe import board_key
+from alphaforge_core.constants import normalize_profile
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = ROOT / "data"
@@ -31,17 +30,8 @@ def _default_state() -> dict:
             {"id": "g2", "name": "观察池", "codes": ["002475.SZ", "688981.SH", "601127.SH", "300124.SZ", "600309.SH"]},
             {"id": "g3", "name": "低波红利", "codes": ["601088.SH", "600028.SH", "600900.SH", "601668.SH", "600104.SH"]},
         ],
-        "account": {"cash": 186420.0, "name": "A 股主账户"},
+        "account": {"name": "A 股主账户"},
         "profile": normalize_profile(None),
-        "holdings": [
-            {"code": "600519.SH", "shares": 200, "cost": 1620.50, "open_date": "2026-06-18"},
-            {"code": "300750.SZ", "shares": 500, "cost": 232.40, "open_date": "2026-08-05"},
-            {"code": "600036.SH", "shares": 3000, "cost": 36.80, "open_date": "2026-05-12"},
-            {"code": "002594.SZ", "shares": 800, "cost": 288.60, "open_date": "2026-09-02"},
-            {"code": "601899.SH", "shares": 8000, "cost": 16.90, "open_date": "2026-07-21"},
-            {"code": "600900.SH", "shares": 5000, "cost": 28.10, "open_date": "2026-04-09"},
-        ],
-        "manual_trades": [],
         # 已移除的计划卡：只存快照（plan_id / 名称 / 策略 / 移除时间），
         # 恢复时由引擎按 plan_id 重算区间，不在这里存点位
         "dismissed_plans": [],
@@ -158,14 +148,6 @@ class Store:
             self.save()
 
     # ---------------------------------------------------------------- 账户
-    def holdings(self) -> list[dict]:
-        with self._lock:
-            return json.loads(json.dumps(self.state["holdings"]))
-
-    def cash(self) -> float:
-        with self._lock:
-            return float(self.state["account"]["cash"])
-
     def account(self) -> dict:
         with self._lock:
             return json.loads(json.dumps(self.state["account"]))
@@ -281,62 +263,6 @@ class Store:
         """只留最近 90 天：plan_id 里带日期，日积月累会把 store.json 撑大。"""
         cutoff = (dt.datetime.now() - dt.timedelta(days=keep_days)).isoformat(timespec="seconds")
         return [r for r in rows if (r.get("removed_at") or "") >= cutoff]
-
-    def board_gate(self, code: str) -> None:
-        """购买权限校验：未开通的板块直接拒绝下单（风控硬拦截的统一入口）。"""
-        profile = normalize_profile(None, self.state.get("profile"))
-        key = board_key(code)
-        if not profile["boards"].get(key, True):
-            label = next((b["label"] for b in BOARD_META if b["key"] == key), key)
-            raise ValueError(f"{label}未开通购买权限，请先在「个人设置 → 购买权限」中开启")
-
-    def add_trade(self, trade: dict) -> dict:
-        """手工记账：更新持仓与现金（T+1 可卖数量在重建时计算）。"""
-        with self._lock:
-            self.board_gate(trade["code"])
-            cfg = normalize_profile(None, self.state.get("profile"))
-            code = trade["code"]
-            amount = trade["price"] * trade["shares"]
-            fee_parts = trade_fee(amount, trade["side"], cfg)
-            # 佣金与过户费进 fee，印花税单独记 tax，与成交流水的字段口径保持一致
-            fee = round(fee_parts["commission"] + fee_parts["transfer"], 2)
-            tax = fee_parts["stamp"]
-            cash_delta = -(amount + fee) if trade["side"] == "BUY" else amount - fee - tax
-
-            found = None
-            for h in self.state["holdings"]:
-                if h["code"] == code:
-                    found = h
-                    break
-            if trade["side"] == "BUY":
-                if found:
-                    total_cost = found["cost"] * found["shares"] + amount + fee
-                    found["shares"] += trade["shares"]
-                    found["cost"] = round(total_cost / found["shares"], 4)
-                else:
-                    self.state["holdings"].append({
-                        "code": code,
-                        "shares": trade["shares"],
-                        "cost": round((amount + fee) / trade["shares"], 4),
-                        "open_date": trade.get("trade_date") or "",
-                    })
-            else:
-                if not found or found["shares"] < trade["shares"]:
-                    raise ValueError("可卖数量不足")
-                found["shares"] -= trade["shares"]
-                if found["shares"] == 0:
-                    self.state["holdings"] = [h for h in self.state["holdings"] if h["code"] != code]
-
-            self.state["account"]["cash"] = round(self.state["account"]["cash"] + cash_delta, 2)
-            record = {**trade, "fee": fee, "tax": tax, "amount": round(amount, 2)}
-            self.state["manual_trades"].append(record)
-            self.save()
-            return record
-
-    def manual_trades(self) -> list[dict]:
-        with self._lock:
-            return json.loads(json.dumps(self.state["manual_trades"]))
-
 
 _store: Store | None = None
 

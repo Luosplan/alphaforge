@@ -111,10 +111,10 @@ async function refresh() {
   await store.loadDataStatus()
 }
 
-async function startSync(only: 'all' | 'daily') {
+async function startSync(only: 'all' | 'daily', force = false) {
   busy.value = true
   try {
-    await api.dataSync(only, 16)
+    await api.dataSync(only, 24, force)
     ElMessage.success(only === 'daily' ? '开始补日线，进度显示在这里' : '同步已开始，进度显示在这里')
     await refresh()
     startPolling()
@@ -222,8 +222,9 @@ onBeforeUnmount(stopPolling)
           <tbody>
             <tr v-for="(run, i) in status?.runs ?? []" :key="i">
               <td>{{ stepLabel[run.step] ?? run.step }}</td>
-              <td :class="run.status === 'ok' ? 'up' : run.status === 'fail' ? 'down' : ''">
+              <td :class="run.status === 'fail' ? 'fail' : ''">
                 {{ run.status === 'ok' ? '成功' : run.status === 'fail' ? '失败' : run.status }}
+                <span v-if="run.note" class="muted" :title="run.note">· {{ run.note }}</span>
               </td>
               <td class="r num">{{ run.rows == null ? '—' : run.rows.toLocaleString() }}</td>
               <td class="r num muted">{{ fmtTime(run.finished) }}</td>
@@ -238,7 +239,8 @@ onBeforeUnmount(stopPolling)
 
     <template #footer>
       <el-button @click="open = false">关闭</el-button>
-      <el-button :loading="busy" :disabled="running" @click="startSync('daily')">只补日线（约 1 分钟）</el-button>
+      <el-button :loading="busy" :disabled="running" @click="startSync('daily')">只补日线</el-button>
+      <el-button :loading="busy" :disabled="running" @click="startSync('all', true)">强制重跑</el-button>
       <el-button type="primary" :loading="busy" :disabled="running" @click="startSync('all')">
         {{ running ? '同步进行中' : '立即同步全部' }}
       </el-button>
@@ -251,10 +253,10 @@ onBeforeUnmount(stopPolling)
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 20px;
+  padding: 0 22px;
   height: 30px;
   border-bottom: 1px solid var(--af-border);
-  background: var(--af-surface, transparent);
+  background: var(--af-surface-2);
   font-size: 11px;
   color: var(--af-ink-3);
   flex-shrink: 0;
@@ -263,8 +265,8 @@ onBeforeUnmount(stopPolling)
   background: color-mix(in srgb, var(--af-warn, #b54708) 6%, transparent);
 }
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   /* 用主色不用红：红绿在这个系统里只表达涨跌（ADR 0003） */
   background: var(--af-brand);
@@ -350,7 +352,7 @@ onBeforeUnmount(stopPolling)
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--af-brand), #7c9bff);
+  background: var(--af-brand);
   transition: width 0.4s ease;
 }
 
@@ -474,6 +476,11 @@ onBeforeUnmount(stopPolling)
 }
 .down {
   color: var(--af-down);
+}
+/* 同步结果是运行状态，不是涨跌：成功不染红绿，失败走琥珀 */
+.fail {
+  color: var(--af-warn);
+  font-weight: 600;
 }
 
 @media (max-width: 899px) {

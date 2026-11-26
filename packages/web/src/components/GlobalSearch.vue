@@ -220,19 +220,19 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 30px;
-  padding: 0 8px;
+  height: 32px;
+  padding: 0 8px 0 10px;
   border: 1px solid var(--af-border);
-  border-radius: 5px;
-  background: var(--af-surface);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface-2);
   color: var(--af-ink-3);
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
 }
 
 .trigger:hover {
-  border-color: var(--af-ink-3);
+  border-color: var(--af-border-strong);
   color: var(--af-ink);
   background: var(--af-surface);
 }
@@ -244,8 +244,8 @@ onBeforeUnmount(() => {
 .kbd {
   padding: 1px 4px;
   border: 1px solid var(--af-border);
-  border-radius: 3px;
-  background: var(--af-surface-2);
+  border-radius: 4px;
+  background: var(--af-surface);
   color: var(--af-ink-4);
   font-size: 10px;
   font-family: inherit;

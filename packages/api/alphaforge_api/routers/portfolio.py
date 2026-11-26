@@ -1,13 +1,17 @@
-"""持仓、成交流水与账户绩效（M06 只读侧 + 手工记账）。"""
+"""持仓、成交流水与账户绩效（M06 只读侧）。
+
+数据全部来自实验室的模拟盘账户：计划卡挂单 → 次日开盘成交 → 账本记股数与成本。
+这一层不造数，只做合并、切片和统一响应包装。
+"""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
-from alphaforge_core.schemas import TradeRequest
-from alphaforge_engine.portfolio import benchmark_curve, seed_trades, trade_stats
+from alphaforge_engine.paper import OPEN_TIME
+from alphaforge_engine.portfolio import benchmark_curve, trade_change_pct, trade_stats
 
-from ..deps import market, ok, portfolio, store
+from ..deps import accounts, market, ok, portfolio
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -20,7 +24,8 @@ def summary(request: Request):
 @router.get("/holdings")
 def holdings(request: Request):
     data = portfolio()
-    return ok({"holdings": data["holdings"], "summary": data["summary"], "industry_alloc": data["industry_alloc"]})
+    return ok({"holdings": data["holdings"], "summary": data["summary"],
+               "industry_alloc": data["industry_alloc"], "accounts": data["accounts"]})
 
 
 @router.get("/equity")
@@ -41,15 +46,21 @@ def equity(request: Request, days: int = 180):
 
 @router.get("/trades")
 def trades(request: Request):
-    rows = store().manual_trades() + seed_trades(market())
+    """成交流水：各策略账户的成交合并，新的在前。"""
+    rows = []
+    engine = market()
+    for acc in accounts().values():
+        name = acc.get("name") or acc.get("id")
+        for t in acc.get("trades") or []:
+            rows.append({
+                "id": t.get("id"), "code": t["code"], "name": t.get("name") or "",
+                "side": t["side"], "price": t["price"], "shares": t["shares"],
+                "amount": t["amount"], "fee": t["fee"], "tax": t["tax"],
+                "trade_date": t["date"], "note": t.get("reason") or "",
+                # 老账本里没有 time 字段；模拟盘的买单只可能是次日开盘成交
+                "trade_time": t.get("time") or (OPEN_TIME if t["side"] == "BUY" else ""),
+                "change_pct": trade_change_pct(engine, t["code"], t["date"]),
+                "strategy": name, "pnl": t.get("pnl"), "pnl_pct": t.get("pnl_pct"),
+            })
     rows.sort(key=lambda r: r["trade_date"], reverse=True)
     return ok({"items": rows, "stats": trade_stats(rows)})
-
-
-@router.post("/trades")
-def create_trade(request: Request, payload: TradeRequest):
-    try:
-        record = store().add_trade(payload.model_dump())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return ok(record)

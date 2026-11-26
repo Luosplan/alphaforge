@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import * as echarts from 'echarts'
-import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
+import { axisBase, chartColors, tooltipBase, useEChart, withAlpha } from '@/composables/useEChart'
 import { useAppStore } from '@/stores/app'
 
 const props = withDefaults(
@@ -43,13 +43,13 @@ useEChart(
       tooltip: {
         trigger: 'axis',
         ...tooltipBase,
-        axisPointer: { lineStyle: { color: '#c7cede', type: 'dashed' } },
+        axisPointer: { lineStyle: { color: chartColors.line, type: 'dashed' } },
         formatter: (params: any) => {
           const list = Array.isArray(params) ? params : [params]
           const rows = list
             .filter((p: any) => p.value !== null && p.value !== undefined)
             .map((p: any) => `<div style="display:flex;justify-content:space-between;gap:18px">
-              <span style="color:#8b95a7">${p.seriesName}</span>
+              <span style="color:${chartColors.ink3}">${p.seriesName}</span>
               <span style="font-weight:600">${Number(p.value).toFixed(2)}</span></div>`)
             .join('')
           return `<div style="font-weight:600;margin-bottom:5px">${list[0]?.axisValue ?? ''}</div>${rows}`
@@ -85,15 +85,15 @@ useEChart(
           lineStyle: { width: 2, color: main },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: positive.value ? 'rgba(217,45,32,0.14)' : 'rgba(3,152,85,0.14)' },
-              { offset: 1, color: 'rgba(255,255,255,0)' },
+              { offset: 0, color: positive.value ? withAlpha(chartColors.up, 0.16) : withAlpha(chartColors.down, 0.16) },
+              { offset: 1, color: withAlpha(chartColors.surface, 0) },
             ]),
           },
           markLine: {
             silent: true,
             symbol: 'none',
             label: { show: false },
-            data: [{ yAxis: 100, lineStyle: { color: '#d6dbe6', type: 'dashed', width: 1 } }],
+            data: [{ yAxis: 100, lineStyle: { color: chartColors.line, type: 'dashed', width: 1 } }],
           },
         },
         {
@@ -103,7 +103,7 @@ useEChart(
           symbol: 'none',
           smooth: true,
           connectNulls: true,
-          lineStyle: { width: 1.2, color: '#98a2b3', type: 'dashed' },
+          lineStyle: { width: 1.2, color: chartColors.ink4, type: 'dashed' },
         },
       ],
     }

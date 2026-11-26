@@ -370,7 +370,7 @@ onMounted(async () => {
         <div class="plan-legend" v-if="filtered.length">
           <span class="pl-title">区间色带</span>
           <span class="pl"><i style="background: var(--af-down)" />止损区</span>
-          <span class="pl"><i style="background: #b54708" />加仓区</span>
+          <span class="pl"><i style="background: var(--af-warn)" />加仓区</span>
           <span class="pl"><i style="background: var(--af-brand)" />建仓区</span>
           <span class="pl"><i style="background: var(--af-up)" />目标区</span>
           <span class="pl-note">虚线为参考价（T 日收盘），点击卡片查看完整计划，右上角 × 可移除</span>
@@ -1178,6 +1178,12 @@ onMounted(async () => {
   }
   .plan-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .panel-head.wrap .head-tools {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
+    gap: 8px;
   }
 }
 </style>

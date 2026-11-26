@@ -807,13 +807,16 @@ function flowHeight(net: number) {
 .qh-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 6px;
 }
 
 .qh-title h2 {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .no-buy {
@@ -916,6 +919,16 @@ function flowHeight(net: number) {
 
 .star {
   margin-left: auto;
+}
+
+/* 已自选只是一个状态，不值得在报价区右侧点一颗实心蓝圆 */
+.star.el-button--primary {
+  --el-button-bg-color: var(--af-brand-soft);
+  --el-button-border-color: var(--af-brand-soft);
+  --el-button-text-color: var(--af-brand);
+  --el-button-hover-bg-color: #dde8ff;
+  --el-button-hover-border-color: #dde8ff;
+  --el-button-hover-text-color: var(--af-brand-ink);
 }
 
 /* 图表 + 右侧观察栏（筹码峰 / 分时成交） */
@@ -1197,6 +1210,15 @@ function flowHeight(net: number) {
   .qh-left {
     min-width: 0;
     padding-right: 46px;
+  }
+  .qh-title {
+    gap: 6px;
+  }
+  .qh-title h2 {
+    font-size: 16px;
+  }
+  .qh-title .chip {
+    padding: 0 6px;
   }
   .price {
     font-size: 22px;

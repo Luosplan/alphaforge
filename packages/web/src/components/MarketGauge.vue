@@ -6,31 +6,24 @@
  * 上 ECharts 要额外吃几百 KB 的运行时代价，且默认样式与本项目的冷灰面板语言不搭。
  *
  * 配色刻意避开红绿——红绿在本项目里只表示涨跌，温度是「情绪刻度」，
- * 用 冷灰 → 主色 → 琥珀 的单色梯度表达热度即可。
+ * 用 冷灰 → 品牌蓝 → 琥珀 的单色梯度表达热度即可。
  */
 import { computed } from 'vue'
 
-const props = withDefaults(
-  defineProps<{
-    score: number
-    label: string
-    height?: number
-  }>(),
-  { height: 150 },
-)
+const props = defineProps<{ score: number; label: string }>()
 
 const CX = 110
-const CY = 108
-const R = 84
-const START = 210
-const SWEEP = 240
+const CY = 118
+const R = 88
+const START = 180
+const SWEEP = 180
 
 const BANDS = [
-  { to: 20, color: '#9aa3b2', name: '冰点' },
-  { to: 40, color: '#7b93c9', name: '偏冷' },
-  { to: 60, color: '#1f4fd8', name: '中性' },
-  { to: 78, color: '#3f6fd8', name: '偏热' },
-  { to: 100, color: '#b54708', name: '过热' },
+  { to: 20, color: '#a9b6c9', name: '冰点' },
+  { to: 40, color: '#7ea2f0', name: '偏冷' },
+  { to: 60, color: '#1a56db', name: '中性' },
+  { to: 78, color: '#d99a2b', name: '偏热' },
+  { to: 100, color: '#b0700a', name: '过热' },
 ]
 
 const clamped = computed(() => Math.max(0, Math.min(100, props.score)))
@@ -47,76 +40,40 @@ function arcPath(from: number, to: number, radius = R): string {
   return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${radius} ${radius} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`
 }
 
-/** 段间留 2° 缝，读起来是「刻度段」而不是一根糊住的彩虹条 */
-const segments = computed(() => {
-  let from = START
-  return BANDS.map((band, i) => {
-    const to = START - (band.to / 100) * SWEEP
-    const seg = {
-      key: band.name,
-      color: band.color,
-      active: clamped.value > (BANDS[i - 1]?.to ?? 0) && clamped.value <= band.to,
-      path: arcPath(from - 1.2, to + 1.2),
-    }
-    from = to
-    return seg
-  })
+/* 底轨是一整条浅灰弧，只有当前所处的档位上色：
+ * 五段同时上色会在盘面上糊成一条彩虹，反而看不清自己站在哪一档 */
+const trackPath = computed(() => arcPath(START - 1.2, START - SWEEP + 1.2))
+
+const activeBand = computed(() => {
+  const i = Math.max(0, BANDS.findIndex((b) => clamped.value <= b.to))
+  const band = BANDS[i] ?? BANDS[BANDS.length - 1]
+  const from = START - ((BANDS[i - 1]?.to ?? 0) / 100) * SWEEP
+  const to = START - (band.to / 100) * SWEEP
+  return { color: band.color, path: arcPath(from - 1.2, to + 1.2) }
 })
 
-const needle = computed(() => {
+/* 指针换成一个落在弧上的点：数字就在盘面正中，指针从圆心穿过数字永远会打架 */
+const marker = computed(() => {
   const deg = START - (clamped.value / 100) * SWEEP
-  const [x, y] = polar(R - 16, deg)
-  return { x, y, deg }
+  const [x, y] = polar(R, deg)
+  return { x, y }
 })
-
-const ticks = computed(() =>
-  Array.from({ length: 11 }, (_, i) => {
-    const deg = START - (i / 10) * SWEEP
-    const outer = polar(R + 3, deg)
-    const inner = polar(R - (i % 5 === 0 ? 9 : 5), deg)
-    return { deg, x1: inner[0], y1: inner[1], x2: outer[0], y2: outer[1], major: i % 5 === 0, value: i * 10 }
-  }),
-)
 
 const tone = computed(() => (clamped.value >= 78 ? 'hot' : clamped.value < 40 ? 'cold' : 'normal'))
 </script>
 
 <template>
-  <div class="gauge" :class="tone" :style="{ height: `${height}px` }">
+  <div class="gauge" :class="tone">
     <svg viewBox="0 0 220 132" preserveAspectRatio="xMidYMid meet" role="img" :aria-label="`市场温度 ${score}`">
+      <path :d="trackPath" stroke="var(--af-surface-3)" stroke-width="8" fill="none" stroke-linecap="round" />
       <path
-        v-for="seg in segments"
-        :key="seg.key"
-        :d="seg.path"
-        :stroke="seg.color"
-        :stroke-width="seg.active ? 10 : 7"
-        :opacity="seg.active ? 1 : 0.28"
+        :d="activeBand.path"
+        :stroke="activeBand.color"
+        stroke-width="8"
         fill="none"
         stroke-linecap="round"
       />
-      <line
-        v-for="tick in ticks"
-        :key="tick.deg"
-        :x1="tick.x1"
-        :y1="tick.y1"
-        :x2="tick.x2"
-        :y2="tick.y2"
-        :stroke="tick.major ? 'var(--af-ink-4)' : 'var(--af-border-strong)'"
-        :stroke-width="tick.major ? 1.2 : 0.8"
-      />
-      <line
-        :x1="CX"
-        :y1="CY"
-        :x2="needle.x"
-        :y2="needle.y"
-        stroke="var(--af-ink)"
-        stroke-width="2.2"
-        stroke-linecap="round"
-      />
-      <circle :cx="CX" :cy="CY" r="4.2" fill="var(--af-ink)" />
-      <circle :cx="CX" :cy="CY" r="1.7" fill="#fff" />
-      <text :x="polar(R + 16, START + 4)[0]" :y="polar(R + 16, START + 4)[1]" class="tick-text" text-anchor="middle">0</text>
-      <text :x="polar(R + 16, START - SWEEP - 4)[0]" :y="polar(R + 16, START - SWEEP - 4)[1]" class="tick-text" text-anchor="middle">100</text>
+      <circle :cx="marker.x" :cy="marker.y" r="5.5" fill="var(--af-surface)" stroke="var(--af-ink)" stroke-width="2.5" />
     </svg>
 
     <div class="readout">
@@ -131,6 +88,7 @@ const tone = computed(() => (clamped.value >= 78 ? 'hot' : clamped.value < 40 ? 
   position: relative;
   width: 100%;
   max-width: 240px;
+  aspect-ratio: 220 / 132;
 }
 
 .gauge svg {
@@ -139,17 +97,11 @@ const tone = computed(() => (clamped.value >= 78 ? 'hot' : clamped.value < 40 ? 
   overflow: visible;
 }
 
-.tick-text {
-  fill: var(--af-ink-4);
-  font-size: 9px;
-  font-variant-numeric: tabular-nums;
-}
-
 .readout {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 4px;
+  bottom: 2%;
   display: flex;
   align-items: baseline;
   justify-content: center;
@@ -157,10 +109,10 @@ const tone = computed(() => (clamped.value >= 78 ? 'hot' : clamped.value < 40 ? 
 }
 
 .score {
-  font-size: 26px;
+  font-size: 27px;
   font-weight: 650;
   line-height: 1;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: var(--af-ink);
 }
 

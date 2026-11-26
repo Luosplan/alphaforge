@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from alphaforge_api import __version__
 from alphaforge_core.constants import BOARD_META, normalize_profile
 
-from ..deps import market, ok, profile, store
+from ..deps import market, ok, portfolio, profile, store
 
 router = APIRouter(prefix="/sys", tags=["system"])
 _START = time.time()
@@ -84,7 +84,7 @@ def meta(request: Request):
         "account": {
             "name": acc.get("name", "A 股主账户"),
             "mode": "本地模拟盘",
-            "cash": acc.get("cash", 0),
+            "cash": portfolio()["summary"]["cash"],
         },
         "modules": [
             {"code": "M01", "name": "数据中台", "status": "done"},

@@ -65,18 +65,19 @@ const initial = computed(() => accountName.value.slice(0, 1))
   top: 0;
   z-index: 30;
   flex: 0 0 auto;
-  width: 216px;
+  width: 232px;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--af-surface-2);
+  background: var(--af-rail);
   border-right: 1px solid var(--af-border);
+  color: var(--af-rail-muted);
   transition: width 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
 
 .side.collapsed {
-  width: 62px;
+  width: 64px;
 }
 
 /* ------------------------------------------------------------ 品牌区 */
@@ -87,7 +88,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
   gap: 10px;
   height: var(--af-chrome);
   padding: 0 18px;
-  border-bottom: 1px solid var(--af-border);
+  border-bottom: 1px solid var(--af-rail-line);
   overflow: hidden;
 }
 
@@ -96,18 +97,20 @@ const initial = computed(() => accountName.value.slice(0, 1))
   justify-content: center;
 }
 
+/* 品牌块是全站唯一使用实心品牌蓝的地方，导航选中态只借它的浅底 */
 .mark {
-  flex: 0 0 27px;
-  width: 27px;
-  height: 27px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  background: var(--af-ink);
+  background: var(--af-brand);
   color: #fff;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.02em;
   display: grid;
   place-items: center;
+  box-shadow: 0 2px 6px rgba(26, 86, 219, 0.28);
 }
 
 .brand-text {
@@ -120,16 +123,17 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .wordmark {
-  font-size: 13.5px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--af-ink);
+  font-family: var(--af-font);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--af-rail-ink);
   white-space: nowrap;
 }
 
 .tagline {
-  font-size: 10px;
-  color: var(--af-ink-4);
+  font-size: 10.5px;
+  color: var(--af-rail-muted);
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
@@ -143,17 +147,16 @@ const initial = computed(() => accountName.value.slice(0, 1))
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 8px;
+  padding: 12px 10px;
 }
 
 .item {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  height: 34px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: var(--af-radius-sm);
   color: var(--af-ink-2);
   font-size: 13px;
   font-weight: 500;
@@ -162,14 +165,15 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .item:hover {
-  background: var(--af-surface-2);
-  color: var(--af-ink);
+  background: var(--af-rail-2);
+  color: var(--af-rail-ink);
 }
 
+/* 选中态：浅品牌底 + 品牌字。不画左侧竖条——它贴着视口边缘时会被读成滚动条 */
 .item.active {
-  background: var(--af-surface-3);
-  color: var(--af-ink);
-  font-weight: 500;
+  background: var(--af-rail-3);
+  color: var(--af-brand);
+  font-weight: 600;
 }
 
 .ico {
@@ -177,6 +181,11 @@ const initial = computed(() => accountName.value.slice(0, 1))
   display: grid;
   place-items: center;
   font-size: 18px;
+  opacity: 0.9;
+}
+
+.item.active .ico {
+  opacity: 1;
 }
 
 .label {
@@ -188,8 +197,8 @@ const initial = computed(() => accountName.value.slice(0, 1))
 /* --------------------------------------------------------- 底部账号 */
 .side-foot {
   flex: 0 0 auto;
-  padding: 8px;
-  border-top: 1px solid var(--af-border);
+  padding: 10px;
+  border-top: 1px solid var(--af-rail-line);
 }
 
 .account {
@@ -197,10 +206,10 @@ const initial = computed(() => accountName.value.slice(0, 1))
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 22px;
   align-items: center;
-  gap: 8px;
-  padding: 5px 6px;
+  gap: 9px;
+  padding: 6px 7px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--af-radius-sm);
   background: transparent;
   font-family: inherit;
   text-align: left;
@@ -209,19 +218,19 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .account:hover {
-  background: var(--af-surface-2);
+  background: var(--af-rail-2);
 }
 
 .avatar {
   width: 28px;
   height: 28px;
-  border-radius: 50%;
+  border-radius: 8px;
   display: grid;
   place-items: center;
-  background: var(--af-ink);
-  color: #fff;
+  background: var(--af-surface-3);
+  color: var(--af-ink-2);
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .acc-text {
@@ -232,10 +241,10 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .acc-name {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 600;
   line-height: 1.35;
-  color: var(--af-ink);
+  color: var(--af-rail-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -244,7 +253,7 @@ const initial = computed(() => accountName.value.slice(0, 1))
 .acc-meta {
   font-size: 10.5px;
   line-height: 1.3;
-  color: var(--af-ink-3);
+  color: var(--af-rail-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -255,15 +264,15 @@ const initial = computed(() => accountName.value.slice(0, 1))
   height: 22px;
   display: grid;
   place-items: center;
-  border-radius: 5px;
-  color: var(--af-ink-3);
+  border-radius: 6px;
+  color: var(--af-ink-4);
   font-size: 15px;
   transition: background 0.14s ease, color 0.14s ease;
 }
 
 .account:hover .acc-more {
   background: var(--af-surface-3);
-  color: var(--af-ink);
+  color: var(--af-ink-2);
 }
 
 /* ------------------------------------------------------- 折叠态 */
@@ -285,11 +294,11 @@ const initial = computed(() => accountName.value.slice(0, 1))
 }
 
 .side.collapsed .menu {
-  padding: 10px 9px;
+  padding: 12px 12px;
 }
 
 .side.collapsed .side-foot {
-  padding: 8px 9px;
+  padding: 10px 12px;
 }
 
 .side.collapsed .account {

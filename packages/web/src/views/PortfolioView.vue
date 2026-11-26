@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { useAppStore } from '@/stores/app'
 import type { EquityResponse, PortfolioResponse, Trade, TradeStats } from '@/types'
@@ -16,29 +14,29 @@ const trades = ref<Trade[]>([])
 const stats = ref<TradeStats | null>(null)
 const range = ref(90)
 const loading = ref(true)
-const tradeOpen = ref(false)
-const saving = ref(false)
-
-const form = ref({ code: '600519.SH', side: 'BUY' as 'BUY' | 'SELL', price: 0, shares: 100, note: '' })
 
 /* 行业色板：与主色同族，避开红绿以免与涨跌语义撞车 */
-const palette = ['#1f4fd8', '#4a6fd4', '#0e8f9e', '#b54708', '#6b52c9', '#8a94a6', '#2f6fb5', '#9a3412']
+const palette = ['#1a56db', '#4b7ce8', '#0e8f9e', '#b0700a', '#2f6fb5', '#8a94a6', '#5b8def', '#9a3412']
 
 const donut = computed(() => {
   const alloc = data.value?.industry_alloc ?? []
-  if (!alloc.length) return 'conic-gradient(#eceff4 0% 100%)'
+  if (!alloc.length) return 'conic-gradient(#eef1f7 0% 100%)'
   let acc = 0
   const stops = alloc.map((a, i) => {
     const from = acc
     acc += a.weight
     return `${palette[i % palette.length]} ${from.toFixed(2)}% ${Math.min(acc, 100).toFixed(2)}%`
   })
-  if (acc < 100) stops.push(`#eceff4 ${acc.toFixed(2)}% 100%`)
+  if (acc < 100) stops.push(`#eef1f7 ${acc.toFixed(2)}% 100%`)
   return `conic-gradient(${stops.join(', ')})`
 })
 
 const perf = computed(() => data.value?.performance)
 const summary = computed(() => data.value?.summary)
+const pending = computed(() => data.value?.pending ?? [])
+/* 模拟盘从 11-24 才开始记账，两个点的曲线折算年化会得到 -34%、卡玛 -102 这种
+ * 噪声。样本不够时宁可说「不足」，也不把噪声当成业绩摆出来。 */
+const perfReady = computed(() => (equity.value?.curve.length ?? 0) >= 20)
 
 async function load() {
   loading.value = true
@@ -56,29 +54,6 @@ async function load() {
 async function changeRange(days: number) {
   range.value = days
   equity.value = await api.equity(days)
-}
-
-function openTrade() {
-  form.value = { code: '600519.SH', side: 'BUY', price: data.value?.holdings[0]?.price ?? 0, shares: 100, note: '' }
-  tradeOpen.value = true
-}
-
-async function submitTrade() {
-  saving.value = true
-  try {
-    await api.createTrade({
-      code: form.value.code,
-      side: form.value.side,
-      price: form.value.price,
-      shares: form.value.shares,
-      note: form.value.note || '手工记账',
-    })
-    ElMessage.success('已记录成交')
-    tradeOpen.value = false
-    await load()
-  } finally {
-    saving.value = false
-  }
 }
 
 onMounted(load)
@@ -130,7 +105,7 @@ onMounted(load)
           </div>
           <div class="panel-body">
             <EquityChart v-if="equity" :curve="equity.curve" :benchmark="equity.benchmark" :height="240" />
-            <div class="perf-grid">
+            <div v-if="perf && perfReady" class="perf-grid">
               <div class="p"><span class="k">年化收益</span><span class="v num" :class="toneOf(perf.annual_return)">{{ fmtPct(perf.annual_return * 100, 1) }}</span></div>
               <div class="p"><span class="k">最大回撤</span><span class="v num down">{{ fmtPct(perf.max_drawdown * 100, 1, false) }}</span></div>
               <div class="p"><span class="k">夏普</span><span class="v num">{{ perf.sharpe.toFixed(2) }}</span></div>
@@ -138,6 +113,9 @@ onMounted(load)
               <div class="p"><span class="k">卡玛</span><span class="v num">{{ perf.calmar.toFixed(2) }}</span></div>
               <div class="p"><span class="k">年化波动</span><span class="v num">{{ fmtPct(perf.volatility * 100, 1, false) }}</span></div>
             </div>
+            <p v-else class="perf-empty">
+              模拟盘只跑了 {{ equity?.curve.length ?? 0 }} 个交易日，还不满 20 个，年化 / 夏普 / 卡玛按日折算没有意义，先不展示。
+            </p>
           </div>
         </section>
 
@@ -168,10 +146,18 @@ onMounted(load)
         <div class="panel-head">
           <div class="panel-title">
             持仓明细
-            <span class="panel-sub">成本口径：加权平均</span>
+            <span class="panel-sub">成本口径：加权平均 · 每行都来自计划卡成交</span>
           </div>
           <span class="chip">{{ data.holdings.length }} 只</span>
         </div>
+
+        <div v-if="pending.length" class="pending">
+          <span class="pending-label">待明日开盘成交</span>
+          <span v-for="p in pending" :key="`${p.strategy}-${p.code}`" class="chip brand">
+            {{ p.name }} · {{ p.kind_label }}{{ p.shares ? ` ${p.shares} 股` : '' }} · {{ p.strategy }}
+          </span>
+        </div>
+
         <div class="table-wrap">
           <el-table :data="data.holdings" size="small" style="width: 100%" :border="false">
             <el-table-column label="标的" :min-width="store.isMobile ? 104 : 150" fixed>
@@ -182,6 +168,7 @@ onMounted(load)
                 </div>
               </template>
             </el-table-column>
+            <el-table-column v-if="store.device === 'desktop'" prop="strategy" label="策略" width="88" />
             <el-table-column v-if="store.device === 'desktop'" prop="industry" label="行业" width="92" />
             <el-table-column v-if="!store.isMobile" label="持仓 / 可卖" width="110" align="right">
               <template #default="{ row }">
@@ -223,9 +210,9 @@ onMounted(load)
         <div class="panel-head">
           <div class="panel-title">
             成交流水
-            <span class="panel-sub">对账单导入为 V1.0 能力，当前支持手工记账</span>
+            <span class="panel-sub">实验室模拟盘：计划卡挂单 → 次日开盘成交</span>
           </div>
-          <el-button size="small" type="primary" plain :icon="Plus" @click="openTrade">记一笔</el-button>
+          <span class="chip">最近 {{ Math.min(trades.length, 30) }} 笔</span>
         </div>
 
         <div class="panel-body">
@@ -240,34 +227,43 @@ onMounted(load)
 
           <div class="table-wrap">
             <el-table :data="trades.slice(0, 30)" size="small" style="width: 100%">
-              <el-table-column label="日期" :width="store.isMobile ? 62 : 104">
+              <el-table-column label="成交时间" :width="store.isMobile ? 64 : 108" align="center">
                 <template #default="{ row }">
-                  <span class="num">{{ store.isMobile ? row.trade_date.slice(5) : row.trade_date }}</span>
+                  <div class="cell-time">
+                    <span class="num">{{ store.isMobile ? row.trade_date.slice(5) : row.trade_date }}</span>
+                    <span class="sub num">{{ row.trade_time || '—' }}</span>
+                  </div>
                 </template>
               </el-table-column>
-              <el-table-column label="标的" :min-width="store.isMobile ? 88 : 140">
+              <el-table-column label="标的" :min-width="store.isMobile ? 96 : 150" align="center">
                 <template #default="{ row }">
                   <span class="cn">{{ row.name }}</span>
                   <span class="cc num"> {{ row.code }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="方向" :width="store.isMobile ? 62 : 70">
+              <el-table-column label="方向" :width="store.isMobile ? 66 : 80" align="center">
                 <template #default="{ row }">
                   <span class="chip" :class="row.side === 'BUY' ? 'up' : 'down'">
                     {{ row.side === 'BUY' ? '买入' : '卖出' }}
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="价格" :width="store.isMobile ? 62 : 86" align="right">
-                <template #default="{ row }"><span class="num">{{ row.price.toFixed(2) }}</span></template>
+              <el-table-column label="成交价 / 当时涨幅" :width="store.isMobile ? 96 : 124" align="center">
+                <template #default="{ row }">
+                  <div class="cell-px">
+                    <span class="num">{{ row.price.toFixed(2) }}</span>
+                    <span class="sub num" :class="toneOf(row.change_pct)">{{ fmtPct(row.change_pct) }}</span>
+                  </div>
+                </template>
               </el-table-column>
-              <el-table-column label="数量" :width="store.isMobile ? 54 : 80" align="right">
+              <el-table-column label="数量" :width="store.isMobile ? 72 : 88" align="center">
                 <template #default="{ row }"><span class="num">{{ row.shares }}</span></template>
               </el-table-column>
-              <el-table-column v-if="!store.isMobile" label="金额" width="110" align="right">
+              <el-table-column v-if="!store.isMobile" label="金额" width="108" align="center">
                 <template #default="{ row }"><span class="num">{{ fmtNum(row.amount, 0) }}</span></template>
               </el-table-column>
-              <el-table-column v-if="!store.isMobile" label="备注" min-width="150">
+              <el-table-column v-if="store.device === 'desktop'" prop="strategy" label="策略" width="88" align="center" />
+              <el-table-column v-if="!store.isMobile" label="备注" min-width="140" align="center">
                 <template #default="{ row }"><span class="muted">{{ row.note }}</span></template>
               </el-table-column>
             </el-table>
@@ -275,33 +271,6 @@ onMounted(load)
         </div>
       </section>
     </template>
-
-    <el-dialog v-model="tradeOpen" title="手工记账" width="min(420px, 92vw)">
-      <el-form label-width="72px" label-position="left">
-        <el-form-item label="标的代码">
-          <el-input v-model="form.code" placeholder="如 600519.SH" />
-        </el-form-item>
-        <el-form-item label="方向">
-          <el-radio-group v-model="form.side">
-            <el-radio-button value="BUY">买入</el-radio-button>
-            <el-radio-button value="SELL">卖出</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="成交价">
-          <el-input-number v-model="form.price" :min="0.01" :step="0.01" :precision="2" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="数量">
-          <el-input-number v-model="form.shares" :min="100" :step="100" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="form.note" placeholder="如：计划内建仓 / 纪律离场" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="tradeOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitTrade">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -341,6 +310,27 @@ onMounted(load)
 .p .v {
   font-size: 13px;
   font-weight: 650;
+}
+
+.perf-empty {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px dashed var(--af-border);
+  font-size: 11.5px;
+  color: var(--af-ink-3);
+}
+
+.pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 2px;
+}
+
+.pending-label {
+  font-size: 11.5px;
+  color: var(--af-ink-3);
 }
 
 .alloc {
@@ -421,6 +411,29 @@ onMounted(load)
   line-height: 1.35;
 }
 
+.cell-time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.35;
+}
+
+.cell-time .sub {
+  margin-left: 0;
+}
+
+.cell-px {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.35;
+}
+
+.cell-px .sub {
+  margin-left: 0;
+  font-weight: 600;
+}
+
 .cn {
   font-size: 13px;
   font-weight: 600;
@@ -429,6 +442,7 @@ onMounted(load)
 .cc {
   font-size: 10.5px;
   color: var(--af-ink-3);
+  margin-left: 4px;
 }
 
 .sub {
@@ -454,6 +468,7 @@ onMounted(load)
 .ts {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 3px;
 }
 

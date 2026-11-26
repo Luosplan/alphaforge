@@ -1,7 +1,7 @@
 """全量 / 增量同步编排。
 
 链路顺序不能乱：股息率要用快照里的现价，因子要用日线 + 资金流 + 成分，
-所以是 `universe → fundamentals → dividend → daily → flow → index → factor`。
+所以是 `universe → fundamentals → bonus → daily → flow → index → factor`。
 
 并发只发生在**取数**阶段：多线程各自发请求，结果回到主线程统一落库。
 SQLite 在 WAL 下多写者会互相等锁，把写集中到单线程反而更快。
@@ -73,6 +73,21 @@ STEP_WEIGHT: dict[str, float] = {
 
 _SUFFIX = {"6": "SH", "0": "SZ", "3": "SZ", "4": "BJ", "8": "BJ", "9": "BJ"}
 
+# 一天只需要成功跑一次、且必须发生在收盘后的步骤 → 记录它完成时刻的 meta key。
+# 盘中跑过不算：那时的快照价与日线都还是半成品，收盘后必须重跑一遍。
+_AFTER_CLOSE_ONCE = {
+    "universe": "universe_sync",
+    "index": "index_sync",
+}
+
+# 财报类数据（ROE / 行业分类）的复查间隔。ROE 一年只在 4 月 / 8 月 / 10 月
+# 三个披露节点变，行业分类半年才调一次，每天拉一遍纯属浪费。
+_FUNDAMENTALS_FRESH_DAYS = 7
+
+# 除权事件的增量窗口。东财按除权日过滤，一周内新增的公告最多两页；
+# 一周足够覆盖「除权日临近才公告」这种滞后。
+_BONUS_INCREMENT_DAYS = 7
+
 
 def _suffix_of(code6: str) -> str:
     if code6.startswith(("688", "689", "60")):
@@ -93,7 +108,7 @@ class Syncer:
         self,
         repo: Repo | None = None,
         *,
-        workers: int = 8,
+        workers: int = 24,
         bars: int = 520,
         flow_days: int = 30,
         log: Log | None = None,
@@ -153,17 +168,22 @@ class Syncer:
         )
 
     # ------------------------------------------------------------------ 入口
-    def run(self, steps: Iterable[str] | str | None = None, *, full: bool = False) -> dict:
+    def run(self, steps: Iterable[str] | str | None = None, *, full: bool = False,
+            force: bool = False) -> dict:
         """按步骤同步。`full=True` 时 daily 走全量重拉（补历史用）。
 
-        增量模式只补最近 12 根，对「把历史往前延到 5 年」这件事完全无效——
-        库里已有的票永远不会被要求更早的数据。所以拉长窗口必须显式全量。
+        增量模式只补缺口根数（见 `_want_bars`），对「把历史往前延到 5 年」这件事
+        完全无效——库里已有的票永远不会被要求更早的数据。所以拉长窗口必须显式全量。
+
+        `force=True` 或只点了单个步骤时不走「今天已同步」的跳过判定：
+        用户明确点「同步标的名单」就是要重跑一遍，不该被缓存挡回去。
         """
         order = ["universe", "fundamentals", "bonus", "daily", "flow", "index",
                  "factor", "sector"]
         wanted = order if not steps or steps == "all" else (
             [steps] if isinstance(steps, str) else [s for s in order if s in set(steps)]
         )
+        gated = not force and len(wanted) > 1
         # 上一次被强杀（Ctrl-C / taskkill）会留下 status='running' 的僵尸行，
         # 不清掉的话「最近同步」里永远挂着一个跑不完的任务。
         self.repo.conn.execute(
@@ -180,6 +200,13 @@ class Syncer:
             self.emit(step, 0, 1, message=f"开始 {step}")
             run_id = self._run_row(step)
             try:
+                reason = self._skip_reason(step) if gated else None
+                if reason:
+                    self.emit(step, 1, 1, message=f"{step} 跳过：{reason}")
+                    done[step] = {"rows": 0, "seconds": 0.0, "skipped": True, "reason": reason}
+                    self._finish(run_id, 0, "ok", reason)
+                    self.log(f"[{step}] 跳过：{reason}")
+                    continue
                 kwargs = {"run_id": run_id}
                 if step == "daily" and full:
                     kwargs["full"] = True
@@ -198,6 +225,60 @@ class Syncer:
         self.repo.universe(force=True)
         self.repo._membership = {}
         return done
+
+    def _skip_reason(self, step: str) -> str | None:
+        """这一步现在重跑有意义吗。返回 None = 要跑，返回字符串 = 为什么不用跑。
+
+        三条判据各管一类数据：
+        - 名单 / 指数：当天 15:00 后已经拿到收盘终值，再跑一遍还是那些数
+        - ROE 行业：财报一年只变 4 次，7 天复查一次就够；出现空行业（新股）立刻跑
+        - 因子：日线、资金流、交易日三样输入都没变，重算出来是同一张表
+
+        返回具体原因而不是布尔值：「最近同步」里写「3 天前已同步，无新股」
+        比写「今天已同步」诚实——后者对一个三天没跑过的步骤是假话。
+        """
+        conn = self.repo.conn
+        if step in _AFTER_CLOSE_ONCE:
+            stamp = dbm.get_meta(conn, _AFTER_CLOSE_ONCE[step]) or ""
+            if stamp[:10] == dt.date.today().isoformat() and int(stamp[11:13] or 0) >= 15:
+                return f"收盘后 {stamp[11:16]} 已同步"
+            return None
+        if step == "fundamentals":
+            stamp = dbm.get_meta(conn, "fundamentals_sync") or ""
+            if not stamp:
+                return None
+            # 新上市的票 industry 是空串（`step_fundamentals` 跑完才会兜底成「其他」），
+            # 不补就会落到所有行业排名之外。
+            if conn.execute(
+                "SELECT 1 FROM symbol WHERE industry IS NULL OR industry='' LIMIT 1"
+            ).fetchone():
+                return None
+            days = (dt.date.today() - dt.date.fromisoformat(stamp[:10])).days
+            if days >= _FUNDAMENTALS_FRESH_DAYS:
+                return None
+            label = "今天" if days == 0 else f"{days} 天前"
+            return f"{label}已同步，无新股"
+        if step == "factor":
+            stamp = dbm.get_meta(conn, "factor_inputs") or ""
+            if not stamp or stamp != self._factor_inputs():
+                return None
+            trade = dbm.get_meta(conn, "trade_date") or ""
+            if conn.execute("SELECT 1 FROM factor WHERE trade_date=? LIMIT 1", (trade,)).fetchone():
+                return f"输入未变（{stamp}）"
+            return None
+        return None
+
+    def _factor_inputs(self) -> str:
+        """因子只依赖三样东西：日线到哪天、那天有多少根、资金流到哪天。
+
+        不拿 daily_sync / flow_sync 的时间戳当判据——那两个在「跑了一遍但没拿到
+        新数据」时也会推进，于是每次点同步都要白算 43s 的全市场因子。
+        """
+        conn = self.repo.conn
+        last = conn.execute("SELECT MAX(date) FROM daily").fetchone()[0] or ""
+        n = conn.execute("SELECT COUNT(*) FROM daily WHERE date=?", (last,)).fetchone()[0]
+        flow_last = conn.execute("SELECT MAX(date) FROM flow").fetchone()[0] or ""
+        return f"{last}|{n}|{flow_last}"
 
     # ------------------------------------------------------------------ 标的
     def step_universe(self, run_id: int = 0) -> int:
@@ -305,6 +386,7 @@ class Syncer:
         conn.execute("COMMIT")
         # 东财行业没覆盖到的（新股 / 停牌），给一个明确兜底而不是空串
         conn.execute("UPDATE symbol SET industry='其他' WHERE industry IS NULL OR industry=''")
+        dbm.set_meta(conn, "fundamentals_sync", dt.datetime.now().isoformat(timespec="seconds"))
         return n
 
     # ------------------------------------------------------------------ 分红
@@ -322,16 +404,27 @@ class Syncer:
     def step_bonus(self, run_id: int = 0) -> int:
         """分红送配事件。同时产出两样东西：股息率、前复权因子。
 
-        一次请求覆盖全市场，比按股票逐只查便宜三个数量级；页数随窗口线性增长，
-        默认 520 根日线约 30 页，拉到 5 年约 60 页。
+        事件先落 `bonus_event` 表，之后每天只增量补最近一周的公告（东财按
+        除权日过滤，最多两页）；表空时按日线窗口全量回填一次。原来每次都
+        重拉三年 30 页，而除权事件是既成事实，重拉一百遍还是那些行。
         """
-        since = self.bonus_since()
-        events = em.bonus_events(since)
+        conn = self.repo.conn
+        known = conn.execute("SELECT COUNT(*) FROM bonus_event").fetchone()[0]
+        if known:
+            # 增量窗口跟着「距上次同步几天」走：连休 9 天后的第一次同步要能把
+            # 整个假期补上，固定 7 天会在缺口处留下两天没检查的区间。
+            last = dbm.get_meta(conn, "bonus_sync") or ""
+            gap = (dt.date.today() - dt.date.fromisoformat(last[:10])).days if last else 0
+            since = (dt.date.today() - dt.timedelta(
+                days=max(_BONUS_INCREMENT_DAYS, gap + 3))).isoformat()
+            fresh = em.bonus_events(since)
+            if fresh:
+                self._store_bonus(fresh)
+        events = self._load_bonus()
         self._bonus = events
         if not events:
             return 0
         ttm_since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
-        conn = self.repo.conn
         rows = conn.execute("SELECT code, price, prev_close FROM snapshot").fetchall()
         conn.execute("BEGIN")
         n = 0
@@ -347,12 +440,44 @@ class Syncer:
                 n += 1
         conn.execute("UPDATE symbol SET dividend=0 WHERE dividend IS NULL")
         conn.execute("COMMIT")
+        dbm.set_meta(conn, "bonus_sync", dt.datetime.now().isoformat(timespec="seconds"))
         return n
 
+    def _store_bonus(self, events: dict[str, list[dict]]) -> None:
+        conn = self.repo.conn
+        conn.execute("BEGIN")
+        conn.executemany(
+            "INSERT INTO bonus_event(code, date, dps, ratio) VALUES(?,?,?,?) "
+            "ON CONFLICT(code, date) DO UPDATE SET dps=excluded.dps, ratio=excluded.ratio",
+            [(code, e["date"], e["dps"], e["ratio"])
+             for code, evs in events.items() for e in evs],
+        )
+        conn.execute("COMMIT")
+
+    def _load_bonus(self) -> dict[str, list[dict]]:
+        """复权要用的除权事件：整个日线窗口，从 `bonus_event` 读。
+
+        表空说明从没跑过 `step_bonus`（全新库，或 `--only daily` 首跑），
+        这时就地全量回填一次——空事件集会让整库复权因子全是 1，
+        K 线上每个除权日都是一根假跌。
+        """
+        since = self.bonus_since()
+        out: dict[str, list[dict]] = {}
+        for code, date, dps, ratio in self.repo.conn.execute(
+            "SELECT code, date, dps, ratio FROM bonus_event WHERE date>=? ORDER BY date",
+            (since,),
+        ):
+            out.setdefault(code, []).append({"date": date, "dps": dps, "ratio": ratio})
+        if out:
+            return out
+        out = em.bonus_events(since)
+        if out:
+            self._store_bonus(out)
+        return out
+
     # ------------------------------------------------------------------ 日线
-    def _fetch_daily(self, code: str, incremental: bool) -> tuple[str, list[dict]]:
+    def _fetch_daily(self, code: str, want: int) -> tuple[str, list[dict]]:
         """一只票的日线：新浪不复权原始价 + 分红事件推算的前复权因子。"""
-        want = 12 if incremental else self.bars
         bars = sina.kline(code, want)
         if not bars:
             return code, []
@@ -362,6 +487,18 @@ class Syncer:
             for i, b in enumerate(bars)
         ]
         return code, rows
+
+    def _want_bars(self, last_date: str | None) -> int:
+        """按库里最后一根 K 线的日期决定拉多少根。
+
+        固定 12 根只能覆盖「一两天没同步」。隔了两个月再点同步时，12 根补不上
+        中间那段，缺口就此永久留在库里——K 线画出来是一段断档，动量、回测
+        都只看得见后半段。自然日间隔是交易日数的上界，多给 3 根余量。
+        """
+        if not last_date:
+            return self.bars
+        gap = (dt.date.today() - dt.date.fromisoformat(last_date)).days
+        return min(self.bars, max(12, gap + 3))
 
     def _needs_rebuild(self, code: str, rows: list[dict]) -> bool:
         """增量窗口里出现除权事件时，必须整段重建——因为除权会改写**全部**
@@ -493,7 +630,7 @@ class Syncer:
             return ""
         return last_date
 
-    def _skip_fresh(self, codes: list[str], incremental: bool) -> set[str]:
+    def _skip_fresh(self, codes: list[str], incremental: bool, last: dict[str, str]) -> set[str]:
         """收盘后已经落过终值的票，重跑时不必再抓。
 
         只在增量模式下生效（`full=True` 是要强制重拉全部历史），且三个条件
@@ -506,8 +643,6 @@ class Syncer:
         if not trade_date:
             return set()
         recent = (dt.date.today() - dt.timedelta(days=30)).isoformat()
-        conn = self.repo.conn
-        last = {r[0]: r[1] for r in conn.execute("SELECT code, MAX(date) FROM daily GROUP BY code")}
         out: set[str] = set()
         for code in codes:
             if last.get(code) != trade_date:
@@ -524,22 +659,19 @@ class Syncer:
         if limit:
             codes = codes[:limit]
         if not self._bonus:
-            # 单独跑 --only daily 时没有 bonus 缓存，就地补一次，否则复权因子全为 1
-            # 这步要抓 30 页，先报一句，否则界面上会静默半分钟
-            self.emit("daily", 0, len(codes), message="取除权事件（复权因子要用）")
-            since = self.bonus_since()
-            try:
-                self._bonus = em.bonus_events(since)
-            except Exception:                              # noqa: BLE001
-                self._bonus = {}
+            # 单独跑 --only daily 时没有 bonus 缓存，从库里读（step_bonus 落过）；
+            # 库里也没有说明是新库，`_load_bonus` 会就地全量回填一次
+            self.emit("daily", 0, len(codes), message="读取除权事件（复权因子要用）")
+            self._bonus = self._load_bonus()
         incremental = not full
         # 收盘后：当日那根先用快照拼出来落库。这一步把「5579 次逐只请求」
         # 压成「0 次」，后面的逐只抓取只负责补快照覆盖不到的票（停牌/新股）。
         if incremental:
             self.flush_today()
-        # 库里还没有的票必须整段拉，否则增量模式只给它 12 根，画不出图也进不了因子表
-        have = {
-            r[0] for r in self.repo.conn.execute("SELECT DISTINCT code FROM daily").fetchall()
+        # 库里最后一根 K 线的日期：既用来判「这只票要不要重抓」，也用来算缺口根数
+        last = {
+            r[0]: r[1]
+            for r in self.repo.conn.execute("SELECT code, MAX(date) FROM daily GROUP BY code")
         }
         written = 0
         rebuild: list[str] = []
@@ -550,7 +682,7 @@ class Syncer:
         # 判断标准不看「今天有没有同步过」，而看「上次同步是否发生在收盘后」——
         # 早盘 9:31 同步过的票，15:00 之后再跑一遍必须重新拉，否则留下的
         # 是一根只有半天的 K 线。
-        skipped = self._skip_fresh(pending, incremental)
+        skipped = self._skip_fresh(pending, incremental, last)
         if incremental:
             covered = self._covered_by_snapshot()
             extra = [c for c in pending if c in covered and c not in skipped]
@@ -580,12 +712,12 @@ class Syncer:
                 """返回 (code, rows, 是否走的增量)。
 
                 增量与否必须逐只判断：库里没有的票要整段拉 520 根，
-                而「除权后需整段重建」这条规则只对**只补了 12 根**的票成立。
+                而「除权后需整段重建」这条规则只对**增量补的**票成立。
                 早先这里错用了整批的 `incremental` 标志，导致全量拉的 520 根
                 一撞上两年前的分红事件就被误判成需重建，既不落盘也不计失败。
                 """
-                inc = incremental and c in have
-                _, rows = self._fetch_daily(c, inc)
+                inc = incremental and c in last
+                _, rows = self._fetch_daily(c, self._want_bars(last.get(c)) if inc else self.bars)
                 return c, rows, inc
 
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
@@ -642,7 +774,7 @@ class Syncer:
             for i in range(0, len(rebuild), 120):
                 chunk = rebuild[i: i + 120]
                 with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                    results = list(pool.map(lambda c: self._fetch_daily(c, False), chunk))
+                    results = list(pool.map(lambda c: self._fetch_daily(c, self.bars), chunk))
                 written += self._flush_daily([(c, rows) for c, rows in results])
                 # 重建阶段占总数的比例很小，进度条停在总量分母上不往回跳，
                 # 具体在重建第几只用 message 说明
@@ -714,8 +846,22 @@ class Syncer:
 
         batch: list[tuple[str, list[dict]]] = []
         empty = 0
+        # 只取缺口那几天：这条接口的耗时几乎与返回行数成正比，30 天 → 51 只/秒，
+        # 2 天 → 116 只/秒。全市场一遍 110s 还是 48s，差在这一个参数上。
+        last = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT code, MAX(date) FROM flow GROUP BY code")
+        }
+        today = dt.date.today()
+        want = {
+            c: self.flow_days if not last.get(c) else min(
+                self.flow_days,
+                max(2, (today - dt.date.fromisoformat(last[c])).days + 1),
+            )
+            for c in codes
+        }
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {pool.submit(sina.money_flow, c, self.flow_days): c for c in codes}
+            futures = {pool.submit(sina.money_flow, c, want[c]): c for c in codes}
             for i, fut in enumerate(as_completed(futures), 1):
                 code = futures[fut]
                 try:
@@ -801,6 +947,7 @@ class Syncer:
                     [(code, c) for c in members],
                 )
                 conn.execute("COMMIT")
+        dbm.set_meta(conn, "index_sync", dt.datetime.now().isoformat(timespec="seconds"))
         return written
 
     # ------------------------------------------------------------------ 因子
@@ -920,6 +1067,7 @@ class Syncer:
 
         dbm.set_meta(conn, "factor_sync", dt.datetime.now().isoformat(timespec="seconds"))
         dbm.set_meta(conn, "trade_date", date)
+        dbm.set_meta(conn, "factor_inputs", self._factor_inputs())
         return written
 
 

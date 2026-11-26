@@ -27,7 +27,7 @@ const segments = computed(() => {
   const z = props.plan.zones
   const seg = [
     { key: 'stop', label: '止损', low: z.stop.low, high: z.stop.high, color: 'var(--af-down)' },
-    { key: 'add', label: '加仓', low: z.add.low, high: z.add.high, color: '#b54708' },
+    { key: 'add', label: '加仓', low: z.add.low, high: z.add.high, color: 'var(--af-warn)' },
     { key: 'entry', label: '建仓', low: z.entry.low, high: z.entry.high, color: 'var(--af-brand)' },
     { key: 'tp1', label: '目标', low: z.target[0].low, high: z.target[0].high, color: 'var(--af-up)' },
   ]
@@ -39,6 +39,14 @@ const segments = computed(() => {
 })
 
 const refPos = computed(() => pct(props.plan.ref_price))
+
+/* compact（计划卡）里不展开图例，两端改成直接写「止损 / 目标」：
+   一串彩色段没有图例时，光看颜色猜不出哪段是止损 */
+const edges = computed(() => {
+  const z = props.plan.zones
+  const target = z.target[1]?.high ?? z.target[0].high
+  return { stop: z.stop.low, target }
+})
 </script>
 
 <template>
@@ -58,13 +66,15 @@ const refPos = computed(() => pct(props.plan.ref_price))
       </span>
     </div>
     <div class="scale">
-      <span class="num">{{ bounds.min.toFixed(2) }}</span>
+      <span v-if="showLegend" class="num">{{ bounds.min.toFixed(2) }}</span>
+      <span v-else class="edge">止损 <b class="num">{{ edges.stop.toFixed(2) }}</b></span>
       <span v-if="showLegend" class="legend">
         <span v-for="s in segments.legend" :key="s.label" class="lg">
           <i :style="{ background: s.color }" />{{ s.label }}
         </span>
       </span>
-      <span class="num">{{ bounds.max.toFixed(2) }}</span>
+      <span v-if="showLegend" class="num">{{ bounds.max.toFixed(2) }}</span>
+      <span v-else class="edge">目标 <b class="num">{{ edges.target.toFixed(2) }}</b></span>
     </div>
   </div>
 </template>
@@ -78,70 +88,67 @@ const refPos = computed(() => pct(props.plan.ref_price))
 
 .track {
   position: relative;
-  height: 12px;
-  margin-top: 15px;
+  height: 6px;
+  margin-top: 18px;
 }
 
 .compact .track {
-  height: 10px;
-  margin-top: 14px;
+  height: 6px;
+  margin-top: 18px;
 }
 
-/* 底槽：留出未覆盖的价格区间，让「区间」这件事可读 */
+/* 底槽是一根实心淡轨：区间段是「贴在上面的色带」，不是一排刻度齿 */
 .rail {
   position: absolute;
   inset: 0;
-  border-radius: 3px;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--af-surface-3) 0 4px,
-    transparent 4px 7px
-  );
+  border-radius: 999px;
+  background: var(--af-surface-3);
 }
 
 .seg {
   position: absolute;
   top: 0;
   bottom: 0;
-  border-radius: 3px;
-  opacity: 0.92;
-  transition: opacity 0.14s ease;
+  border-radius: 999px;
+  transition: opacity 0.14s ease, filter 0.14s ease;
 }
 
 .seg:hover {
-  opacity: 1;
+  filter: brightness(1.08);
 }
 
 .ref {
   position: absolute;
-  top: -15px;
-  bottom: -3px;
+  top: -16px;
+  bottom: -4px;
   width: 0;
-  border-left: 1px dashed var(--af-ink-3);
+  border-left: 1.5px solid var(--af-ink);
 }
 
 .ref-dot {
   position: absolute;
-  left: -2.5px;
+  left: -3.5px;
   top: 12px;
-  width: 5px;
-  height: 5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--af-ink);
+  background: var(--af-surface);
+  border: 2px solid var(--af-ink);
 }
 
 .ref-label {
   position: absolute;
   left: 50%;
-  top: -2px;
+  top: -3px;
   transform: translateX(-50%);
   font-size: 10px;
   font-weight: 650;
-  line-height: 13px;
+  line-height: 14px;
   color: var(--af-ink);
   background: var(--af-surface);
-  padding: 0 3px;
-  border-radius: 2px;
+  padding: 0 4px;
+  border: 1px solid var(--af-border);
+  border-radius: 5px;
   white-space: nowrap;
 }
 
@@ -151,7 +158,13 @@ const refPos = computed(() => pct(props.plan.ref_price))
   justify-content: space-between;
   gap: 8px;
   font-size: 10.5px;
-  color: var(--af-ink-3);
+  color: var(--af-ink-4);
+}
+
+.edge b {
+  margin-left: 3px;
+  font-weight: 600;
+  color: var(--af-ink-2);
 }
 
 .legend {

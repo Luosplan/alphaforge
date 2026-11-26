@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import * as echarts from 'echarts'
 import type { MinuteResponse } from '@/types'
-import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
+import { axisBase, chartColors, tooltipBase, useEChart, withAlpha } from '@/composables/useEChart'
 
 const props = withDefaults(defineProps<{ data: MinuteResponse | null; height?: number }>(), { data: null, height: 360 })
 const el = ref<HTMLElement | null>(null)
@@ -20,7 +20,7 @@ useEChart(
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'line', lineStyle: { color: '#cdd2dc', type: 'dashed' } },
+        axisPointer: { type: 'line', lineStyle: { color: chartColors.line, type: 'dashed' } },
         ...tooltipBase,
         formatter: (params: any) => {
           const list = Array.isArray(params) ? params : [params]
@@ -30,10 +30,10 @@ useEChart(
           const cls = p >= d.prev_close ? chartColors.up : chartColors.down
           return `<div style="font-weight:600;margin-bottom:5px">${d.times[i]}</div>
             <div style="font-size:12px;display:grid;grid-template-columns:auto auto;gap:3px 14px">
-              <span style="color:#8b95a7">价格</span><span style="color:${cls};font-weight:600">${p.toFixed(2)}</span>
-              <span style="color:#8b95a7">涨跌</span><span style="color:${cls}">${pct}%</span>
-              <span style="color:#8b95a7">均价</span><span>${d.avg[i].toFixed(2)}</span>
-              <span style="color:#8b95a7">量</span><span>${(d.volumes[i] / 1e4).toFixed(2)} 万手</span>
+              <span style="color:${chartColors.ink3}">价格</span><span style="color:${cls};font-weight:600">${p.toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">涨跌</span><span style="color:${cls}">${pct}%</span>
+              <span style="color:${chartColors.ink3}">均价</span><span>${d.avg[i].toFixed(2)}</span>
+              <span style="color:${chartColors.ink3}">量</span><span>${(d.volumes[i] / 1e4).toFixed(2)} 万手</span>
             </div>`
         },
       },
@@ -71,15 +71,15 @@ useEChart(
           lineStyle: { width: 1.6, color },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: up.value ? 'rgba(229,72,77,0.22)' : 'rgba(15,157,88,0.22)' },
-              { offset: 1, color: 'rgba(255,255,255,0)' },
+              { offset: 0, color: up.value ? withAlpha(chartColors.up, 0.2) : withAlpha(chartColors.down, 0.2) },
+              { offset: 1, color: withAlpha(chartColors.surface, 0) },
             ]),
           },
           markLine: {
             silent: true,
             symbol: 'none',
             label: { show: false },
-            data: [{ yAxis: d.prev_close, lineStyle: { color: '#cdd2dc', type: 'dashed', width: 1 } }],
+            data: [{ yAxis: d.prev_close, lineStyle: { color: chartColors.line, type: 'dashed', width: 1 } }],
           },
           z: 4,
         },
@@ -88,7 +88,7 @@ useEChart(
           type: 'line',
           data: d.avg,
           symbol: 'none',
-          lineStyle: { width: 1, color: '#b54708', opacity: 0.85 },
+          lineStyle: { width: 1, color: chartColors.warn, opacity: 0.85 },
           z: 3,
         },
         {
@@ -99,7 +99,7 @@ useEChart(
           data: d.volumes.map((v, i) => ({
             value: v,
             itemStyle: {
-              color: i > 0 && d.prices[i] < d.prices[i - 1] ? 'rgba(15,157,88,0.45)' : 'rgba(229,72,77,0.45)',
+              color: i > 0 && d.prices[i] < d.prices[i - 1] ? withAlpha(chartColors.down, 0.45) : withAlpha(chartColors.up, 0.45),
             },
           })),
           barWidth: '60%',

@@ -336,7 +336,7 @@ class Autopilot:
             self.state["running"] = "盘中盯盘"
         self._save()
         try:
-            syncer = Syncer(get_market().repo, workers=16)
+            syncer = Syncer(get_market().repo, workers=24)
             written = syncer.refresh_snapshot()
             mkt = get_market()
             breadth = mkt.repo.market_breadth()
@@ -455,7 +455,7 @@ class Autopilot:
         steps: list[dict] = []
         try:
             mkt = get_market()
-            syncer = Syncer(mkt.repo, workers=16)
+            syncer = Syncer(mkt.repo, workers=24)
             # 快照只服务「盘中看当前价」，收盘链路真正要用的是日线。新浪这个
             # 接口偶发 connection refused（实测 2026-11-20 15:07 那次就是），
             # 它挂在最外层时一次抖动就能把推进、复盘、进化全炸掉——当天

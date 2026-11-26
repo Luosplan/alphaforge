@@ -9,7 +9,7 @@
  */
 import { computed, ref } from 'vue'
 import * as echarts from 'echarts'
-import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
+import { axisBase, chartColors, tooltipBase, useEChart, withAlpha } from '@/composables/useEChart'
 import { useAppStore } from '@/stores/app'
 import { fmtNum, fmtPct } from '@/utils/format'
 
@@ -44,7 +44,7 @@ useEChart(
       tooltip: {
         trigger: 'axis',
         ...tooltipBase,
-        axisPointer: { lineStyle: { color: '#c7cede', type: 'dashed' } },
+        axisPointer: { lineStyle: { color: chartColors.line, type: 'dashed' } },
         formatter: (params: any) => {
           const p = Array.isArray(params) ? params[0] : params
           if (!p) return ''
@@ -52,11 +52,11 @@ useEChart(
           const tone = point.change_pct >= 0 ? chartColors.up : chartColors.down
           return `<div style="font-weight:600;margin-bottom:4px">${point.date}</div>
             <div style="display:flex;justify-content:space-between;gap:20px">
-              <span style="color:#8b95a7">收盘</span>
+              <span style="color:${chartColors.ink3}">收盘</span>
               <span style="font-weight:650">${fmtNum(point.value, 2)}</span>
             </div>
             <div style="display:flex;justify-content:space-between;gap:20px">
-              <span style="color:#8b95a7">涨跌</span>
+              <span style="color:${chartColors.ink3}">涨跌</span>
               <span style="font-weight:600;color:${tone}">${fmtPct(point.change_pct)}</span>
             </div>`
         },
@@ -91,15 +91,15 @@ useEChart(
           lineStyle: { width: 1.6, color: main },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: rising.value ? 'rgba(217,45,32,0.16)' : 'rgba(3,152,85,0.16)' },
-              { offset: 1, color: 'rgba(255,255,255,0)' },
+              { offset: 0, color: rising.value ? withAlpha(chartColors.up, 0.18) : withAlpha(chartColors.down, 0.18) },
+              { offset: 1, color: withAlpha(chartColors.surface, 0) },
             ]),
           },
           markLine: {
             silent: true,
             symbol: 'none',
             label: { show: false },
-            data: [{ yAxis: base, lineStyle: { color: '#d6dbe6', type: 'dashed', width: 1 } }],
+            data: [{ yAxis: base, lineStyle: { color: chartColors.line, type: 'dashed', width: 1 } }],
           },
           markPoint: {
             symbol: 'circle',

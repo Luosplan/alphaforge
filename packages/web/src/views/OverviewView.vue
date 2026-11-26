@@ -174,7 +174,7 @@ function openIndex(code: string) {
           </div>
         </div>
 
-        <div v-if="scope === 'cn'" class="panel-body">
+        <div v-if="scope === 'cn'" class="panel-body flush">
           <div class="idx-grid">
             <button
               v-for="i in cnIndices"
@@ -319,7 +319,6 @@ function openIndex(code: string) {
               <MarketGauge
                 :score="data.market.temperature.score"
                 :label="data.market.temperature.label"
-                :height="118"
               />
               <p class="temp-advice">{{ data.market.temperature.advice }}</p>
             </div>
@@ -442,7 +441,7 @@ function openIndex(code: string) {
   display: inline-flex;
   padding: 2px;
   gap: 2px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--af-surface-3);
 }
 
@@ -451,13 +450,13 @@ function openIndex(code: string) {
   height: 24px;
   padding: 0 10px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--af-ink-3);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.14s ease, color 0.14s ease;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
 
 .seg-btn:hover {
@@ -466,38 +465,40 @@ function openIndex(code: string) {
 
 .seg-btn.on {
   background: var(--af-surface);
-  color: var(--af-brand);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+  color: var(--af-ink);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
 }
 
 .live-tag {
   margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 3px;
+  padding: 1px 6px;
+  border-radius: 5px;
   background: var(--af-brand-soft);
-  color: var(--af-brand);
+  color: var(--af-brand-ink);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
 }
 
 /* ---------------------------------------------------------------- 境内指数 */
+/* 七格连成一块板面：靠 1px 分隔线切格，而不是七张各自带边框的小卡片 */
 .idx-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
+  gap: 1px;
+  background: var(--af-border);
 }
 
 .idx-card {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 9px 11px 10px;
-  border: 1px solid var(--af-border);
-  border-radius: 7px;
+  padding: 11px 13px 12px;
+  border: 0;
+  border-radius: 0;
   background: var(--af-surface);
   text-align: left;
   cursor: default;
-  transition: border-color 0.14s ease, background 0.14s ease;
+  transition: background 0.14s ease;
 }
 
 .idx-card.link {
@@ -505,7 +506,6 @@ function openIndex(code: string) {
 }
 
 .idx-card.link:hover {
-  border-color: var(--af-border-strong);
   background: var(--af-surface-2);
 }
 
@@ -529,9 +529,10 @@ function openIndex(code: string) {
 }
 
 .idx-value {
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
 
@@ -540,10 +541,8 @@ function openIndex(code: string) {
   align-items: center;
   gap: 5px;
   font-size: 10.5px;
-  color: var(--af-ink-3);
-  padding-top: 2px;
-  border-top: 1px dashed var(--af-border);
-  margin-top: 1px;
+  color: var(--af-ink-4);
+  padding-top: 3px;
 }
 
 .idx-foot .num {
@@ -598,7 +597,7 @@ function openIndex(code: string) {
   padding: 8px 12px 6px;
   border: 1px solid var(--af-border);
   border-radius: 8px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f3f5f9 100%);
+  background: var(--af-surface-2);
 }
 
 .map-legend {
@@ -857,11 +856,11 @@ function openIndex(code: string) {
 }
 
 .flow-fill.pos {
-  background: linear-gradient(90deg, rgba(217, 45, 32, 0.38), var(--af-up));
+  background: linear-gradient(90deg, rgba(217, 58, 50, 0.3), var(--af-up));
 }
 
 .flow-fill.neg {
-  background: linear-gradient(90deg, var(--af-down), rgba(3, 152, 85, 0.38));
+  background: linear-gradient(90deg, var(--af-down), rgba(15, 157, 99, 0.3));
 }
 
 .flow-val {
@@ -977,9 +976,15 @@ function openIndex(code: string) {
   line-height: 1.5;
 }
 
-@media (max-width: 1279px) {
+@media (max-width: 1439px) {
+  /* 7 个指数排 4 列会空出一格；改用可伸缩的 flex，末行自动铺满 */
   .idx-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+  }
+  .idx-card {
+    flex: 1 1 calc(25% - 1px);
   }
   .gl-cards {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -990,8 +995,8 @@ function openIndex(code: string) {
 }
 
 @media (max-width: 767px) {
-  .idx-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .idx-card {
+    flex-basis: calc(50% - 1px);
   }
   .gl-stat {
     grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -38,10 +38,10 @@ Docker 镜像从 ~900MB 降到 ~180MB，也避免二进制 wheel 与 Python 版�
 | 数据 | 来源 | 频率 |
 | --- | --- | --- |
 | 全 A 名单 / 横截面快照 | 新浪 `Market_Center` | 每次同步 |
-| 个股与指数日线（520 根，不复权） | 新浪 `CN_MarketData.getKLineData` | 增量补 12 根 |
-| 个股日频资金流（主力 / 超大单） | 新浪 `MoneyFlow` | 增量补 30 天 |
-| ROE + 东财二级行业 | 东财 `datacenter` `RPT_LICO_FN_CPD` | 每次同步 |
-| 分红送配（复权因子 + 股息率） | 东财 `datacenter` `RPT_SHAREBONUS_DET` | 近 3 年 |
+| 个股与指数日线（520 根，不复权） | 新浪 `CN_MarketData.getKLineData` | 增量按缺口补根数 |
+| 个股日频资金流（主力 / 超大单） | 新浪 `MoneyFlow` | 增量按缺口补天数 |
+| ROE + 东财二级行业 | 东财 `datacenter` `RPT_LICO_FN_CPD` | 新股补行业，否则 7 天一次 |
+| 分红送配（复权因子 + 股息率） | 东财 `datacenter` `RPT_SHAREBONUS_DET` | 事件落库，每日增量 7 天 |
 | 指数成分股 | 东财 `datacenter` `RPT_INDEX_TS_COMPONENT` | 每次同步 |
 | **实时报价（个股 + 指数）** | **新浪 `hq.sinajs.cn` 批量** | **盘中 3 秒** |
 | **当日分时（逐分钟 + 均价线）** | **新浪 `CN_MinlineService`** | **盘中 20 秒** |
@@ -83,7 +83,7 @@ alphaforge/
 │   │       ├── sources/            # base（限速/重试/解压）/ sina / tencent / eastmoney
 │   │       ├── factors.py          # 一只票 → 一行 34 因子
 │   │       ├── repo.py             # engine 的唯一数据入口
-│   │       ├── sync.py             # 7 步编排：名单/财报/分红/日线/资金流/指数/因子
+│   │       ├── sync.py             # 8 步编排：名单/财报/分红/日线/资金流/指数/因子/板块
 │   │       └── cli.py              # sync / status / query
 │   ├── engine/                     # 计算引擎（只依赖 core + data）
 │   │   └── alphaforge_engine/
@@ -163,8 +163,8 @@ core  ←  data  ←  engine  ←  api  →  web
 | --- | --- | --- | --- |
 | M01 行情展示 | `engine/market.py` + `panorama.py` + `MarketView` | ✅ P0 完成 | 分时 / 日 / 周 / 月 / 60 分，前复权 / 后复权 / 不复权，MA / BOLL / MACD / KDJ；顶部市场全景（温度 + 宽度 + 7 大指数） |
 | M02 自选股管理 | `routers/watchlist.py` + `MarketView` | ✅ P0 完成 | 多分组、增删、点击切换主图 |
-| M03 持仓跟踪 | `engine/portfolio.py` + `PortfolioView` | ✅ P0 完成 | 加权成本、可卖数量、浮动盈亏、权重 |
-| M04 成交记录 | `routers/portfolio.py` + 手工记账弹窗 | 🟡 P1 部分 | 手工记账可用；对账单导入为 V1.0 |
+| M03 持仓跟踪 | `engine/portfolio.py` + `PortfolioView` | ✅ P0 完成 | 来源为实验室各策略账户的成交：加权成本、可卖数量、浮盈、权重、策略归属、待成交委托 |
+| M04 成交记录 | `routers/portfolio.py` | ✅ P0 完成 | 计划卡挂单 → 次日开盘成交 → 账本记账；不做手工录入，页面上每笔都能对上计划卡 |
 | M05 多因子选股 | `engine/selector.py` + `ScreenerView` | ✅ P0 完成 | 三模式（多因子 / AI 问股 / 条件筛选）、34 个字段、策略 CRUD、Z-score 加权、行业分散 |
 | M06 区间计划卡 | `engine/signal.py` + `SignalsView` | ✅ P0 完成 | 候选取自选股 Top-N（不再写死名单）、ATR + 布林合成四区、4:3:3 分批、R:R、置信度、失效条件、可移除/恢复 |
 | M07 事前风控 | `portfolio.check_plan` | ✅ P0 完成 | 单票 15% / 行业 30% / 总仓 90% / 单笔风险 1% |
@@ -183,11 +183,11 @@ core  ←  data  ←  engine  ←  api  →  web
 
 | 设置项 | 默认 | 影响 |
 | --- | --- | --- |
-| 佣金费率 / 最低佣金 | 万分之 2.5 / 5 元 | 手工记账扣费、风控卡的预估费用 |
+| 佣金费率 / 最低佣金 | 万分之 2.5 / 5 元 | 模拟盘成交扣费、风控卡的预估费用 |
 | 印花税（仅卖出） | 千分之 0.5 | 卖出费用、成交流水的 `tax` 字段 |
 | 过户费 | 万分之 0.1 | 买卖双向费用 |
 | 滑点 | 5 bp | 仅回测成交价假设，不计入费用 |
-| 购买权限 | 沪深主板 / 创业板 / 科创板开通，北交所关闭 | 未开通板块在 `check_plan` 里判 `BLOCK`，手工记账直接 400 |
+| 购买权限 | 沪深主板 / 创业板 / 科创板开通，北交所关闭 | 未开通板块在 `check_plan` 里判 `BLOCK`，模拟盘选股与委托撮合也按同一份权限过滤 |
 
 板块键统一为 `sh_main / sz_main / gem / star / bse`，由 `universe.board_key()`
 按标的元数据或代码段推断，前后端共用同一套键，告警文案里的板块名也从
@@ -327,7 +327,7 @@ core  ←  data  ←  engine  ←  api  →  web
 
 ```bash
 make install      # 安装前后端依赖
-make sync         # 首次全量同步真实行情（5578 只 / 约 19 分钟，之后增量约 1 分钟）
+make sync         # 首次全量同步真实行情（5578 只 / 约 19 分钟，之后增量通常 1 分钟内）
 make status       # 看库里有多少标的、多少日线、最近同步时间
 make dev          # 提示需开两个终端
 make serve        # 构建前端 + 单进程托管 → http://localhost:8000
@@ -346,11 +346,16 @@ make docker       # 容器启动
 
 ```bash
 export PYTHONPATH="packages/core:packages/data"     # Windows 用 ; 分隔
-python -m alphaforge_data sync --only all --workers 12
+python -m alphaforge_data sync --only all --workers 24
 ```
 
 只补某一步可以 `--only daily` / `--only factor`。同步是**幂等**的：
-库里有数据的票只补最近 12 根，没有的整段拉 520 根，重复跑不会产生重复行。
+库里有数据的票只补缺口（落后几天补几天，没有的整段拉 520 根），重复跑不会产生重复行。
+`all` 模式下，当天收盘后已经跑出终值的步骤（标的名单 / 指数 / 因子）会被跳过，
+再点一次同步通常几秒就结束；要强制重跑加 `--force`。
+
+ROE / 行业与分红送配不按天拉：前者只在「出现新上市代码（行业为空）或距上次超过 7 天」时跑，
+后者每天只增量查最近 7 天的除权公告——事件已落 `bonus_event` 表，复权因子从库里读整个日线窗口。
 
 ### 开发模式（前后端分离，热更新）
 
@@ -496,8 +501,7 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 | GET | `/portfolio/summary` | 账户汇总 |
 | GET | `/portfolio/holdings` | 持仓明细 |
 | GET | `/portfolio/equity?days=` | 净值曲线 + 基准 |
-| GET | `/portfolio/trades` | 成交流水 + 统计 |
-| POST | `/portfolio/trades` | 手工记账 |
+| GET | `/portfolio/trades` | 成交流水 + 统计（各策略账户合并，只读） |
 | GET | `/select/strategies` | 策略列表（内置 + 自定义） |
 | POST | `/select/strategies` | 新建策略 |
 | PUT | `/select/strategies/{id}` | 更新策略（内置不可改，返回 400） |
@@ -607,7 +611,8 @@ node scripts/shots.cjs "/overview,/market" 1440x1000 tag   # 分区截图
 - **ROE 取最新年报**（不是最新报告期）。`WEIGHTAVG_ROE` 是年初至今的累计口径，
   三季报的 ROE 不是年化 ROE，拿它筛「ROE 大于 15%」等于要求「三个月赚 15%」；
   行业分类仍取最新报告期，保证当年新上市的票也有行业
-- 全量同步约 19 分钟；之后每次增量约 1~2 分钟，只补最近 12 根日线与 30 天资金流
+- 全量同步约 19 分钟；之后每次增量通常 1 分钟内——收盘后当日那根 K 线由全市场快照直接拼出
+  （5578 次逐只请求 → 1 次），逐只抓取只负责补快照覆盖不到的票
 - 历史成交额为**估算值**（`量 × 均价`），仅最新交易日用快照真实成交额覆盖；
   指数日线的成交额恒为 0（源不提供，不编造）
 - 量比由日线自算（`当日量 / 5 日均量`），源本身不提供量比字段

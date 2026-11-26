@@ -137,97 +137,117 @@ onMounted(async () => {
 
 <template>
   <div class="auth">
-    <div class="card">
-      <div class="brand">
-        <span class="mark">AF</span>
-        <span class="name">AlphaForge</span>
+    <aside class="aside">
+      <div class="aside-top">
+        <span class="aside-mark">AF</span>
+        <span class="aside-word">AlphaForge</span>
       </div>
 
-      <header class="head">
-        <h1>{{ title }}</h1>
-        <p>{{ subtitle }}</p>
-      </header>
-
-      <div v-if="mode === 'login'" class="form">
-        <label class="field">
-          <span class="label">账号</span>
-          <el-input
-            v-model="form.username"
-            placeholder="admin"
-            maxlength="32"
-            autocomplete="username"
-            @keyup.enter="submitLogin"
-          />
-        </label>
-
-        <label class="field">
-          <span class="label">密码</span>
-          <el-input
-            ref="passwordRef"
-            v-model="form.password"
-            type="password"
-            show-password
-            placeholder="请输入密码"
-            autocomplete="current-password"
-            @keyup.enter="submitLogin"
-          />
-        </label>
-
-        <p v-if="error" class="error">{{ error }}</p>
-
-        <el-button type="primary" class="submit" :loading="loading" @click="submitLogin">
-          登录
-        </el-button>
-
-        <p class="tip">首次使用 admin / admin</p>
+      <div class="aside-body">
+        <h2>个人 A 股量化工作台</h2>
+        <ul class="aside-list">
+          <li>行情、全球指数与市场温度</li>
+          <li>多因子选股与区间计划卡</li>
+          <li>持仓净值、交易流水与复盘日记</li>
+        </ul>
       </div>
 
-      <div v-else class="form">
-        <label v-if="needOld" class="field">
-          <span class="label">当前密码</span>
-          <el-input
-            ref="oldPasswordRef"
-            v-model="form.oldPassword"
-            type="password"
-            show-password
-            placeholder="登录时使用的密码"
-            autocomplete="current-password"
-            @keyup.enter="submitChange"
-          />
-        </label>
+      <span class="aside-foot">本地运行 · 数据保存在本机</span>
+    </aside>
 
-        <label class="field">
-          <span class="label">新密码</span>
-          <el-input
-            ref="newPasswordRef"
-            v-model="form.newPassword"
-            type="password"
-            show-password
-            placeholder="至少 6 位"
-            autocomplete="new-password"
-            @keyup.enter="submitChange"
-          />
-        </label>
+    <div class="pane">
+      <div class="card">
+        <div class="brand">
+          <span class="mark">AF</span>
+          <span class="name">AlphaForge</span>
+        </div>
 
-        <label class="field">
-          <span class="label">确认新密码</span>
-          <el-input
-            v-model="form.confirmPassword"
-            type="password"
-            show-password
-            placeholder="再输入一次"
-            autocomplete="new-password"
-            @keyup.enter="submitChange"
-          />
-        </label>
+        <header class="head">
+          <h1>{{ title }}</h1>
+          <p>{{ subtitle }}</p>
+        </header>
 
-        <p v-if="error" class="error">{{ error }}</p>
+        <div v-if="mode === 'login'" class="form">
+          <label class="field">
+            <span class="label">账号</span>
+            <el-input
+              v-model="form.username"
+              placeholder="admin"
+              maxlength="32"
+              autocomplete="username"
+              @keyup.enter="submitLogin"
+            />
+          </label>
 
-        <el-button type="primary" class="submit" :loading="loading" @click="submitChange">
-          保存并进入
-        </el-button>
+          <label class="field">
+            <span class="label">密码</span>
+            <el-input
+              ref="passwordRef"
+              v-model="form.password"
+              type="password"
+              show-password
+              placeholder="请输入密码"
+              autocomplete="current-password"
+              @keyup.enter="submitLogin"
+            />
+          </label>
 
-        <p class="tip">忘记密码：删除 data/auth.json 后重启</p>
+          <p v-if="error" class="error">{{ error }}</p>
+
+          <el-button type="primary" class="submit" :loading="loading" @click="submitLogin">
+            登录
+          </el-button>
+
+          <p class="tip">首次使用 admin / admin</p>
+        </div>
+
+        <div v-else class="form">
+          <label v-if="needOld" class="field">
+            <span class="label">当前密码</span>
+            <el-input
+              ref="oldPasswordRef"
+              v-model="form.oldPassword"
+              type="password"
+              show-password
+              placeholder="登录时使用的密码"
+              autocomplete="current-password"
+              @keyup.enter="submitChange"
+            />
+          </label>
+
+          <label class="field">
+            <span class="label">新密码</span>
+            <el-input
+              ref="newPasswordRef"
+              v-model="form.newPassword"
+              type="password"
+              show-password
+              placeholder="至少 6 位"
+              autocomplete="new-password"
+              @keyup.enter="submitChange"
+            />
+          </label>
+
+          <label class="field">
+            <span class="label">确认新密码</span>
+            <el-input
+              v-model="form.confirmPassword"
+              type="password"
+              show-password
+              placeholder="再输入一次"
+              autocomplete="new-password"
+              @keyup.enter="submitChange"
+            />
+          </label>
+
+          <p v-if="error" class="error">{{ error }}</p>
+
+          <el-button type="primary" class="submit" :loading="loading" @click="submitChange">
+            保存并进入
+          </el-button>
+
+          <p class="tip">忘记密码：删除 data/auth.json 后重启</p>
+        </div>
       </div>
     </div>
   </div>
@@ -235,53 +255,161 @@ onMounted(async () => {
 
 <style scoped>
 .auth {
-  position: relative;
   min-height: 100vh;
   display: grid;
+  grid-template-columns: minmax(360px, 44%) minmax(0, 1fr);
+  background: var(--af-bg);
+}
+
+/* 左栏：深海军蓝 + 极淡方格纸，交代这是什么工具，不承担表单功能 */
+.aside {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 40px;
+  padding: 44px 48px;
+  background-color: #0b1730;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 36px 36px;
+  color: #f3f6ff;
+  overflow: hidden;
+}
+
+.aside::after {
+  content: '';
+  position: absolute;
+  inset: auto -30% -55% 0;
+  height: 460px;
+  background: radial-gradient(closest-side, rgba(26, 86, 219, 0.42), transparent);
+  pointer-events: none;
+}
+
+.aside-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aside-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--af-brand);
+  color: #fff;
+  display: grid;
   place-items: center;
-  background: #fff;
-  padding: 24px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 4px 14px rgba(26, 86, 219, 0.45);
+}
+
+.aside-word {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.aside-body {
+  max-width: 340px;
+}
+
+.aside-body h2 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.28;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: #fff;
+}
+
+.aside-list {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  font-size: 13.5px;
+  color: rgba(233, 240, 255, 0.66);
+}
+
+.aside-list li {
+  position: relative;
+  padding-left: 16px;
+}
+
+.aside-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 6px;
+  height: 1px;
+  background: currentColor;
+}
+
+.aside-foot {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(233, 240, 255, 0.42);
+}
+
+/* 用 flex 居中而不是 grid：卡片有固定宽度，grid 的 auto 轨道会按卡片宽度撑开，
+   在窄屏上把卡片顶出右边 */
+.pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
 }
 
 .card {
-  position: relative;
-  width: 328px;
+  width: 356px;
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 28px;
+  padding: 34px;
+  background: var(--af-surface);
+  border: 1px solid var(--af-border);
+  border-radius: 18px;
+  box-shadow: 0 28px 64px -32px rgba(16, 24, 40, 0.42);
 }
 
 .brand {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 9px;
 }
 
 .mark {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  background: var(--af-ink);
+  background: var(--af-brand);
   color: #fff;
   display: grid;
   place-items: center;
   font-size: 10px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.02em;
 }
 
 .name {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.01em;
 }
 
 .head h1 {
   margin: 0;
   font-size: 24px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-weight: 650;
+  letter-spacing: -0.03em;
   color: var(--af-ink);
 }
 
@@ -294,7 +422,7 @@ onMounted(async () => {
 .form {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
 }
 
 .field {
@@ -309,15 +437,17 @@ onMounted(async () => {
 }
 
 .error {
-  margin: -8px 0 0;
+  margin: -6px 0 0;
   font-size: 12.5px;
   color: var(--af-up);
 }
 
 .submit {
   width: 100%;
-  height: 44px;
+  height: 46px;
   font-size: 14px;
+  font-weight: 600;
+  border-radius: 10px;
 }
 
 .tip {
@@ -328,12 +458,36 @@ onMounted(async () => {
 }
 
 :deep(.el-input__wrapper) {
-  height: 44px;
+  height: 46px;
   padding: 0 14px;
-  border-radius: 8px;
+  border-radius: 10px;
 }
 
 :deep(.el-input__inner) {
   font-size: 14px;
+}
+
+@media (max-width: 899px) {
+  .auth {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .aside {
+    display: none;
+  }
+  .pane {
+    padding: 24px 16px;
+  }
+  .card {
+    width: 400px;
+    padding: 26px 22px;
+    border-radius: 14px;
+    box-shadow: var(--af-shadow-1);
+  }
+  .brand {
+    display: flex;
+  }
+  .head h1 {
+    font-size: 21px;
+  }
 }
 </style>

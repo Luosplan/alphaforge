@@ -1160,7 +1160,7 @@ onMounted(async () => {
   height: 100%;
   max-width: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #9db4ef, var(--af-brand));
+  background: linear-gradient(90deg, var(--af-ink-4), var(--af-brand));
 }
 
 .w-val {

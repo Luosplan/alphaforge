@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 迷你走势线：纯 SVG，不引图表库（7 张指数卡片各引一个 ECharts 实例代价太大）。 */
-import { computed } from 'vue'
+import { computed, useId } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -13,6 +13,7 @@ const props = withDefaults(
 )
 
 const VIEW_W = 100
+const gradientId = `spark-${useId()}`
 
 const geometry = computed(() => {
   const values = props.values.filter((v) => Number.isFinite(v))
@@ -41,7 +42,13 @@ const geometry = computed(() => {
     preserveAspectRatio="none"
     aria-hidden="true"
   >
-    <path v-if="fill && geometry.area" :d="geometry.area" class="spark-area" />
+    <defs>
+      <linearGradient :id="gradientId" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="currentColor" stop-opacity="0.22" />
+        <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+    </defs>
+    <path v-if="fill && geometry.area" :d="geometry.area" :fill="`url(#${gradientId})`" />
     <path :d="geometry.line" class="spark-line" />
   </svg>
 </template>
@@ -56,15 +63,10 @@ const geometry = computed(() => {
 .spark-line {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.4;
+  stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
-}
-
-.spark-area {
-  fill: currentColor;
-  opacity: 0.08;
 }
 
 .spark.up {

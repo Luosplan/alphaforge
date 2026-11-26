@@ -33,6 +33,9 @@ from .selector import execute
 from .signal import TRIM_PNL_PCT, build_plan
 
 LIVE_CAPITAL = 1_000_000.0
+# 开盘那笔的价格是集合竞价出的开盘价，成交时刻就是 09:30。日线给不出分钟级的
+# 盘中时刻，止损 / 止盈按触发价成交的那种只能记空，页面上显示「—」。
+OPEN_TIME = "09:30"
 # 单票上限统一走 `backtest.single_cap(top_n)`：模拟盘和回测必须用同一个数，
 # 否则同一笔委托在两个页面上是两个仓位。这里不再单独持有 15% 的常量。
 MAX_GROSS = RISK_LIMITS["max_gross_exposure"]
@@ -252,7 +255,8 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     log: list[str] = []
     seq = len(trades)
 
-    def sell(pos: dict, price: float, reason: str, qty: int | None = None) -> None:
+    def sell(pos: dict, price: float, reason: str, qty: int | None = None,
+             when: str = "") -> None:
         nonlocal cash, seq
         shares = pos["shares"] if qty is None else min(qty, pos["shares"])
         if shares <= 0 or price <= 0:
@@ -264,7 +268,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         seq += 1
         trades.append({
             "id": f"P{seq:05d}", "code": pos["code"], "name": pos.get("name", ""),
-            "side": "SELL", "date": date_s, "price": round(price, 3),
+            "side": "SELL", "date": date_s, "time": when, "price": round(price, 3),
             "shares": shares, "amount": round(amount, 2), "fee": fee["total"],
             "tax": fee["stamp"], "pnl": round(pnl, 2),
             "pnl_pct": round((price / pos["cost"] - 1) * 100, 2) if pos["cost"] else 0.0,
@@ -293,21 +297,24 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         if lo <= pos["stop"] and not stuck_down:
             reason = ("保本止损" if pos.get("tp1_done") and pos["stop"] >= pos["cost"]
                       else "止损")
-            sell(pos, o if o < pos["stop"] else pos["stop"], reason)
+            sell(pos, o if o < pos["stop"] else pos["stop"], reason,
+                 when=OPEN_TIME if o < pos["stop"] else "")
             continue
         if not pos.get("tp1_done") and hi >= pos["tp1"]:
             half = max(int(pos["shares"] * 0.5 / 100) * 100, 100)
-            sell(pos, o if o >= pos["tp1"] else pos["tp1"], "TP1 减半", qty=half)
+            sell(pos, o if o >= pos["tp1"] else pos["tp1"], "TP1 减半", qty=half,
+                 when=OPEN_TIME if o >= pos["tp1"] else "")
             pos["tp1_done"] = True
             # 与回测同口径：TP1 之后剩余仓位止损上移到成本价，见 backtest.py 注释
             pos["stop"] = max(pos["stop"], pos["cost"])
             continue
         if pos.get("tp1_done") and hi >= pos["tp2"]:
-            sell(pos, o if o >= pos["tp2"] else pos["tp2"], "TP2 清仓")
+            sell(pos, o if o >= pos["tp2"] else pos["tp2"], "TP2 清仓",
+                 when=OPEN_TIME if o >= pos["tp2"] else "")
             continue
         held = _held_days(engine, pos.get("open_date") or date_s, date_s)
         if held >= int(params["time_stop"]):
-            sell(pos, o, f"时间止损（持有 {held} 日）")
+            sell(pos, o, f"时间止损（持有 {held} 日）", when=OPEN_TIME)
 
     positions = [p for p in positions if p["shares"] > 0]
 
@@ -349,7 +356,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
             qty = min(int(order.get("shares") or 0), pos["shares"])
             if qty < 100:
                 continue
-            sell(pos, o, order.get("reason") or "计划减仓", qty=qty)
+            sell(pos, o, order.get("reason") or "计划减仓", qty=qty, when=OPEN_TIME)
             pos["trimmed"] = True
             # 不再补一条「减仓 …」：`sell()` 已经写过「卖出 …」，两条连着出现
             # 会让人以为卖了两笔（实测日志里就是这样，一对就多出一笔）。
@@ -419,7 +426,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
             seq += 1
             trades.append({
                 "id": f"P{seq:05d}", "code": code, "name": order.get("name", ""),
-                "side": "BUY", "date": date_s, "price": round(o, 3),
+                "side": "BUY", "date": date_s, "time": OPEN_TIME, "price": round(o, 3),
                 "shares": qty, "amount": round(amount, 2), "fee": fee["total"],
                 "tax": 0.0, "pnl": None, "pnl_pct": None,
                 "reason": order.get("reason", "计划加仓"),
@@ -461,7 +468,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         seq += 1
         trades.append({
             "id": f"P{seq:05d}", "code": code, "name": order.get("name", ""),
-            "side": "BUY", "date": date_s, "price": round(o, 3),
+            "side": "BUY", "date": date_s, "time": OPEN_TIME, "price": round(o, 3),
             "shares": shares, "amount": round(amount, 2), "fee": fee["total"],
             "tax": 0.0, "pnl": None, "pnl_pct": None,
             "reason": order.get("reason", "计划建仓"),

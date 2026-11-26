@@ -32,8 +32,8 @@ const route = useRoute()
   /* 按实际 tab 数均分，而不是写死 5 列：加一个「实验室」就掉到第二行去了 */
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(14px) saturate(180%);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(16px) saturate(180%);
   border-top: 1px solid var(--af-border);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -44,10 +44,11 @@ const route = useRoute()
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  padding: 8px 0 6px;
+  padding: 9px 0 6px;
   color: var(--af-ink-3);
   font-size: 10.5px;
   font-weight: 500;
+  transition: color 0.14s ease;
 }
 
 .tab :deep(.ai) {
@@ -56,8 +57,8 @@ const route = useRoute()
 }
 
 .tab.active {
-  color: var(--af-ink);
-  font-weight: 650;
+  color: var(--af-brand);
+  font-weight: 600;
 }
 
 .tab.active::before {
@@ -66,9 +67,13 @@ const route = useRoute()
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 22px;
+  width: 20px;
   height: 2px;
   border-radius: 0 0 2px 2px;
   background: var(--af-brand);
+}
+
+.tab:active {
+  opacity: 0.6;
 }
 </style>

@@ -106,19 +106,19 @@ const signalTone = computed(() => {
 <style scoped>
 .card {
   border: 1px solid var(--af-border);
-  border-radius: var(--af-radius);
+  border-radius: 10px;
   background: var(--af-surface);
   padding: 13px 14px 12px;
   display: flex;
   flex-direction: column;
   gap: 9px;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .card:hover {
-  border-color: var(--af-brand);
-  background: linear-gradient(180deg, #fbfcff 0%, #ffffff 62%);
+  border-color: var(--af-border-strong);
+  box-shadow: 0 6px 18px -8px rgba(16, 24, 40, 0.18);
 }
 
 .head {
@@ -147,8 +147,8 @@ const signalTone = computed(() => {
 }
 
 .px-val {
-  font-size: 13.5px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 650;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
@@ -295,7 +295,7 @@ const signalTone = computed(() => {
 }
 
 .compact .px-val {
-  font-size: 12.5px;
+  font-size: 14px;
 }
 
 @media (max-width: 767px) {

@@ -96,7 +96,8 @@ def session(path: Path | None = None):
 
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     out: dict[str, int] = {}
-    for table in ("symbol", "daily", "flow", "snapshot", "index_daily", "index_member", "factor"):
+    for table in ("symbol", "daily", "flow", "snapshot", "index_daily", "index_member",
+                  "bonus_event", "factor"):
         try:
             out[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.OperationalError:

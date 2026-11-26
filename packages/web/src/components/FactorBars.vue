@@ -87,11 +87,11 @@ const rows = computed(() =>
 /* 贡献度不是涨跌，按 ADR 0003「红绿只表达涨跌」不能用红绿。
    正贡献 = 主色蓝（在抬高评分），负贡献 = 琥珀（在压评分）。 */
 .pos {
-  background: linear-gradient(90deg, rgba(31,79,216,0.26), #1f4fd8);
+  background: linear-gradient(90deg, rgba(26,86,219,0.24), var(--af-brand));
 }
 
 .neg {
-  background: linear-gradient(90deg, #b54708, rgba(181,71,8,0.26));
+  background: linear-gradient(90deg, var(--af-warn), rgba(176,112,10,0.26));
 }
 
 /* 数值与条同色，别让同一个组件里出现两套语义 */

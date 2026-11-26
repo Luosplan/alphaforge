@@ -94,10 +94,10 @@ class _HostGate:
 _GATES: dict[str, _HostGate] = {}
 _GATE_LOCK = threading.Lock()
 
-# 单域名并发窗口。默认 6：实测 1500 只样本 51 只/秒、100% 成功，
-# 长期平均速率仍是「每个 in-flight 间隔 interval」，不是无节制猛刷。
-# 撞到反爬网关会自动减半（见 fetch），也可用 AF_FETCH_BURST 固定。
-FETCH_BURST = max(1, int(os.environ.get("AF_FETCH_BURST") or 6))
+# 单域名并发窗口。2000 只日线实测：6 → 60 只/秒，12 → 107 只/秒，
+# 24 → 93 只/秒（100% 成功）。新浪在 ~100 请求/秒饱和，12 是拐点，
+# 再大只是把线程塞进 wait() 里排队。撞到反爬网关会自动减半（见 fetch）。
+FETCH_BURST = max(1, int(os.environ.get("AF_FETCH_BURST") or 12))
 
 
 def gate(host: str, interval: float) -> _HostGate:

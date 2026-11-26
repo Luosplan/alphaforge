@@ -40,6 +40,7 @@ const store = useAppStore()
   min-height: 100vh;
   display: flex;
   align-items: stretch;
+  background: var(--af-bg);
 }
 
 .main {
@@ -52,21 +53,23 @@ const store = useAppStore()
 .content {
   flex: 1;
   width: 100%;
-  max-width: 1640px;
+  max-width: 1680px;
   margin: 0 auto;
-  padding: 20px 24px 0;
+  padding: 18px 22px 0;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
 .foot {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
-  padding: 16px 2px 22px;
+  align-items: center;
+  padding: 18px 2px 20px;
   color: var(--af-ink-4);
   font-size: 11px;
+  letter-spacing: 0.01em;
   border-top: 1px solid var(--af-border);
   margin-top: auto;
 }
@@ -88,7 +91,7 @@ const store = useAppStore()
   }
   .content {
     padding: 10px 10px 0;
-    gap: 14px;
+    gap: 12px;
   }
   .foot {
     margin-top: auto;

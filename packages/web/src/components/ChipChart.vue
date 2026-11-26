@@ -10,7 +10,7 @@
  */
 import { computed, ref } from 'vue'
 import type { ChipResponse } from '@/types'
-import { axisBase, chartColors, tooltipBase, useEChart } from '@/composables/useEChart'
+import { axisBase, chartColors, tooltipBase, useEChart, withAlpha } from '@/composables/useEChart'
 
 const props = withDefaults(
   defineProps<{ data: ChipResponse | null; height?: number }>(),
@@ -50,8 +50,8 @@ useEChart(
           const tag = row.price <= cur ? '获利盘' : '套牢盘'
           return `<div style="font-weight:600;margin-bottom:5px">${row.price.toFixed(2)}</div>
             <div style="font-size:12px;display:grid;grid-template-columns:auto auto;gap:3px 14px">
-              <span style="color:#8b95a7">筹码占比</span><span style="color:${tone};font-weight:600">${row.weight.toFixed(2)}%</span>
-              <span style="color:#8b95a7">属性</span><span style="color:${tone}">${tag}</span>
+              <span style="color:${chartColors.ink3}">筹码占比</span><span style="color:${tone};font-weight:600">${row.weight.toFixed(2)}%</span>
+              <span style="color:${chartColors.ink3}">属性</span><span style="color:${tone}">${tag}</span>
             </div>`
         },
       },
@@ -84,9 +84,9 @@ useEChart(
           data: rows.map((r) => (r.price <= cur ? r.weight : null)),
           symbol: 'none',
           connectNulls: false,
-          lineStyle: { width: 1.2, color: 'rgba(217,45,32,0.9)' },
-          itemStyle: { color: 'rgba(217,45,32,0.9)' },
-          areaStyle: { color: 'rgba(217,45,32,0.42)' },
+          lineStyle: { width: 1.2, color: withAlpha(chartColors.up, 0.9) },
+          itemStyle: { color: withAlpha(chartColors.up, 0.9) },
+          areaStyle: { color: withAlpha(chartColors.up, 0.4) },
           z: 3,
         },
         {
@@ -95,9 +95,9 @@ useEChart(
           data: rows.map((r) => (r.price > cur ? r.weight : null)),
           symbol: 'none',
           connectNulls: false,
-          lineStyle: { width: 1.2, color: 'rgba(3,152,85,0.85)' },
-          itemStyle: { color: 'rgba(3,152,85,0.85)' },
-          areaStyle: { color: 'rgba(3,152,85,0.34)' },
+          lineStyle: { width: 1.2, color: withAlpha(chartColors.down, 0.85) },
+          itemStyle: { color: withAlpha(chartColors.down, 0.85) },
+          areaStyle: { color: withAlpha(chartColors.down, 0.32) },
           z: 2,
           markLine: {
             silent: true,

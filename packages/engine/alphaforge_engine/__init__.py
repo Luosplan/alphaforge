@@ -5,7 +5,7 @@
 """
 
 from .market import MarketEngine, get_market
-from .portfolio import build_portfolio, check_plan, seed_trades, trade_stats
+from .portfolio import build_live_portfolio, check_plan, trade_stats
 from .nlquery import EXAMPLES, parse
 from .panorama import index_book, market_temperature
 from .selector import execute, normalize_spec, strategy_list
@@ -14,9 +14,8 @@ from .signal import active_plans, build_plan
 __all__ = [
     "MarketEngine",
     "get_market",
-    "build_portfolio",
+    "build_live_portfolio",
     "check_plan",
-    "seed_trades",
     "trade_stats",
     "execute",
     "normalize_spec",

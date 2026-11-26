@@ -351,7 +351,7 @@ onBeforeUnmount(() => {
           class="regime-strip"
           :class="watch.regime.open_new ? 'ok' : (regimeScale > 0 ? 'weak' : 'off')"
         >
-          <span class="chip" :class="watch.regime.open_new ? 'up' : (regimeScale > 0 ? 'warn' : 'flat')">
+          <span class="chip" :class="watch.regime.open_new ? 'brand' : (regimeScale > 0 ? 'warn' : 'flat')">
             {{ watch.regime.label }}
           </span>
           <span class="regime-detail num">{{ watch.regime.detail }}</span>
@@ -622,17 +622,17 @@ onBeforeUnmount(() => {
   gap: 8px;
   margin-top: 12px;
   padding: 8px 10px;
-  border-left: 2px solid var(--af-down);
+  border-left: 2px solid var(--af-ink-5);
   border-radius: 4px;
   background: var(--af-surface-2);
   font-size: 12px;
 }
 
 .regime-strip.ok {
-  border-left-color: var(--af-up);
+  border-left-color: var(--af-brand);
 }
 
-/* 弱势照做：既不是「正常」（红），也不是「停手」（绿），用 warn 单独一档 */
+/* 弱势照做：既不是「正常」（主色），也不是「停手」（灰），用 warn 单独一档 */
 .regime-strip.weak {
   border-left-color: var(--af-warn);
 }

@@ -61,7 +61,7 @@ function sparkTone(item: IndexQuote): 'up' | 'down' | 'flat' {
         <span class="tt">市场温度</span>
         <span v-if="temp" class="temp-tag">{{ temp.label }}</span>
       </div>
-      <MarketGauge v-if="temp" :score="temp.score" :label="temp.label" :height="132" />
+      <MarketGauge v-if="temp" :score="temp.score" :label="temp.label" />
       <p v-if="temp" class="advice">{{ temp.advice }}</p>
     </div>
 
@@ -158,7 +158,7 @@ function sparkTone(item: IndexQuote): 'up' | 'down' | 'flat' {
 }
 
 .panorama > * {
-  padding: 14px 16px 15px;
+  padding: 13px 15px 14px;
   min-width: 0;
 }
 
@@ -201,7 +201,8 @@ function sparkTone(item: IndexQuote): 'up' | 'down' | 'flat' {
 }
 
 .temp :deep(.gauge) {
-  margin: 2px auto 0;
+  max-width: 168px;
+  margin: 4px auto 2px;
 }
 
 .advice {
@@ -216,7 +217,7 @@ function sparkTone(item: IndexQuote): 'up' | 'down' | 'flat' {
 .parts {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .parts-head {

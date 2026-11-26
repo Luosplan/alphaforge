@@ -632,7 +632,7 @@ onMounted(load)
 .j-miss-i {
   padding: 1px 7px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--af-down) 10%, transparent);
+  background: var(--af-surface-3);
   color: var(--af-ink-2);
 }
 

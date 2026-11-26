@@ -1,68 +1,101 @@
-"""持仓、账户绩效与风控校验（SRS M06 / M09 的只读侧实现）。"""
+"""持仓、账户绩效与风控校验（SRS M06 / M09 的只读侧实现）。
+
+持仓的唯一来源是实验室的模拟盘账户：计划卡说要买、次日开盘成交、账本记下
+股数与成本，这里只把各策略账户合并成一张总表和一条净值曲线。没有种子持仓——
+页面上每一行都能在成交流水里找到对应的那笔买单。
+"""
 
 from __future__ import annotations
-
-import datetime as dt
 
 from alphaforge_core.constants import BOARD_META, RISK_LIMITS, RiskLevel, board_allowed, trade_fee
 from alphaforge_core.metrics import summarize
 from alphaforge_core.universe import board_key
 
 from .market import MarketEngine
-
-# 种子持仓：code -> (数量, 成本价, 建仓日)
-SEED_HOLDINGS: list[tuple[str, int, float, str]] = [
-    ("600519.SH", 200, 1620.50, "2026-06-18"),
-    ("300750.SZ", 500, 232.40, "2026-08-05"),
-    ("600036.SH", 3000, 36.80, "2026-05-12"),
-    ("002594.SZ", 800, 288.60, "2026-09-02"),
-    ("601899.SH", 8000, 16.90, "2026-07-21"),
-    ("600900.SH", 5000, 28.10, "2026-04-09"),
-]
-SEED_CASH = 186_420.0
+from .paper import ORDER_KIND_LABEL
 
 
-def build_portfolio(engine: MarketEngine, holdings: list[dict] | None = None,
-                    cash: float | None = None) -> dict:
-    holdings = holdings or [
-        {"code": c, "shares": q, "cost": p, "open_date": d} for c, q, p, d in SEED_HOLDINGS
-    ]
-    cash = SEED_CASH if cash is None else cash
+def build_live_portfolio(engine: MarketEngine, accounts: dict[str, dict]) -> dict:
+    """合并各策略账户 → 持仓总表 + 净值曲线 + 绩效。
 
-    rows = []
-    market_value = 0.0
-    day_pnl = 0.0
-    total_cost = 0.0
-    for h in holdings:
-        bars = engine.bars(h["code"], limit=2)
-        price = bars[-1]["close"]
-        prev = bars[-2]["close"]
-        mv = price * h["shares"]
-        pnl = (price - h["cost"]) * h["shares"]
-        market_value += mv
-        day_pnl += (price - prev) * h["shares"]
-        total_cost += h["cost"] * h["shares"]
-        rows.append({
-            "code": h["code"],
-            "name": engine.symbol(h["code"])["name"],
-            "industry": engine.symbol(h["code"])["industry"],
-            "shares": h["shares"],
-            "sellable": max(h["shares"] - (h["shares"] if h["open_date"] == engine.dates[-1].isoformat() else 0), 0),
-            "cost": round(h["cost"], 3),
-            "price": price,
-            "change_pct": round((price / prev - 1) * 100, 2),
-            "market_value": round(mv, 2),
-            "pnl": round(pnl, 2),
-            "pnl_pct": round((price / h["cost"] - 1) * 100, 2),
-            "open_date": h["open_date"],
-        })
+    同一只票被两条策略同时持有时合成一行：并排两行同一个代码，权重各自只占
+    自己账户的比例，加起来才对得上这张总表。
+    """
+    today = engine.trade_date.isoformat() if engine.trade_date else ""
+    cash = 0.0
+    capital = 0.0
+    merged: dict[str, dict] = {}
+    pending: list[dict] = []
 
+    for account in accounts.values():
+        cash += float(account.get("cash") or 0.0)
+        capital += float(account.get("capital") or 0.0)
+        label = account.get("name") or account.get("id") or ""
+        # 挂单还没成交的委托：持仓页要能看见「计划卡说要买、但钱还没花出去」这一段，
+        # 否则今天挂的卡明天才成交，页面上一整天都像没反应。
+        for order in account.get("orders") or []:
+            kind = order.get("kind") or "ENTRY"
+            pending.append({
+                "code": order["code"], "name": order.get("name") or "",
+                "kind": kind, "kind_label": ORDER_KIND_LABEL.get(kind, kind),
+                "shares": int(order.get("shares") or 0),
+                "reason": order.get("reason") or "",
+                "strategy": label, "created": order.get("created") or "",
+            })
+        for pos in account.get("positions") or []:
+            shares = int(pos.get("shares") or 0)
+            if shares <= 0:
+                continue
+            bars = engine.bars(pos["code"], limit=2)
+            price = float(bars[-1]["close"])
+            prev = float(bars[-2]["close"]) if len(bars) > 1 else price
+            cost = float(pos.get("cost") or 0.0)
+            row = merged.get(pos["code"])
+            if row is None:
+                meta = engine.symbol(pos["code"])
+                row = merged[pos["code"]] = {
+                    "code": pos["code"], "name": meta["name"], "industry": meta["industry"],
+                    "shares": 0, "sellable": 0, "cost_amount": 0.0, "market_value": 0.0,
+                    "day_pnl": 0.0, "price": price, "prev": prev, "stop": 0.0,
+                    "open_date": "", "strategies": [],
+                }
+            row["shares"] += shares
+            row["cost_amount"] += cost * shares
+            row["market_value"] += price * shares
+            # 今天开盘建的仓，当日盈亏要跟成本比；此前建的跟昨收比
+            row["day_pnl"] += (price - (cost if pos.get("open_date") == today else prev)) * shares
+            if pos.get("open_date") != today:
+                row["sellable"] += shares
+            if pos.get("stop"):
+                row["stop"] = max(row["stop"], float(pos["stop"]))
+            day = pos.get("open_date") or ""
+            if day and (not row["open_date"] or day < row["open_date"]):
+                row["open_date"] = day
+            if label not in row["strategies"]:
+                row["strategies"].append(label)
+
+    market_value = sum(r["market_value"] for r in merged.values())
     nav = market_value + cash
-    for r in rows:
-        r["weight"] = round(r["market_value"] / nav * 100, 2)
+    rows = []
+    for r in merged.values():
+        cost = r.pop("cost_amount") / r["shares"]
+        price, prev = r["price"], r["prev"]
+        rows.append({
+            "code": r["code"], "name": r["name"], "industry": r["industry"],
+            "strategy": " / ".join(r["strategies"]),
+            "shares": r["shares"], "sellable": r["sellable"], "cost": round(cost, 3),
+            "price": price, "change_pct": round((price / prev - 1) * 100, 2) if prev else 0.0,
+            "market_value": round(r["market_value"], 2),
+            "pnl": round((price - cost) * r["shares"], 2),
+            "pnl_pct": round((price / cost - 1) * 100, 2) if cost else 0.0,
+            "day_pnl": round(r["day_pnl"], 2),
+            "weight": round(r["market_value"] / nav * 100, 2) if nav else 0.0,
+            "stop": round(r["stop"], 3),
+            "dist_stop_pct": round((price / r["stop"] - 1) * 100, 2) if r["stop"] else None,
+            "open_date": r["open_date"],
+        })
     rows.sort(key=lambda r: r["market_value"], reverse=True)
 
-    # 行业分布
     ind: dict[str, float] = {}
     for r in rows:
         ind[r["industry"]] = ind.get(r["industry"], 0.0) + r["market_value"]
@@ -71,43 +104,74 @@ def build_portfolio(engine: MarketEngine, holdings: list[dict] | None = None,
         for k, v in sorted(ind.items(), key=lambda kv: kv[1], reverse=True)
     ]
 
-    curve = equity_curve(engine, holdings, cash, days=len(engine.dates))
-    perf = summarize([p["value"] for p in curve])
+    day_pnl = sum(r["day_pnl"] for r in rows)
+    total_pnl = nav - capital
+    curve = merged_equity(accounts)
+    # 盘中打开页面时账户还没推进到今天，曲线最后一点停在昨收，而上面的净值
+    # 已经是实时价——两个数对不上会像是算错了，所以补一个当日的盯市点。
+    if today and (not curve or curve[-1]["date"] < today):
+        curve.append({"date": today, "value": round(nav, 2)})
 
     return {
         "summary": {
             "nav": round(nav, 2),
+            "capital": round(capital, 2),
             "market_value": round(market_value, 2),
             "cash": round(cash, 2),
             "position_ratio": round(market_value / nav * 100, 2) if nav else 0,
             "day_pnl": round(day_pnl, 2),
             "day_pnl_pct": round(day_pnl / (nav - day_pnl) * 100, 2) if nav - day_pnl else 0,
-            "total_pnl": round(market_value - total_cost, 2),
-            "total_pnl_pct": round((market_value - total_cost) / total_cost * 100, 2) if total_cost else 0,
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl / capital * 100, 2) if capital else 0,
             "holdings_count": len(rows),
         },
         "holdings": rows,
+        "pending": pending,
         "industry_alloc": industry_alloc,
         "equity_curve": curve,
-        "performance": perf,
+        "performance": summarize([p["value"] for p in curve]),
+        "accounts": [account_brief(engine, a) for a in accounts.values()],
     }
 
 
-def equity_curve(engine: MarketEngine, holdings: list[dict], cash: float, days: int = 180) -> list[dict]:
-    """按建仓日回放账户净值：建仓前该笔资金按成本计入现金等价物，
-    使区间收益率与「当前市值 − 持仓成本」口径一致（SRS NFR-D-02 对账一致性）。"""
-    series = [engine.bars(h["code"], limit=days) for h in holdings]
-    n = min(len(s) for s in series) if series else 0
+def account_brief(engine: MarketEngine, account: dict) -> dict:
+    """单账户一行的现状，给页面标清这张总表由哪几本账合起来。"""
+    positions = [p for p in account.get("positions") or [] if int(p.get("shares") or 0) > 0]
+    market_value = sum(
+        float(engine.bars(p["code"], limit=1)[-1]["close"]) * int(p["shares"]) for p in positions
+    )
+    cash = float(account.get("cash") or 0.0)
+    nav = market_value + cash
+    capital = float(account.get("capital") or 0.0)
+    return {
+        "id": account.get("id"),
+        "name": account.get("name") or account.get("id"),
+        "last_run": account.get("last_run"),
+        "nav": round(nav, 2),
+        "cash": round(cash, 2),
+        "market_value": round(market_value, 2),
+        "pnl": round(nav - capital, 2),
+        "pnl_pct": round((nav / capital - 1) * 100, 2) if capital else 0.0,
+        "positions": len(positions),
+    }
+
+
+def merged_equity(accounts: dict[str, dict]) -> list[dict]:
+    """把各账户的净值曲线按日期对齐相加。
+
+    账户起始日不同时按「前值结转」补：某本账当天还没数据，就用它上一格的净值，
+    而不是当成 0——把缺格当 0 会让总净值在某一天凭空腰斩。
+    """
+    series = [{r["date"]: float(r["value"]) for r in (a.get("equity") or [])}
+              for a in accounts.values()]
     out = []
-    for i in range(n):
-        date = series[0][i]["date"]
-        value = cash
-        for s, h in zip(series, holdings):
-            if date >= h.get("open_date", ""):
-                value += s[i]["close"] * h["shares"]
-            else:
-                value += h["cost"] * h["shares"]
-        out.append({"date": date, "value": round(value, 2)})
+    for date in sorted({d for s in series for d in s}):
+        total = 0.0
+        for s in series:
+            marks = [d for d in s if d <= date]
+            if marks:
+                total += s[max(marks)]
+        out.append({"date": date, "value": round(total, 2)})
     return out
 
 
@@ -122,10 +186,27 @@ def benchmark_curve(engine: MarketEngine, days: int = 180) -> list[dict]:
     ]
 
 
+def trade_change_pct(engine: MarketEngine, code: str, trade_date: str) -> float | None:
+    """成交那一格的涨幅：模拟盘按开盘价成交，所以是开盘价相对昨收。
+
+    用开盘而不是收盘，是因为收盘价在 15:00 才成立——拿它当「买入当时的涨幅」，
+    等于用还没发生的价格去解释 09:30 的那笔单。
+    """
+    rows = engine.bars(code)
+    for i, bar in enumerate(rows):
+        if bar["date"] != trade_date:
+            continue
+        if not i:
+            return None
+        prev = rows[i - 1]["close"]
+        return round((bar["open"] / prev - 1) * 100, 2) if prev else None
+    return None
+
+
 # --------------------------------------------------------------------- 风控
 def check_plan(engine: MarketEngine, positions: dict, code: str, shares: int, price: float,
                profile: dict | None = None) -> dict:
-    """事前风控校验（FR-RMS-01/02/03/04/08）。positions 为 build_portfolio 结果。
+    """事前风控校验（FR-RMS-01/02/03/04/08）。positions 为 build_live_portfolio 结果。
 
     profile 来自「个人设置」：购买权限在这里做硬拦截，费用按账户成本口径预估。
     """
@@ -175,81 +256,32 @@ def check_plan(engine: MarketEngine, positions: dict, code: str, shares: int, pr
     }
 
 
-def seed_trades(engine: MarketEngine) -> list[dict]:
-    """种子成交流水：建仓单 + 若干已了结交易。"""
-    rows = []
-    seq = 0
-    for code, qty, cost, day in SEED_HOLDINGS:
-        seq += 1
-        rows.append({
-            "id": f"T{seq:04d}",
-            "code": code,
-            "name": engine.symbol(code)["name"],
-            "side": "BUY",
-            "price": cost,
-            "shares": qty,
-            "amount": round(cost * qty, 2),
-            "fee": max(5.0, round(cost * qty * 0.00025, 2)),
-            "tax": 0.0,
-            "trade_date": day,
-            "note": "计划内建仓",
-        })
-    closed = [
-        ("601012.SH", "BUY", 19.20, 3000, "2026-05-08", "计划内建仓"),
-        ("601012.SH", "SELL", 18.05, 3000, "2026-06-11", "跌破止损，纪律离场"),
-        ("002415.SZ", "BUY", 33.40, 2000, "2026-06-02", "计划内建仓"),
-        ("002415.SZ", "SELL", 36.80, 2000, "2026-07-30", "触及 TP1 减半后了结"),
-        ("600030.SH", "BUY", 28.90, 4000, "2026-07-14", "追高建仓"),
-        ("600030.SH", "SELL", 27.10, 4000, "2026-08-18", "扛单后割肉"),
-        ("603259.SH", "BUY", 55.20, 1200, "2026-08-25", "计划内建仓"),
-        ("603259.SH", "SELL", 61.40, 1200, "2026-09-26", "触及 TP2"),
-        ("000651.SZ", "BUY", 43.10, 3000, "2026-09-10", "计划内建仓"),
-        ("000651.SZ", "SELL", 41.60, 3000, "2026-10-09", "时间止损"),
-    ]
-    for code, side, price, qty, day, note in closed:
-        seq += 1
-        amount = price * qty
-        rows.append({
-            "id": f"T{seq:04d}",
-            "code": code,
-            "name": engine.symbol(code)["name"],
-            "side": side,
-            "price": price,
-            "shares": qty,
-            "amount": round(amount, 2),
-            "fee": max(5.0, round(amount * 0.00025, 2)),
-            "tax": round(amount * 0.0005, 2) if side == "SELL" else 0.0,
-            "trade_date": day,
-            "note": note,
-        })
-    rows.sort(key=lambda r: r["trade_date"], reverse=True)
-    return rows
-
-
 def trade_stats(trades: list[dict]) -> dict:
     total_fee = sum(t["fee"] for t in trades)
     total_tax = sum(t["tax"] for t in trades)
-    # 简易配对盈亏：按 code 的 BUY/SELL 顺序 FIFO
-    books: dict[str, list[tuple[float, int]]] = {}
+    # 简易配对盈亏：按 (账户, 代码) FIFO。跨账户混一个簿子会把 A 策略的卖出
+    # 配到 B 策略的买入上，两边的成本口径本来就不一样。
+    books: dict[tuple[str | None, str], list[tuple[float, int]]] = {}
     wins = 0
     losses = 0
     profit = 0.0
     gross_win = 0.0
     for t in sorted(trades, key=lambda r: r["trade_date"]):
+        book = (t.get("strategy"), t["code"])
         if t["side"] == "BUY":
-            books.setdefault(t["code"], []).append((t["price"], t["shares"]))
+            books.setdefault(book, []).append((t["price"], t["shares"]))
             continue
         remain = t["shares"]
         cost = 0.0
-        while remain > 0 and books.get(t["code"]):
-            p, q = books[t["code"]][0]
+        while remain > 0 and books.get(book):
+            p, q = books[book][0]
             take = min(q, remain)
             cost += p * take
             remain -= take
             if q == take:
-                books[t["code"]].pop(0)
+                books[book].pop(0)
             else:
-                books[t["code"]][0] = (p, q - take)
+                books[book][0] = (p, q - take)
         if remain == 0:
             pnl = t["price"] * t["shares"] - cost
             profit += pnl

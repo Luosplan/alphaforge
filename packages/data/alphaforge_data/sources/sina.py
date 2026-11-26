@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .base import FetchError, fetch
 
@@ -154,21 +155,27 @@ def board_of(code6: str) -> tuple[str, str]:
 
 
 def snapshot(node: str = NODE_ALL) -> list[dict]:
-    """全 A 快照。逐页拉，翻到空页为止。"""
+    """全 A 快照。先问总数，再并行翻页。
+
+    56 页串行要 11s，页之间毫无依赖，并行后 2s——这是同步链路的第一步，
+    而它每天都在跑。`pool.map` 保序，所以合并结果时仍然按页号推进。
+    """
     total = count(node)
     pages = max((total + 99) // 100, 1)
+    with ThreadPoolExecutor(max_workers=min(pages, 8)) as pool:
+        batches = list(pool.map(lambda p: _page(p, node), range(1, pages + 1)))
     rows: list[dict] = []
-    for page in range(1, pages + 1):
-        batch = _page(page, node)
+    seen: set[str] = set()
+    for batch in batches:
         if not batch:
             break
-        # 末页可能重复上一页，按 symbol 去重
-        seen = {r["code"] for r in rows}
         for r in batch:
             code6 = str(r.get("code") or "")
             if len(code6) != 6 or code6 in seen:
                 continue
+            seen.add(code6)
             rows.append(_normalize(r, code6))
+        # 末页可能重复上一页；不满 100 条说明后面没有更多了
         if len(batch) < 100:
             break
     return rows

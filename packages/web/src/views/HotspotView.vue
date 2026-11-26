@@ -323,9 +323,8 @@ onMounted(load)
   color: var(--af-ink);
 }
 .seg-btn.on {
-  background: var(--af-surface);
-  color: var(--af-brand);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+  background: var(--af-ink);
+  color: #fff;
 }
 
 /* ---------------------------------------------------------------- 状态条 */
@@ -537,11 +536,10 @@ onMounted(load)
 .heat i {
   position: absolute;
   inset: 0 auto 0 0;
-  background: linear-gradient(90deg, #b9c8f5, var(--af-brand));
+  background: linear-gradient(90deg, var(--af-ink-5), var(--af-ink-4));
   border-radius: 3px;
 }
-/* 数字浮在填充条上，深蓝底配黑字读不出来。给它一层同色底衬 + 右侧对齐，
-   这样无论条多长，字都落在稳定的背景上。 */
+/* 数字浮在填充条上，填充只能用浅灰：条越长越深就会把读数吃掉 */
 .heat b {
   position: absolute;
   inset: 0 4px 0 auto;
@@ -551,8 +549,6 @@ onMounted(load)
   font-weight: 600;
   color: var(--af-ink);
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 3px var(--af-surface), 0 0 3px var(--af-surface),
-               0 0 2px var(--af-surface);
 }
 
 /* ---------------------------------------------------------------- 龙头 */

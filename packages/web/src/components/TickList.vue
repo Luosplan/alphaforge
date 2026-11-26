@@ -119,12 +119,12 @@ function fmtVol(v: number): string {
 
 .c-side.up {
   color: var(--af-up);
-  background: rgba(217, 45, 32, 0.08);
+  background: var(--af-up-soft);
 }
 
 .c-side.down {
   color: var(--af-down);
-  background: rgba(3, 152, 85, 0.08);
+  background: var(--af-down-soft);
 }
 
 .c-side.mid {

@@ -103,6 +103,8 @@ class Repo:
             "universe_sync": dbm.get_meta(self.conn, "universe_sync"),
             "daily_sync": dbm.get_meta(self.conn, "daily_sync"),
             "factor_sync": dbm.get_meta(self.conn, "factor_sync"),
+            "fundamentals_sync": dbm.get_meta(self.conn, "fundamentals_sync"),
+            "bonus_sync": dbm.get_meta(self.conn, "bonus_sync"),
             "ready": counts.get("factor", 0) > 0,
             "runs": [
                 {"step": r[0], "status": r[1], "finished": r[2], "rows": r[3], "note": r[4]}

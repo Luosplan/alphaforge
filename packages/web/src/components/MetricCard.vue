@@ -37,10 +37,6 @@ const toneClass = computed(() => props.tone || 'flat')
   min-width: 0;
 }
 
-.metric.strong {
-  background: linear-gradient(180deg, #fbfcff 0%, #ffffff 100%);
-}
-
 .label {
   display: flex;
   align-items: center;

@@ -102,8 +102,6 @@ export const api = {
   portfolio: () => http.get<PortfolioResponse>('/portfolio/summary'),
   equity: (days = 180) => http.get<EquityResponse>('/portfolio/equity', { params: { days } }),
   trades: () => http.get<{ items: Trade[]; stats: TradeStats }>('/portfolio/trades'),
-  createTrade: (payload: { code: string; side: 'BUY' | 'SELL'; price: number; shares: number; note?: string }) =>
-    http.post('/portfolio/trades', payload),
 
   strategies: () => http.get<Strategy[]>('/select/strategies'),
   fields: () => http.get<FieldMeta[]>('/select/fields'),
@@ -148,8 +146,8 @@ export const api = {
   // 数据层：库状态、触发同步、数据来源说明
   dataStatus: () => http.get<DataStatus>('/data/status'),
   dataSources: () => http.get<DataSourceInfo>('/data/sources'),
-  dataSync: (only = 'all', workers = 10) =>
-    http.post<{ accepted: boolean }>('/data/sync', null, { params: { only, workers } }),
+  dataSync: (only = 'all', workers = 24, force = false) =>
+    http.post<{ accepted: boolean }>('/data/sync', null, { params: { only, workers, force } }),
 
   // 策略实验室：回测 / 自进化 / 模拟盘
   labOverview: () => http.get<LabOverview>('/lab/overview'),
@@ -211,8 +209,19 @@ export interface LabStrategyDetail {
   paper: LabPaper | null
   backtest: LabBacktest | null
   evolution: {
-    best: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
-    baseline: { genome: LabGenome; score: number; metrics: Record<string, number | null> }
+    best: {
+      genome: LabGenome
+      score: number
+      metrics: Record<string, number | null>
+      /** 搜索产出的完整策略定义：采纳后原样写进账户，下一次选股就用它 */
+      spec?: Record<string, unknown>
+    }
+    baseline: {
+      genome: LabGenome
+      score: number
+      metrics: Record<string, number | null>
+      spec?: Record<string, unknown>
+    }
     history: LabEvoGeneration[]
     /** 样本外验证：最后一段没参与搜索的交易日，进化后 vs 原始策略 */
     holdout?: LabHoldout | null

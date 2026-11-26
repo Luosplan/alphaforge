@@ -10,7 +10,7 @@ PYSEP := $(if $(filter Windows_NT,$(OS)),;,:)
 export PYTHONPATH := packages/core$(PYSEP)packages/data$(PYSEP)packages/engine
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev api web build check layers audit docker sync status exe
+.PHONY: help install dev api web build check layers audit docker sync status
 
 help: ## 显示可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -20,7 +20,7 @@ install: ## 安装前后端依赖
 	cd $(WEB) && npm ci
 
 sync: ## 全量同步真实行情（首次约 19 分钟，之后增量约 1 分钟）
-	$(PY) -u -m alphaforge_data sync --only all --workers 12
+	$(PY) -u -m alphaforge_data sync --only all --workers 24
 
 status: ## 查看行情库状态（标的数 / 日线数 / 最近同步）
 	$(PY) -m alphaforge_data status
@@ -62,14 +62,6 @@ audit: ## 三档断点布局审计（需先 make serve 或已有服务在 :$(POR
 
 docker: ## 构建并启动容器
 	docker compose -f deploy/docker-compose.yml up --build
-
-# 先落到 .cache/exe，再整体换进 dist/desktop：PyInstaller 重建前会把旧的产物目录
-# 整个 rmtree（近千个文件），本机的删除闸门会卡住它。改名换位没有删除动作。
-exe: build ## 打包 Windows 桌面版（产物 dist/desktop/AlphaForge/AlphaForge.exe）
-	$(PY) -m PyInstaller --noconfirm --clean --distpath .cache/exe packages/desktop/build.spec
-	@if [ -d dist/desktop/AlphaForge ]; then mv dist/desktop/AlphaForge "dist/desktop/AlphaForge.prev.$$(date +%s)"; fi
-	mv .cache/exe/AlphaForge dist/desktop/AlphaForge
-	@echo "旧产物已改名为 dist/desktop/AlphaForge.prev.*，确认新版可用后可手动删除"
 
 clean: ## 清理构建产物与缓存
 	rm -rf $(WEB)/dist $(WEB)/node_modules/.vite

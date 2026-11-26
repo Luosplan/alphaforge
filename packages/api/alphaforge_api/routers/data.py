@@ -70,7 +70,7 @@ def _reset_state(only: str, workers: int) -> None:
     })
 
 
-def _run_sync(only: str, workers: int) -> None:
+def _run_sync(only: str, workers: int, force: bool) -> None:
     from alphaforge_engine.market import reset_market
 
     from alphaforge_data import Repo
@@ -107,7 +107,7 @@ def _run_sync(only: str, workers: int) -> None:
         repo = Repo()
         syncer = Syncer(repo, workers=workers, log=lambda m: _SYNC_STATE.update(message=m),
                         progress=on_progress)
-        _SYNC_STATE["result"] = syncer.run(only)
+        _SYNC_STATE["result"] = syncer.run(only, force=force)
     except Exception as exc:                              # noqa: BLE001
         _SYNC_STATE["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -138,8 +138,9 @@ def status(request: Request):
 @router.post("/sync")
 def sync(
     request: Request,
-    only: str = Query("all", description="all / universe / fundamentals / bonus / daily / flow / index / factor"),
-    workers: int = Query(16, ge=1, le=32),
+    only: str = Query("all", description="all / universe / fundamentals / bonus / daily / flow / index / factor / sector"),
+    workers: int = Query(24, ge=1, le=48),
+    force: bool = Query(False, description="忽略「今天已同步」判定，强制重跑每一步"),
 ):
     """发起同步（后台跑，立即返回）。进度看 GET /data/status 的 sync 字段。"""
     if not _SYNC_LOCK.acquire(blocking=False):
@@ -148,7 +149,7 @@ def sync(
         if _SYNC_STATE["running"]:
             raise HTTPException(status_code=409, detail="已有同步任务在跑")
         _reset_state(only, workers)
-        thread = threading.Thread(target=_run_sync, args=(only, workers), daemon=True)
+        thread = threading.Thread(target=_run_sync, args=(only, workers, force), daemon=True)
         thread.start()
     finally:
         _SYNC_LOCK.release()

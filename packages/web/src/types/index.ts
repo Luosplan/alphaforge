@@ -394,6 +394,7 @@ export interface Holding {
   code: string
   name: string
   industry: string
+  strategy: string
   shares: number
   sellable: number
   cost: number
@@ -402,8 +403,23 @@ export interface Holding {
   market_value: number
   pnl: number
   pnl_pct: number
+  day_pnl: number
   open_date: string
   weight: number
+  stop: number
+  dist_stop_pct: number | null
+}
+
+/** 计划卡挂出、等下一个开盘成交的委托（/portfolio/summary 的 pending） */
+export interface PendingOrder {
+  code: string
+  name: string
+  kind: 'ENTRY' | 'ADD' | 'TRIM'
+  kind_label: string
+  shares: number
+  reason: string
+  strategy: string
+  created: string
 }
 
 export interface AccountSummary {
@@ -462,6 +478,7 @@ export interface Performance {
 export interface PortfolioResponse {
   summary: AccountSummary
   holdings: Holding[]
+  pending: PendingOrder[]
   industry_alloc: Array<{ name: string; value: number; weight: number }>
   equity_curve: Array<{ date: string; value: number }>
   performance: Performance
@@ -484,7 +501,14 @@ export interface Trade {
   fee: number
   tax: number
   trade_date: string
+  /** 成交时刻 HH:mm；盘中触发止损那类日线给不出分钟，为空串 */
+  trade_time?: string
+  /** 成交那一格按开盘价算的涨幅（相对昨收），成交日不在库时为空 */
+  change_pct?: number | null
   note?: string
+  strategy?: string
+  pnl?: number | null
+  pnl_pct?: number | null
 }
 
 export interface TradeStats {

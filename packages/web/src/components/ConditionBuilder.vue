@@ -245,7 +245,7 @@ function remove(index: number) {
 
 .cx:hover {
   opacity: 1;
-  background: rgba(31, 79, 216, 0.14);
+  background: var(--af-brand-soft);
 }
 
 .empty {

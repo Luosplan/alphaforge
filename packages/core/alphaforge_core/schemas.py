@@ -132,15 +132,6 @@ class RiskCheckRequest(BaseModel):
     price: float
 
 
-class TradeRequest(BaseModel):
-    code: str
-    side: str = Field(pattern="^(BUY|SELL)$")
-    price: float
-    shares: int
-    trade_date: str | None = None
-    note: str | None = None
-
-
 # ------------------------------------------------------------ 策略实验室
 class LabBacktestRequest(BaseModel):
     """单条策略回测。`spec` 可内联一条还没保存的策略（编辑器里试参数用）。"""

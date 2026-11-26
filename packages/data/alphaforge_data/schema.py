@@ -95,6 +95,19 @@ DDL: tuple[str, ...] = (
         ts         TEXT
     )
     """,
+    # ---------------------------------------------------------------- 分红送配
+    # 除权事件是**历史事实**，不是每天重拉的现算量。落库后每天只增量补最近
+    # 一周的公告，复权因子从库里读整个日线窗口；否则每次同步都要重拉三年 30 页。
+    """
+    CREATE TABLE IF NOT EXISTS bonus_event (
+        code  TEXT NOT NULL,                  -- 6 位代码，不带交易所后缀
+        date  TEXT NOT NULL,                  -- 除权除息日
+        dps   REAL NOT NULL DEFAULT 0,        -- 每股派息（元）
+        ratio REAL NOT NULL DEFAULT 0,        -- 每股送转（股）
+        PRIMARY KEY (code, date)
+    ) WITHOUT ROWID
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_bonus_date ON bonus_event(date)",
     # ---------------------------------------------------------------- 指数
     """
     CREATE TABLE IF NOT EXISTS index_quote (

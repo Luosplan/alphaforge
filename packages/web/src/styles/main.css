@@ -1,56 +1,93 @@
+@font-face {
+  font-family: 'Inter var';
+  src: url('../assets/fonts/inter-latin-wght-normal.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  /* 只接管拉丁与数字，汉字继续走系统字：一个 48KB 的可变字体换来全站数字的对齐与骨相 */
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF,
+    U+FFFD;
+}
+
 :root {
-  /* 纸面：纯白，靠留白和字号分层，不靠底色和阴影 */
-  --af-bg: #ffffff;
+  /* 冷灰底面 + 纯白卡片：层级来自明度差与一档极淡投影，不靠堆叠描边 */
+  --af-bg: #f3f5fa;
+  --af-bg-deep: #e9eef6;
   --af-surface: #ffffff;
-  --af-surface-2: #fafafa;
-  --af-surface-3: #f2f3f5;
-  --af-bg-deep: #f7f8f9;
+  --af-surface-2: #f7f9fc;
+  --af-surface-3: #eef1f7;
 
-  /* 墨色阶 */
-  --af-ink: #1a1a1a;
-  --af-ink-2: #4c4f6b;
-  --af-ink-3: #9aa0ac;
-  --af-ink-4: #c3c6ce;
+  /* 墨色阶：冷中性，五级足够 */
+  --af-ink: #0d1526;
+  --af-ink-2: #414c60;
+  --af-ink-3: #78839a;
+  --af-ink-4: #a6afc0;
+  --af-ink-5: #ccd3de;
 
-  /* 分隔线：淡到几乎看不见，只用来分栏不画框 */
-  --af-border: #f0f0f0;
-  --af-border-strong: #e5e5e5;
+  --af-border: #e9edf4;
+  --af-border-strong: #dde3ec;
 
-  /* 系统色：主色就是黑，红绿只留给涨跌。
-   * 这里刻意不引入彩色品牌色——A 股绿色代表下跌，任何绿色类强调都会被读成跌。
-   * 需要「强调」时用字重和留白，不用颜色。 */
-  --af-brand: #1a1a1a;
-  --af-brand-soft: #f2f3f5;
-  --af-brand-ink: #1a1a1a;
-  --af-up: #e5453d;
-  --af-up-soft: #fdeeed;
-  --af-down: #12a05c;
-  --af-down-soft: #eaf7f1;
-  --af-warn: #b45309;
-  --af-warn-soft: #fdf4e7;
+  /* 交互色：只用于链接、选中、焦点与主按钮。
+   * 红绿被涨跌占用，交互色因此单独给一支蓝，任何强调都先分清「是数据还是操作」。 */
+  --af-brand: #1a56db;
+  --af-brand-soft: #ebf1ff;
+  --af-brand-ink: #1743b0;
+
+  --af-up: #d93a32;
+  --af-up-soft: #fdeeec;
+  --af-down: #0f9d63;
+  --af-down-soft: #e9f7f0;
+  --af-warn: #b0700a;
+  --af-warn-soft: #fdf5e6;
+
+  /* 导航轨：白纸同色，靠一条细分隔线与内容区分开，选中态用品牌蓝浅底 */
+  --af-rail: #ffffff;
+  --af-rail-2: #f5f8fc;
+  --af-rail-3: #ebf1ff;
+  --af-rail-ink: #0d1526;
+  --af-rail-muted: #78839a;
+  --af-rail-line: #eef1f7;
+
+  --af-font: 'Inter var', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 
   --af-radius: 12px;
   --af-radius-sm: 8px;
-  --af-chrome: 58px;
+  --af-radius-xs: 6px;
+  --af-chrome: 56px;
 
-  --el-color-primary: #1a1a1a;
-  --el-color-primary-light-3: #3d3d3d;
-  --el-color-primary-light-5: #666666;
-  --el-color-primary-light-7: #a3a3a3;
-  --el-color-primary-light-8: #c7c7c7;
-  --el-color-primary-light-9: #f2f3f5;
-  --el-color-primary-dark-2: #000000;
+  --af-shadow-1: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --af-shadow-2: 0 8px 20px -8px rgba(16, 24, 40, 0.16);
+  --af-shadow-3: 0 24px 48px -20px rgba(16, 24, 40, 0.32);
+
+  --af-focus: rgba(26, 86, 219, 0.36);
+
+  --el-color-primary: #1a56db;
+  /* Element 的 success 默认是绿色，而绿色在本系统里表示下跌，提示条会被误读 */
+  --el-color-success: #1a56db;
+  --el-color-success-light-3: #4b7ce8;
+  --el-color-success-light-5: #8aa9f0;
+  --el-color-success-light-7: #b9cdf7;
+  --el-color-success-light-8: #d3e0fa;
+  --el-color-success-light-9: #ebf1ff;
+  --el-color-success-dark-2: #1743b0;
+  --el-color-primary-light-3: #4b7ce8;
+  --el-color-primary-light-5: #8aa9f0;
+  --el-color-primary-light-7: #b9cdf7;
+  --el-color-primary-light-8: #d3e0fa;
+  --el-color-primary-light-9: #ebf1ff;
+  --el-color-primary-dark-2: #1743b0;
   --el-border-radius-base: 8px;
-  --el-border-color: #e5e5e5;
-  --el-border-color-light: #f0f0f0;
-  --el-border-color-lighter: #f5f5f5;
-  --el-text-color-primary: #1a1a1a;
-  --el-text-color-regular: #4c4f6b;
-  --el-text-color-secondary: #9aa0ac;
-  --el-fill-color-light: #fafafa;
+  --el-border-color: #dde3ec;
+  --el-border-color-light: #e9edf4;
+  --el-border-color-lighter: #eef1f7;
+  --el-text-color-primary: #0d1526;
+  --el-text-color-regular: #414c60;
+  --el-text-color-secondary: #78839a;
+  --el-fill-color-light: #f7f9fc;
   --el-fill-color-blank: #ffffff;
-  --el-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+  --el-font-family: var(--af-font);
 }
 
 * {
@@ -67,10 +104,11 @@ body {
   margin: 0;
   background: var(--af-bg);
   color: var(--af-ink);
-  font-family: var(--el-font-family);
+  font-family: var(--af-font);
   font-size: 13.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a {
@@ -78,18 +116,30 @@ a {
   text-decoration: none;
 }
 
+::selection {
+  background: rgba(26, 86, 219, 0.16);
+}
+
+/* 输入框自带内描边焦点态，这里只给「点得动的东西」补外圈，避免双环 */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:not(input):focus-visible {
+  outline: 2px solid var(--af-focus);
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #dcdcdc;
+  background: #d3dae6;
   border-radius: 9px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #c4c4c4;
+  background: #bcc5d4;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
@@ -100,7 +150,7 @@ a {
 .num {
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum' 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.012em;
 }
 
 .up {
@@ -118,6 +168,7 @@ a {
   background: var(--af-surface);
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius);
+  box-shadow: var(--af-shadow-1);
   overflow: hidden;
 }
 
@@ -126,9 +177,10 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 18px;
-  height: 46px;
+  padding: 0 16px;
+  height: 44px;
   border-bottom: 1px solid var(--af-border);
+  background: var(--af-surface);
 }
 
 .panel-title {
@@ -136,24 +188,40 @@ a {
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.005em;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   color: var(--af-ink);
   min-width: 0;
+  white-space: nowrap;
 }
 
+/* 副标题要让位给标题和右侧控件，否则 flex 会先挤标题、把它断成两行 */
 .panel-sub {
   color: var(--af-ink-3);
   font-size: 11.5px;
   font-weight: 400;
   letter-spacing: 0;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* 头部控件多到一行放不下时（实验室策略矩阵），让控件整行换到下面并贴右 */
+.panel-head.wrap {
+  height: auto;
+  min-height: 44px;
+  padding: 8px 16px;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.panel-head.wrap > :not(.panel-title) {
+  margin-left: auto;
+}
+
 .panel-body {
-  padding: 18px;
+  padding: 16px;
 }
 
 .panel-body.flush {
@@ -166,6 +234,7 @@ a {
   background: var(--af-surface);
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius);
+  box-shadow: var(--af-shadow-1);
   overflow: hidden;
 }
 
@@ -220,9 +289,9 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 21px;
-  padding: 0 8px;
-  border-radius: 999px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--af-radius-xs);
   font-size: 11.5px;
   font-weight: 500;
   background: var(--af-surface-3);
@@ -239,8 +308,8 @@ a {
   color: var(--af-down);
 }
 .chip.brand {
-  background: var(--af-surface-3);
-  color: var(--af-ink);
+  background: var(--af-brand-soft);
+  color: var(--af-brand-ink);
 }
 .chip.warn {
   background: var(--af-warn-soft);
@@ -250,21 +319,20 @@ a {
 /* 上市板 tag：沪 / 深 / 创 / 科 / 北。
  * 中文单字比 SH/SZ 读得快，且一行放得下。主板只分沪深，走描边（安静）；
  * 创业板 / 科创板 / 北交所涨跌幅是 20% / 30%，同样的 ATR 止损位含义不同，
- * 所以用底色提亮。红绿不能用来做这个区分——那是涨跌的语义。
- * 提亮用的是中性灰：主色已经是黑，再叠一层彩色只会变成噪点。 */
+ * 所以用底色提亮。红绿不能用来做这个区分——那是涨跌的语义。 */
 .btag {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  min-width: 15px;
+  min-width: 16px;
   padding: 1px 4px;
   border: 1px solid var(--af-border-strong);
   border-radius: 4px;
   font-size: 10px;
   font-weight: 500;
   line-height: 1.35;
-  color: var(--af-ink-2);
+  color: var(--af-ink-3);
   background: transparent;
   cursor: default;
 }
@@ -273,8 +341,8 @@ a {
 .btag.star,
 .btag.bse {
   border-color: transparent;
-  color: var(--af-ink);
-  background: var(--af-surface-3);
+  color: var(--af-brand-ink);
+  background: var(--af-brand-soft);
 }
 
 .pill {
@@ -300,17 +368,17 @@ a {
 .pill.pending {
   background: var(--af-warn-soft);
   color: var(--af-warn);
-  border-color: #f3ddc2;
+  border-color: #f5e3c4;
 }
 .pill.triggered {
-  background: var(--af-surface-3);
-  color: var(--af-ink);
-  border-color: var(--af-border-strong);
+  background: var(--af-brand-soft);
+  color: var(--af-brand-ink);
+  border-color: #d9e3fb;
 }
 .pill.holding {
   background: var(--af-down-soft);
   color: var(--af-down);
-  border-color: #cdeade;
+  border-color: #cfeade;
 }
 
 .ellipsis {
@@ -337,23 +405,24 @@ a {
   --el-button-hover-text-color: var(--af-ink);
   --el-button-hover-bg-color: var(--af-surface-2);
   --el-button-hover-border-color: var(--af-ink-4);
+  --el-button-active-border-color: var(--af-ink-3);
 }
 
-/* 主操作是黑底全圆角药丸。文字按钮不做药丸，否则会胖得没法看 */
+/* 按钮是工具，不是贴纸：统一方角，靠底色和字重表达主次 */
 .el-button:not(.is-text):not(.is-link) {
-  border-radius: 999px;
+  border-radius: var(--af-radius-sm);
 }
 
 .el-button--primary {
-  --el-button-bg-color: var(--af-ink);
-  --el-button-border-color: var(--af-ink);
+  --el-button-bg-color: var(--af-brand);
+  --el-button-border-color: var(--af-brand);
   --el-button-text-color: #ffffff;
-  --el-button-hover-bg-color: #3d3d3d;
-  --el-button-hover-border-color: #3d3d3d;
-  --el-button-active-bg-color: #000000;
-  --el-button-active-border-color: #000000;
-  --el-button-disabled-bg-color: #c7c7c7;
-  --el-button-disabled-border-color: #c7c7c7;
+  --el-button-hover-bg-color: #2a63e0;
+  --el-button-hover-border-color: #2a63e0;
+  --el-button-active-bg-color: var(--af-brand-ink);
+  --el-button-active-border-color: var(--af-brand-ink);
+  --el-button-disabled-bg-color: #b7c9ee;
+  --el-button-disabled-border-color: #b7c9ee;
   --el-button-disabled-text-color: #ffffff;
 }
 
@@ -361,25 +430,30 @@ a {
   color: var(--af-ink-2);
 }
 
+.el-button.is-text:hover {
+  color: var(--af-brand);
+  background: var(--af-brand-soft);
+}
+
 .el-table {
   --el-table-border-color: var(--af-border);
   --el-table-header-bg-color: var(--af-surface-2);
   --el-table-header-text-color: var(--af-ink-3);
-  --el-table-row-hover-bg-color: #fafafa;
+  --el-table-row-hover-bg-color: var(--af-surface-2);
   --el-table-text-color: var(--af-ink);
   font-size: 12.5px;
 }
 
 .el-table th.el-table__cell {
-  font-weight: 400;
-  font-size: 11.5px;
+  font-weight: 500;
+  font-size: 11px;
   letter-spacing: 0.02em;
-  height: 34px;
+  height: 36px;
   background: var(--af-surface-2) !important;
 }
 
 .el-table td.el-table__cell {
-  padding: 7px 0;
+  padding: 8px 0;
 }
 
 .el-table__inner-wrapper::before {
@@ -387,8 +461,8 @@ a {
 }
 
 .el-radio-group {
-  --el-radio-button-checked-bg-color: var(--af-ink);
-  --el-radio-button-checked-border-color: var(--af-ink);
+  --el-radio-button-checked-bg-color: var(--af-brand);
+  --el-radio-button-checked-border-color: var(--af-brand);
   --el-radio-button-checked-text-color: #fff;
 }
 
@@ -410,8 +484,8 @@ a {
 }
 
 .el-checkbox-button.is-checked .el-checkbox-button__inner {
-  background: var(--af-ink);
-  border-color: var(--af-ink);
+  background: var(--af-brand);
+  border-color: var(--af-brand);
   color: #fff;
 }
 
@@ -419,6 +493,7 @@ a {
 .el-select__wrapper {
   box-shadow: 0 0 0 1px var(--af-border-strong) inset;
   border-radius: var(--af-radius-sm);
+  background: var(--af-surface);
 }
 
 .el-input__wrapper:hover,
@@ -428,35 +503,31 @@ a {
 
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focused {
-  box-shadow: 0 0 0 1px var(--af-ink) inset !important;
+  box-shadow: 0 0 0 1px var(--af-brand) inset, 0 0 0 3px rgba(26, 86, 219, 0.12) !important;
 }
 
 .el-switch.is-checked .el-switch__core {
-  background: var(--af-ink);
-  border-color: var(--af-ink);
-}
-
-.el-dialog,
-.el-drawer {
-  --el-dialog-border-radius: 14px;
+  background: var(--af-brand);
+  border-color: var(--af-brand);
 }
 
 .el-dialog {
   border-radius: 14px;
+  box-shadow: var(--af-shadow-3);
 }
 
 .el-dialog__header {
   padding: 20px 22px 8px;
 }
 
-.el-drawer__header {
+/* 设置抽屉自带 26px 内边距，抵消 Element 默认的 20px，避免两层叠加 */
+.settings-drawer .el-drawer__header {
   margin-bottom: 0;
   padding: 0;
   border-bottom: 1px solid var(--af-border);
-  color: var(--af-ink);
 }
 
-.el-drawer__body {
+.settings-drawer .el-drawer__body {
   padding: 0;
   overflow: auto;
 }
@@ -464,7 +535,7 @@ a {
 .el-tabs__item {
   font-size: 12.5px;
   font-weight: 500;
-  height: 34px;
+  height: 36px;
   color: var(--af-ink-3);
 }
 
@@ -473,8 +544,9 @@ a {
 }
 
 .el-tabs__active-bar {
-  background: var(--af-ink);
+  background: var(--af-brand);
   height: 2px;
+  border-radius: 2px;
 }
 
 .el-tabs__nav-wrap::after {
@@ -483,7 +555,8 @@ a {
 }
 
 .el-loading-mask {
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(243, 245, 250, 0.72);
+  backdrop-filter: blur(1px);
 }
 
 /* ------------------------------------------------------------------ 响应式 */
@@ -503,10 +576,13 @@ a {
   body {
     font-size: 13px;
   }
+  .panel {
+    border-radius: 10px;
+  }
   .panel-head {
     height: auto;
-    min-height: 44px;
-    padding: 10px 14px;
+    min-height: 42px;
+    padding: 9px 13px;
     flex-wrap: wrap;
     row-gap: 8px;
   }
@@ -527,7 +603,7 @@ a {
     margin-left: auto;
   }
   .panel-body {
-    padding: 12px 14px 14px;
+    padding: 12px 13px 13px;
   }
   .strip {
     flex-wrap: wrap;
@@ -554,5 +630,16 @@ a {
 @media (min-width: 768px) {
   .hide-desktop {
     display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

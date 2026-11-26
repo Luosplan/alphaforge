@@ -62,6 +62,12 @@ const FACTOR_LABEL: Record<string, string> = {
   volratio: '量比',
   mainflow: '主力净流入占比',
   main_net: '主力净流入',
+  squeeze: '缩量收窄',
+  ma_converge: '均线粘合',
+  pullback5: '距 5 日高回撤',
+  ind_limit_cnt: '同行业涨停家数',
+  ind_strength: '行业当日均涨',
+  ind_rank_pct: '行业内排名分位',
 }
 
 const stats = computed(() => overview.value?.stats)
@@ -419,6 +425,136 @@ const genomeRows = computed<GenomeRow[]>(() => {
   return rows
 })
 
+/* 进化产物 = 搜索出来的完整 spec。参数对比表只摊开 6 个结构参数和权重，
+ * 但真正写进账户、决定下一次选股的是整份定义（排序字段、过滤条件、择时闸
+ * 都在里面），所以这里把整份摆出来，并允许复制 / 导出成知识库条目。 */
+const SPEC_LABEL: Record<string, string> = {
+  id: '策略代号',
+  name: '策略名称',
+  desc: '一句话定义',
+  top_n: '持仓只数',
+  max_per_industry: '同行业上限',
+  pool_limit_min: '涨停池下限',
+  time_stop: '时间止损（交易日）',
+  market_ma: '择时均线（0 = 不看大盘）',
+  weak_participate: '弱市照常参与',
+  weak_huddle: '弱市要求行业抱团',
+  gap_band: '次日高开区间（%）',
+  gap_gate: '跳空闸',
+  need_limit_close: '要求收盘封住涨停',
+  limit_close_frac: '封板时间占比下限',
+  allow_add: '允许浮盈加仓',
+  sort: '排序',
+}
+
+const OP_LABEL: Record<string, string> = {
+  '>=': '≥', '<=': '≤', '>': '>', '<': '<', is: '=', in: '属于', between: '介于',
+}
+
+/* 过滤条件里混着行情字段，不在因子字典里；这几个是策略定义里会用到的 */
+const FILTER_FIELD_LABEL: Record<string, string> = {
+  limit_up: '当日涨停',
+  amount: '成交额（亿）',
+  above_ma20: '站上 20 日线',
+  above_ma60: '站上 60 日线',
+}
+
+const evoSpec = computed<Record<string, unknown> | null>(
+  () => (detail.value?.evolution?.best.spec as Record<string, unknown>) ?? null,
+)
+
+const specName = computed(() => String(evoSpec.value?.name ?? detail.value?.name ?? ''))
+const specDesc = computed(() => String(evoSpec.value?.desc ?? ''))
+
+function specText(v: unknown): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  if (Array.isArray(v)) return v.join(' ~ ')
+  if (typeof v === 'object') {
+    const sort = v as { by?: string; desc?: boolean }
+    if (sort.by) return `${sort.by} ${sort.desc ? '降序' : '升序'}`
+    return JSON.stringify(v)
+  }
+  return String(v)
+}
+
+const specRows = computed(() =>
+  Object.entries(evoSpec.value ?? {})
+    // 名称与一句话定义已经写在卡片头部，网格里再摆一遍会把这一行撑成四行
+    .filter(([k]) => k !== 'weights' && k !== 'filters' && k !== 'desc')
+    .map(([k, v]) => ({ key: k, label: SPEC_LABEL[k] ?? k, value: specText(v) })),
+)
+
+const specWeights = computed(() => {
+  const w = (evoSpec.value?.weights ?? {}) as Record<string, number>
+  const rows = Object.entries(w).filter(([, v]) => v > 0)
+  const max = Math.max(...rows.map(([, v]) => v), 0.01)
+  return rows
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => ({
+      key: k, label: FACTOR_LABEL[k] ?? k, width: (v / max) * 100, value: `${(v * 100).toFixed(1)}%`,
+    }))
+})
+
+const specFilters = computed(() =>
+  ((evoSpec.value?.filters ?? []) as Array<Record<string, unknown>>).map((f, i) => ({
+    key: `${f.field}-${i}`,
+    label: FACTOR_LABEL[String(f.field)] ?? FILTER_FIELD_LABEL[String(f.field)] ?? String(f.field),
+    op: OP_LABEL[String(f.op)] ?? String(f.op),
+    value: specText(f.value),
+  })),
+)
+
+async function copySpec() {
+  await navigator.clipboard.writeText(JSON.stringify(evoSpec.value, null, 2))
+  ElMessage.success('策略定义已复制到剪贴板')
+}
+
+/** 导出成一份 markdown：换机器、给同事看、或者丢进知识库都够用。 */
+function exportSpec() {
+  const d = detail.value!
+  const ev = d.evolution!
+  const md = [
+    `# ${d.name} · 进化产物`,
+    '',
+    `- 代号：${d.id}　已采纳代次：第 ${d.paper?.generation ?? 0} 代`,
+    `- 得分：${ev.best.score}（起点 ${ev.baseline.score}）`,
+    `- 搜索：${ev.config.population} 个基因组 × ${ev.config.generations} 代 = ${ev.config.evaluations} 次回测，样本 ${ev.config.days} 个交易日`,
+    ev.holdout
+      ? `- 样本外：${ev.holdout.start} → ${ev.holdout.end}（${ev.holdout.days} 个交易日）得分差 ${ev.holdout.edge >= 0 ? '+' : ''}${ev.holdout.edge.toFixed(4)}`
+      : '',
+    '',
+    '## 结构参数',
+    '',
+    '| 参数 | 值 |',
+    '| --- | --- |',
+    ...specRows.value.map((r) => `| ${r.label} | ${r.value} |`),
+    '',
+    '## 因子权重',
+    '',
+    '| 因子 | 权重 |',
+    '| --- | --- |',
+    ...specWeights.value.map((r) => `| ${r.label} | ${r.value} |`),
+    '',
+    '## 选股条件',
+    '',
+    '| 因子 | 关系 | 阈值 |',
+    '| --- | --- | --- |',
+    ...specFilters.value.map((f) => `| ${f.label} | ${f.op} | ${f.value} |`),
+    '',
+    '## 说明',
+    '',
+    ...ev.notes.map((n) => `- ${n}`),
+    '',
+  ].join('\n')
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${d.id}-evolved-${ev.config.days}d.md`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
 // 样本外结论分三档。样本外只跑一次，分差 0.05 就是噪声，
 // 用一个「保住/没保住」的二元徽标会把平手说成失败。
 const holdoutLabel = (level?: string): string => {
@@ -596,7 +732,7 @@ onBeforeUnmount(stopPoll)
     <div v-if="regime" class="regime-line">
       <span
         class="chip"
-        :class="regime.open_new ? 'up' : ((regime.scale ?? 0) > 0 ? 'warn' : 'flat')"
+        :class="regime.open_new ? 'brand' : ((regime.scale ?? 0) > 0 ? 'warn' : 'flat')"
       >
         {{ regime.label }}
       </span>
@@ -1278,29 +1414,29 @@ onBeforeUnmount(stopPoll)
                   得分 = min(卡玛, 4) + 0.6×（胜率−50%）+ 0.2×（仓位−50%）− 0.02×换手
                 </span>
               </div>
-              <table class="dtable">
+              <table class="dtable center">
                 <thead>
                   <tr>
-                    <th class="ta-r">代</th>
-                    <th class="ta-r">累计最优</th>
-                    <th class="ta-r">本代最优</th>
-                    <th class="ta-r">种群均值</th>
-                    <th class="ta-r">区间收益</th>
-                    <th class="ta-r">回撤</th>
-                    <th class="ta-r">胜率</th>
+                    <th>代</th>
+                    <th>累计最优</th>
+                    <th>本代最优</th>
+                    <th>种群均值</th>
+                    <th>区间收益</th>
+                    <th>回撤</th>
+                    <th>胜率</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="h in detail.evolution.history" :key="h.generation">
-                    <td class="ta-r num">{{ h.generation }}</td>
-                    <td class="ta-r num up">{{ h.sofar_score ?? h.best_score }}</td>
-                    <td class="ta-r num">{{ h.best_score }}</td>
-                    <td class="ta-r num">{{ h.mean_score }}</td>
-                    <td class="ta-r num" :class="toneOf(h.best?.total_return)">
+                    <td class="num">{{ h.generation }}</td>
+                    <td class="num up">{{ h.sofar_score ?? h.best_score }}</td>
+                    <td class="num">{{ h.best_score }}</td>
+                    <td class="num">{{ h.mean_score }}</td>
+                    <td class="num" :class="toneOf(h.best?.total_return)">
                       {{ pct(h.best?.total_return) }}
                     </td>
-                    <td class="ta-r num down">{{ pct(h.best?.max_drawdown) }}</td>
-                    <td class="ta-r num">
+                    <td class="num down">{{ pct(h.best?.max_drawdown) }}</td>
+                    <td class="num">
                       {{ h.best?.win_rate != null ? `${h.best.win_rate}%` : '—' }}
                     </td>
                   </tr>
@@ -1315,48 +1451,48 @@ onBeforeUnmount(stopPoll)
                     {{ detail.evolution.holdout.days }} 个交易日，没参与搜索
                   </span>
                 </div>
-                <table class="dtable">
+                <table class="dtable center">
                   <thead>
                     <tr>
                       <th>口径</th>
-                      <th class="ta-r">原始策略</th>
-                      <th class="ta-r">进化后</th>
-                      <th class="ta-r">差距</th>
+                      <th>原始策略</th>
+                      <th>进化后</th>
+                      <th>差距</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
                       <td>得分</td>
-                      <td class="ta-r num">{{ detail.evolution.holdout.baseline.score.toFixed(4) }}</td>
-                      <td class="ta-r num up">{{ detail.evolution.holdout.best.score.toFixed(4) }}</td>
-                      <td class="ta-r num" :class="toneOf(detail.evolution.holdout.edge)">
+                      <td class="num">{{ detail.evolution.holdout.baseline.score.toFixed(4) }}</td>
+                      <td class="num up">{{ detail.evolution.holdout.best.score.toFixed(4) }}</td>
+                      <td class="num" :class="toneOf(detail.evolution.holdout.edge)">
                         {{ detail.evolution.holdout.edge >= 0 ? '+' : ''
                         }}{{ detail.evolution.holdout.edge.toFixed(4) }}
                       </td>
                     </tr>
                     <tr>
                       <td>区间收益</td>
-                      <td class="ta-r num">{{ pct(detail.evolution.holdout.baseline.total_return) }}</td>
-                      <td class="ta-r num">{{ pct(detail.evolution.holdout.best.total_return) }}</td>
-                      <td class="ta-r muted">—</td>
+                      <td class="num">{{ pct(detail.evolution.holdout.baseline.total_return) }}</td>
+                      <td class="num">{{ pct(detail.evolution.holdout.best.total_return) }}</td>
+                      <td class="muted">—</td>
                     </tr>
                     <tr>
                       <td>最大回撤</td>
-                      <td class="ta-r num down">
+                      <td class="num down">
                         {{ pct(detail.evolution.holdout.baseline.max_drawdown) }}
                       </td>
-                      <td class="ta-r num down">
+                      <td class="num down">
                         {{ pct(detail.evolution.holdout.best.max_drawdown) }}
                       </td>
-                      <td class="ta-r muted">—</td>
+                      <td class="muted">—</td>
                     </tr>
                     <tr>
                       <td>胜率</td>
-                      <td class="ta-r num">
+                      <td class="num">
                         {{ detail.evolution.holdout.baseline.win_rate ?? '—' }}%
                       </td>
-                      <td class="ta-r num">{{ detail.evolution.holdout.best.win_rate ?? '—' }}%</td>
-                      <td class="ta-r muted">—</td>
+                      <td class="num">{{ detail.evolution.holdout.best.win_rate ?? '—' }}%</td>
+                      <td class="muted">—</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1396,25 +1532,25 @@ onBeforeUnmount(stopPoll)
               </template>
 
               <div class="block-title">参数对比</div>
-              <table class="dtable">
+              <table class="dtable center">
                 <thead>
                   <tr>
                     <th>参数</th>
-                    <th class="ta-r">起点</th>
-                    <th class="ta-r">进化后</th>
-                    <th class="ta-r">变化</th>
+                    <th>起点</th>
+                    <th>进化后</th>
+                    <th>变化</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="g in genomeRows" :key="g.key">
                     <td>{{ g.label }}</td>
-                    <td class="ta-r num">
+                    <td class="num">
                       {{ g.kind === 'weight' ? `${(g.before * 100).toFixed(1)}%` : g.before }}
                     </td>
-                    <td class="ta-r num">
+                    <td class="num">
                       {{ g.kind === 'weight' ? `${(g.after * 100).toFixed(1)}%` : g.after }}
                     </td>
-                    <td class="ta-r num" :class="toneOf(g.after - g.before)">
+                    <td class="num" :class="toneOf(g.after - g.before)">
                       {{ g.after - g.before >= 0 ? '+' : ''
                       }}{{
                         g.kind === 'weight'
@@ -1429,6 +1565,53 @@ onBeforeUnmount(stopPoll)
               <ul class="notes">
                 <li v-for="(n, i) in detail.evolution.notes" :key="i">{{ n }}</li>
               </ul>
+
+              <template v-if="evoSpec">
+                <div class="block-title">
+                  进化产物 · 最终策略
+                  <span class="muted">
+                    这份就是搜索出来的完整定义；采纳后原样写进账户，下一次选股开始生效
+                  </span>
+                </div>
+
+                <div class="spec-card">
+                  <div class="spec-head">
+                    <b>{{ specName }}</b>
+                    <span class="muted">{{ specDesc }}</span>
+                  </div>
+
+                  <div class="spec-grid">
+                    <div v-for="r in specRows" :key="r.key" class="spec-cell">
+                      <span class="k">{{ r.label }}</span>
+                      <span class="v num">{{ r.value }}</span>
+                    </div>
+                  </div>
+
+                  <div class="spec-cols">
+                    <div>
+                      <div class="spec-sub">因子权重</div>
+                      <div v-for="w in specWeights" :key="w.key" class="w-row">
+                        <span class="w-name">{{ w.label }}</span>
+                        <span class="w-bar"><i :style="{ width: `${w.width}%` }" /></span>
+                        <span class="w-val num">{{ w.value }}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div class="spec-sub">选股条件</div>
+                      <div v-for="f in specFilters" :key="f.key" class="f-row">
+                        <span class="f-name">{{ f.label }}</span>
+                        <span class="num">{{ f.op }} {{ f.value }}</span>
+                      </div>
+                      <p v-if="!specFilters.length" class="muted">这套策略不设过滤条件，直接吃排序结果。</p>
+                    </div>
+                  </div>
+
+                  <div class="spec-foot">
+                    <el-button size="small" plain @click="copySpec">复制定义 JSON</el-button>
+                    <el-button size="small" plain @click="exportSpec">导出知识库 .md</el-button>
+                  </div>
+                </div>
+              </template>
 
               <div class="dt-foot">
                 <el-button size="small" type="primary" @click="applyEvolution(detail.id)">
@@ -1857,7 +2040,7 @@ onBeforeUnmount(stopPoll)
 }
 
 .prow:hover td {
-  background: #f7f9fd;
+  background: var(--af-surface-2);
 }
 
 .p-name {
@@ -2141,6 +2324,133 @@ onBeforeUnmount(stopPoll)
   border-bottom: 0;
 }
 
+/* 逐代曲线、样本外、参数对比：列宽均分 + 居中，按行比数值时眼睛不用左右横跳 */
+.dtable.center {
+  table-layout: fixed;
+}
+
+.dtable.center th,
+.dtable.center td {
+  text-align: center;
+}
+
+.spec-card {
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface-2);
+  padding: 12px 14px;
+}
+
+.spec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--af-border);
+}
+
+.spec-head b {
+  font-size: 13px;
+}
+
+.spec-head .muted {
+  flex: 1;
+}
+
+.spec-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+  padding: 12px 0;
+}
+
+.spec-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.spec-cell .k {
+  font-size: 10.5px;
+  color: var(--af-ink-3);
+}
+
+.spec-cell .v {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.spec-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 18px;
+  padding: 12px 0 4px;
+  border-top: 1px dashed var(--af-border);
+}
+
+.spec-sub {
+  font-size: 11px;
+  color: var(--af-ink-3);
+  margin-bottom: 6px;
+}
+
+.w-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 46px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 2px 0;
+}
+
+.w-name {
+  color: var(--af-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.w-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--af-surface-3);
+  overflow: hidden;
+}
+
+.w-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--af-brand);
+}
+
+.w-val {
+  text-align: right;
+  color: var(--af-ink-2);
+}
+
+.f-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 11.5px;
+}
+
+.f-name {
+  color: var(--af-ink-2);
+}
+
+.spec-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--af-border);
+}
+
 .notes {
   margin: 0;
   padding-left: 17px;
@@ -2287,6 +2597,16 @@ onBeforeUnmount(stopPoll)
   }
   .sc-desc {
     min-height: 0;
+  }
+  .spec-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .spec-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .w-row {
+    grid-template-columns: 84px 1fr 44px;
   }
 }
 </style>

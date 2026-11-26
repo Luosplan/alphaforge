@@ -43,9 +43,9 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
       <AppIcon name="sidebar" :collapsed="store.navCollapsed" />
     </button>
 
-    <div class="page hide-mobile">
+    <div class="page">
       <span class="page-title">{{ pageLabel }}</span>
-      <span class="page-sub">{{ pageSub }}</span>
+      <span class="page-sub hide-mobile">{{ pageSub }}</span>
     </div>
 
     <div class="spacer" />
@@ -88,23 +88,22 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   height: var(--af-chrome);
   padding: 0 20px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: saturate(180%) blur(10px);
+  background: var(--af-surface);
   border-bottom: 1px solid var(--af-border);
 }
 
 .mark {
-  flex: 0 0 27px;
-  width: 27px;
-  height: 27px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  background: var(--af-ink);
+  background: var(--af-brand);
   color: #fff;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.02em;
   display: grid;
   place-items: center;
@@ -118,9 +117,11 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 }
 
 .page-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 15px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  letter-spacing: -0.015em;
   color: var(--af-ink);
   white-space: nowrap;
 }
@@ -137,6 +138,7 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   flex: 1;
 }
 
+/* 指数胶囊：一条可读的行情摘要，不承担「卡片」的结构重量 */
 .ticker {
   display: flex;
   align-items: center;
@@ -147,17 +149,16 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   border-radius: 999px;
   background: var(--af-surface-2);
 }
-
 .t-name {
   color: var(--af-ink-3);
 }
 
 .t-val {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .t-chg {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .t-sep {
@@ -174,7 +175,7 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 }
 
 .t-breadth b {
-  font-weight: 500;
+  font-weight: 600;
   font-size: 11px;
 }
 
@@ -183,28 +184,16 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   height: 30px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--af-border);
-  border-radius: 8px;
-  background: var(--af-surface);
-  color: var(--af-ink-2);
+  border: 1px solid transparent;
+  border-radius: var(--af-radius-sm);
+  background: transparent;
+  color: var(--af-ink-3);
   font-size: 16px;
   cursor: pointer;
   transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
 }
 
 .icon-btn:hover {
-  border-color: var(--af-ink-3);
-  color: var(--af-ink);
-}
-
-/* 侧栏开关：无边框，弱化处理，避免与搜索按钮抢注意力 */
-.icon-btn.nav-toggle {
-  border-color: transparent;
-  background: transparent;
-  color: var(--af-ink-3);
-}
-
-.icon-btn.nav-toggle:hover {
   background: var(--af-surface-3);
   color: var(--af-ink);
 }
@@ -215,18 +204,18 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
 }
 
 .avatar-btn {
-  border-radius: 50%;
-  background: var(--af-ink);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-brand);
   border-color: transparent;
   color: #fff;
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .avatar-btn:hover {
   border-color: transparent;
+  background: #2a63e0;
   color: #fff;
-  opacity: 0.92;
 }
 
 @media (max-width: 767px) {
@@ -234,8 +223,11 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
     gap: 10px;
     padding: 0 12px;
   }
+  .page-title {
+    font-size: 14px;
+  }
   .ticker {
-    padding: 3px 8px;
+    padding: 3px 9px;
     font-size: 11.5px;
   }
   .date {
