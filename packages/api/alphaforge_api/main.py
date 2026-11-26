@@ -122,7 +122,7 @@ def _load_reference_data():
     except Exception:                       # noqa: BLE001 - 数据没同步也要能起服务
         pass
 
-    # 上次关掉服务时如果是开着的，重启后接着跑——否则「自动驾驶」会被一次
+    # 上次关掉服务时如果是开着的，重启后接着跑——否则「实时盯盘」会被一次
     # 重启静默关停，而用户第二天打开页面才发现今天一天没盯盘。
     try:
         from alphaforge_api.autopilot import get_pilot

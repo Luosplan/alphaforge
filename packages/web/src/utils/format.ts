@@ -36,6 +36,12 @@ export function fmtNum(value: number | null | undefined, digits = 2): string {
   return value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
+/** 带正负号的金额。盈亏列只看颜色不够——红绿之外还得能读出方向。 */
+export function fmtSigned(value: number | null | undefined, digits = 0): string {
+  if (!isNum(value)) return '—'
+  return `${value > 0 ? '+' : ''}${fmtNum(value, digits)}`
+}
+
 export function toneOf(value: number | null | undefined): 'up' | 'down' | 'flat' {
   if (!isNum(value)) return 'flat'
   return value > 0 ? 'up' : value < 0 ? 'down' : 'flat'

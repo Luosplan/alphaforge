@@ -1416,7 +1416,7 @@ export interface LlmTestResult {
   error: string | null
 }
 
-/** 自动驾驶状态 */
+/** 实时盯盘状态 */
 export interface AutopilotState {
   enabled: boolean
   llm_enabled: boolean

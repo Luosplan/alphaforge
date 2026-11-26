@@ -14,7 +14,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api'
 import type { ReviewDoc } from '@/types'
-import { fmtNum, fmtPct, toneOf } from '@/utils/format'
+import { fmtNum, fmtPct, fmtSigned, toneOf } from '@/utils/format'
 
 const loading = ref(true)
 const items = ref<ReviewDoc[]>([])
@@ -110,16 +110,13 @@ onMounted(load)
     <section class="panel head">
       <div class="panel-title">
         复盘日记
-        <span class="panel-sub">
-          收盘后自动写一篇：市场、执行、明天
-        </span>
       </div>
       <div class="head-right">
         <span class="chip flat">共 {{ total }} 篇</span>
-        <span v-if="pendingToday" class="chip warn" title="收盘任务 15:05 跑完才会写下今天的">
+        <span v-if="pendingToday" class="chip warn" title="15:05 生成后才会写下今天的">
           今天还没写
         </span>
-        <router-link to="/watch" class="go">去盯盘页补跑收盘 →</router-link>
+        <router-link to="/watch" class="go">去盯盘页生成复盘日记 →</router-link>
       </div>
     </section>
 
@@ -210,12 +207,20 @@ onMounted(load)
           <div class="j-block-title">持仓与明日动作</div>
           <div class="j-hold-wrap">
             <table class="j-hold">
+              <colgroup>
+                <col style="width: 23%">
+                <col style="width: 11%">
+                <col style="width: 12.5%">
+                <col style="width: 12.5%">
+                <col style="width: 12%">
+                <col style="width: 29%">
+              </colgroup>
               <thead>
                 <tr>
                   <th>标的</th>
-                  <th class="r">成本 / 收盘</th>
+                  <th class="r">现价</th>
                   <th class="r">今日盈亏</th>
-                  <th class="r">浮盈</th>
+                  <th class="r">持仓浮盈</th>
                   <th class="r">距止损</th>
                   <th>明日动作</th>
                 </tr>
@@ -223,32 +228,36 @@ onMounted(load)
               <tbody>
                 <tr v-for="h in active.holdings" :key="`${h.code}-${h.strategy_id || ''}`">
                   <td>
-                    <span class="h-name">{{ h.name || h.code }}</span>
-                    <span v-if="h.today_buy" class="h-tag">今日买入</span>
-                    <div class="h-sub">
+                    <div class="h-line">
+                      <span class="h-name">{{ h.name || h.code }}</span>
+                      <span v-if="h.today_buy" class="h-tag">今日买入</span>
+                    </div>
+                    <div class="h-meta">
                       <span class="num">{{ h.code }}</span>
-                      <span class="dot">·</span><span class="num">{{ h.shares }} 股</span>
+                      <span class="dot">·</span><span class="num">{{ fmtNum(h.shares, 0) }} 股</span>
                       <span v-if="h.strategy_name" class="dot">·</span>
                       <span v-if="h.strategy_name">{{ h.strategy_name }}</span>
                     </div>
                   </td>
-                  <td class="r num">
-                    {{ h.cost.toFixed(2) }}
-                    <div class="h-sub">{{ h.close.toFixed(2) }}</div>
+                  <td class="r">
+                    <div class="c-main num">{{ h.close.toFixed(2) }}</div>
+                    <div class="c-sub num">成本 {{ h.cost.toFixed(2) }}</div>
                   </td>
-                  <td class="r num">
-                    <span :class="h.tone">{{ fmtNum(h.day_pnl, 0) }}</span>
-                    <div class="h-sub" :class="h.tone">{{ fmtPct(h.day_pct) }}</div>
+                  <td class="r">
+                    <div class="c-main num" :class="h.tone">{{ fmtSigned(h.day_pnl) }}</div>
+                    <div class="c-sub num" :class="h.tone">{{ fmtPct(h.day_pct) }}</div>
                   </td>
-                  <td class="r num">
-                    <span :class="toneOf(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span>
-                    <div class="h-sub">{{ fmtNum(h.pnl, 0) }}</div>
+                  <td class="r">
+                    <div class="c-main num" :class="toneOf(h.pnl_pct)">{{ fmtSigned(h.pnl) }}</div>
+                    <div class="c-sub num" :class="toneOf(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</div>
                   </td>
-                  <td class="r num">
-                    {{ h.dist_stop_pct == null ? '—' : fmtPct(h.dist_stop_pct, 1, false) }}
-                    <div class="h-sub">止损 {{ h.stop.toFixed(2) }}</div>
+                  <td class="r">
+                    <div class="c-main num">
+                      {{ h.dist_stop_pct == null ? '—' : fmtPct(h.dist_stop_pct, 1, false) }}
+                    </div>
+                    <div class="c-sub num">止损 {{ h.stop.toFixed(2) }}</div>
                   </td>
-                  <td class="h-act" :class="h.action_tone">{{ h.action }}</td>
+                  <td><div class="h-act" :class="h.action_tone">{{ h.action }}</div></td>
                 </tr>
               </tbody>
             </table>
@@ -299,7 +308,7 @@ onMounted(load)
 
     <section v-else class="panel empty-panel">
       <div class="empty">
-        还没有复盘。每天 15:05 收盘任务自动写一篇，也可在盯盘页「补跑收盘」。
+        还没有复盘。每天 15:05 自动生成一篇，也可在盯盘页点「生成复盘日记」。
       </div>
     </section>
   </div>
@@ -312,7 +321,14 @@ onMounted(load)
   gap: 14px;
 }
 
+/* 复盘页要占满内容区高度，让左右两栏各自滚，而不是整页滚。 */
+.view.journal {
+  flex: 1;
+  min-height: 0;
+}
+
 .head {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -337,26 +353,27 @@ onMounted(load)
   text-decoration: underline;
 }
 
-/* 两栏：左边窄（时间线），右边宽（正文）。左栏 sticky，滚正文时日期不跑掉。 */
+/* 两栏各自成滚动容器：左边时间线滚日期，右边滚正文，两者互不影响。
+   两栏都撑满这一段高度（align-items: stretch），所以 sticky 不再需要。 */
 .j-grid {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .j-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: calc(100vh - 190px);
   overflow-y: auto;
+  min-height: 0;
   padding: 8px;
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius);
   background: var(--af-surface);
-  position: sticky;
-  top: 12px;
 }
 
 .j-item {
@@ -425,7 +442,8 @@ onMounted(load)
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius);
   background: var(--af-surface);
-  min-height: 320px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .j-title {
@@ -513,25 +531,23 @@ onMounted(load)
 
 .j-hold {
   width: 100%;
-  min-width: 640px;
+  min-width: 760px;
+  /* 定宽列：每列都是「主值 + 灰色注脚」两行，靠内容自撑会让数值列宽窄不一、
+     数字在列里左右游移。列宽交给 colgroup，表格只负责排。 */
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
 }
 
-/* 首列放「名称 + 今日买入 + 代码/股数/策略」，窄屏下挤得只剩两个字的宽度，
-   名称会被迫折行、标签被切成「今日 / 买入」。给一个下限让它别缩。 */
-.j-hold td:first-child,
-.j-hold th:first-child {
-  min-width: 160px;
-}
-
 .j-hold th {
-  padding: 7px 10px;
+  padding: 9px 12px;
   text-align: left;
   font-weight: 550;
   font-size: 11px;
+  letter-spacing: 0.02em;
   color: var(--af-ink-3);
   background: var(--af-surface-2);
+  border-bottom: 1px solid var(--af-border-strong);
   white-space: nowrap;
 }
 
@@ -541,45 +557,90 @@ onMounted(load)
 }
 
 .j-hold td {
-  padding: 8px 10px;
-  border-top: 1px solid var(--af-border);
-  vertical-align: top;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--af-border);
+  vertical-align: middle;
   color: var(--af-ink-2);
 }
 
-.h-name {
+/* 最后一行不画线：容器自己有边框，两条叠在一起会变双线 */
+.j-hold tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.j-hold tbody tr:hover td {
+  background: var(--af-surface-2);
+}
+
+/* 主值：这一列真正要看的数 */
+.c-main {
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.25;
+  color: var(--af-ink);
+}
+
+/* 注脚：基准价 / 幅度 / 止损位。灰一档，别跟主值抢视线 */
+.c-sub {
+  margin-top: 3px;
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--af-ink-3);
+}
+
+.c-main.up,
+.c-sub.up {
+  color: var(--af-up);
+}
+
+.c-main.down,
+.c-sub.down {
+  color: var(--af-down);
+}
+
+.h-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.h-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--af-ink-3);
+}
+
+.h-meta .dot {
+  color: var(--af-ink-4);
+}
+
+.h-name {
+  font-size: 13px;
+  font-weight: 650;
   color: var(--af-ink);
 }
 
 .h-tag {
-  margin-left: 5px;
-  padding: 0 5px;
+  padding: 1px 5px;
   border-radius: 4px;
   background: var(--af-brand-soft);
   color: var(--af-brand);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 500;
   /* 不换行：窄屏下「今日买入」会被切成「今日 / 买入」两行，把整行撑高 */
   white-space: nowrap;
 }
 
-.h-sub {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  margin-top: 2px;
-  font-size: 10.5px;
-  color: var(--af-ink-3);
-  font-weight: 400;
-}
-
-/* 明日动作这一列要能读，给出宽度上限而不是让它撑满 */
 .h-act {
-  width: 40%;
-  min-width: 150px;
-  line-height: 1.55;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--af-ink-2);
 }
 
 .h-act.warn {
@@ -668,12 +729,21 @@ onMounted(load)
 }
 
 @media (max-width: 900px) {
+  /* 窄屏只剩一列，左右并排的前提消失：退回「整段内容区滚动」，两栏不再各自设限 */
+  .view.journal {
+    flex: none;
+  }
   .j-grid {
+    flex: none;
     grid-template-columns: minmax(0, 1fr);
+    align-items: start;
   }
   .j-list {
-    position: static;
     max-height: 260px;
+  }
+  .j-body {
+    overflow: visible;
+    min-height: 320px;
   }
   .j-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));

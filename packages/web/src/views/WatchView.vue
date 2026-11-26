@@ -105,18 +105,18 @@ const regimeNote = computed(() => {
  * 静默退化成「原样显示 + 灰色」，界面上看不出报错，只是标签突然变长。
  */
 const ORDER_LABELS: [string, string, string][] = [
-  ['待明日开盘成交', '待成交', 'brand'],
+  ['待明日开盘成交', '明日买入', 'brand'],
   // 加仓 / 减仓也是真委托（次日开盘按市价成交），配色要与建仓区分：
   // 减仓是卖出，用 warn；加仓与建仓同为买入，用 brand。
-  ['待明日开盘加仓', '加仓', 'brand'],
-  ['待明日开盘减仓', '减仓', 'warn'],
-  ['已持有', '已持有', 'flat'],
+  ['待明日开盘加仓', '明日加仓', 'brand'],
+  ['待明日开盘减仓', '明日减仓', 'warn'],
+  ['已持有', '持有中', 'flat'],
   ['仅备选', '仓位已满', 'flat'],
   ['已超持仓上限', '超上限', 'warn'],
   // 弱势三态：减半照做 / 行业不抱团放弃 / 该策略停手。
   // 上几版这里统一是「择时关闭」，三种完全不同的处境挤在一个词里，
   // 用户看到只会以为系统坏了。
-  ['弱势减半', '弱势建仓', 'brand'],
+  ['弱势减半', '减半买入', 'brand'],
   ['弱势 · 行业未抱团', '未抱团', 'flat'],
   ['弱势停手', '弱势停手', 'flat'],
 ]
@@ -208,7 +208,7 @@ async function toggle(enabled: boolean) {
   busy.value = 'toggle'
   try {
     state.value = await api.autopilotToggle(enabled)
-    ElMessage.success(enabled ? '自动驾驶已开启' : '自动驾驶已暂停')
+    ElMessage.success(enabled ? '实时盯盘已开启' : '实时盯盘已暂停')
   } catch {
     ElMessage.error('切换失败')
   } finally {
@@ -220,7 +220,7 @@ async function run(mode: 'intraday' | 'eod') {
   busy.value = mode
   try {
     await api.autopilotRun(mode)
-    ElMessage.success(mode === 'eod' ? '收盘任务已开始，稍后刷新查看' : '已刷新一轮盯盘')
+    ElMessage.success(mode === 'eod' ? '正在生成复盘日记，稍后刷新查看' : '已刷新一轮盯盘')
     await load()
   } catch {
     ElMessage.error('触发失败')
@@ -241,14 +241,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="view">
-    <!-- 自动驾驶状态 -->
+    <!-- 实时盯盘状态 -->
     <section class="panel">
       <div class="panel-head wrap">
         <div class="panel-title">
-          自动驾驶
-          <span class="panel-sub">
-            盘中每 5 分钟盯一次盘，收盘后同步数据 → 复盘 → 进化 → 生成次日计划
-          </span>
+          实时盯盘
         </div>
         <div class="head-tools">
           <el-switch
@@ -263,12 +260,12 @@ onBeforeUnmount(() => {
             size="small"
             :loading="busy === 'intraday'"
             @click="run('intraday')"
-          >立即盯一轮</el-button>
+          >立即盯盘</el-button>
           <el-button
             size="small"
             :loading="busy === 'eod'"
             @click="run('eod')"
-          >补跑收盘</el-button>
+          >生成复盘日记</el-button>
           <el-button
             size="small"
             :loading="busy === 'llm'"
@@ -283,7 +280,7 @@ onBeforeUnmount(() => {
           </span>
           <span v-if="state?.running" class="chip warn">正在：{{ state.running }}</span>
           <span class="muted">上次盯盘 <span class="num">{{ fmtStamp(state?.last_intraday) }}</span></span>
-          <span class="muted">上次收盘任务 <span class="num">{{ fmtStamp(state?.last_eod_date) }}</span></span>
+          <span class="muted">上次复盘日记 <span class="num">{{ fmtStamp(state?.last_eod_date) }}</span></span>
           <span v-if="state" class="chip" :class="llmTone">{{ llmLabel }}</span>
           <span v-if="llm?.last_error" class="chip down" :title="llm.last_error">
             模型调用失败：{{ llm.last_error.slice(0, 46) }}
@@ -372,9 +369,7 @@ onBeforeUnmount(() => {
       <div class="panel-head wrap">
         <div class="panel-title">
           <span class="w-title">今日标的</span>
-          <span class="panel-sub">
-            委托按<strong>次日开盘价</strong>成交，与回测同口径；本页不下单，买卖由人决定
-          </span>
+          <span class="panel-sub">仅模拟盘 · 次日开盘成交</span>
         </div>
         <div class="head-tools">
           <span v-if="brokeOrders" class="chip warn" title="委托按次日开盘市价成交，没有价格保护">
@@ -436,17 +431,16 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
         <div v-else class="empty">
-          还没有标的。先在实验室把两条策略推进一格，生成今日计划卡。
+          暂无标的
         </div>
       </div>
     </section>
 
-    <!-- 收盘复盘 -->
+    <!-- 复盘日记 -->
     <section class="panel">
       <div class="panel-head">
         <div class="panel-title">
-          收盘复盘
-          <span class="panel-sub">收盘任务会先同步日线、推进模拟盘，再复盘与进化</span>
+          复盘日记
         </div>
         <span v-if="review" class="chip" :class="review.text.source === 'llm' ? 'brand' : 'flat'">
           {{ review.text.source === 'llm' ? '模型复盘' : '事实复盘' }}
@@ -521,14 +515,9 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
-            <p class="pr-foot">
-              只统计、不改参数：参数只由「进化 + 样本外门槛」决定，一天的成交噪声不该动模型。
-            </p>
           </template>
         </template>
-        <div v-else class="empty">
-          还没有复盘。今天收盘后（15:05）会自动生成，也可以点上方「补跑收盘」。
-        </div>
+        <div v-else class="empty">暂无复盘</div>
       </div>
     </section>
   </div>
@@ -876,12 +865,6 @@ onBeforeUnmount(() => {
 
 .pr-table tbody tr:last-child td {
   border-bottom: none;
-}
-
-.pr-foot {
-  margin: 8px 0 0;
-  font-size: 11.5px;
-  color: var(--af-ink-3);
 }
 
 @media (max-width: 760px) {

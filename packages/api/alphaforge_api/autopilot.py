@@ -1,4 +1,4 @@
-"""自动驾驶：盘中盯盘 → 收盘复盘 → 进化 → 次日计划，一天一轮。
+"""实时盯盘：盘中盯盘 → 收盘复盘 → 进化 → 次日计划，一天一轮。
 
 一个后台守护线程，每 30 秒看一次表，只在两个时点做事：
 
@@ -42,6 +42,10 @@ EOD_HOUR, EOD_MINUTE = 15, 5
 # 收盘任务同一天最多自动重试几次。失败多半是数据源抖动，重试一两次就能过；
 # 真有更严重的问题（源改版、库锁死）时反复重试只会把后台线程占满。
 EOD_MAX_RETRY = 3
+
+# 「日线源还没更新」时的退避间隔。15:05 那一次经常拿不到当天日线（源要晚十几分钟），
+# 隔一会儿再试比直接放弃一整天划算；但也不能让巡检每 30 秒重跑一遍同步。
+EOD_SKIP_BACKOFF = dt.timedelta(minutes=20)
 
 # 盘中时段（含端点）。A 股 11:30–13:00 休市，这一段不跑。
 SESSIONS = [((9, 30), (11, 30)), ((13, 0), (15, 0))]
@@ -299,6 +303,10 @@ class Autopilot:
     def _maybe_eod(self, now: dt.datetime) -> None:
         if self.state.get("last_eod_date") == now.date().isoformat():
             return
+        # 上一次在「日线源还没更新」处空转了：隔 20 分钟再试，别每 30 秒重跑一遍同步
+        skip_at = self.state.get("eod_skip_at")
+        if skip_at and (now - dt.datetime.fromisoformat(skip_at)) < EOD_SKIP_BACKOFF:
+            return
         self.run_eod()
 
     # ---------------------------------------------------------------- 对象
@@ -424,7 +432,7 @@ class Autopilot:
     def eod_gate(self, force: bool = False) -> None:
         """收盘任务的前置检查。不通过就抛 `RuntimeError`。
 
-        单独抽出来是给 HTTP 层用的：补跑收盘要跑几分钟，接口不能同步等，
+        单独抽出来是给 HTTP 层用的：生成复盘日记要跑几分钟，接口不能同步等，
         只能「先检查、再丢线程」。检查留在 `run_eod` 里，接口就没法在
         起线程之前把错误回给用户。
         """
@@ -441,7 +449,7 @@ class Autopilot:
         当成当日收盘写进日线，`paper.step` 再拿它去成交——盘中手动补跑一次，
         账户就会带着半天的数据往前推一天，而且事后无法区分哪笔是脏的。
         """
-        from alphaforge_engine.market import get_market
+        from alphaforge_engine.market import get_market, reset_market
         from alphaforge_data.sync import Syncer
         from .deps import store
         from .lab_store import get_lab
@@ -450,7 +458,7 @@ class Autopilot:
         today = now.date().isoformat()
         self.eod_gate(force)
         with self._lock:
-            self.state["running"] = "收盘任务"
+            self.state["running"] = "生成复盘日记"
         self._save()
         steps: list[dict] = []
         try:
@@ -486,6 +494,11 @@ class Autopilot:
             except Exception as exc:                     # noqa: BLE001
                 steps.append({"step": "重算因子", "error": f"{type(exc).__name__}: {exc}"})
 
+            # 同步刚把今天的日线写进库，但进程里那个 MarketEngine 还缓存着**同步前**
+            # 的交易日列表（`dates` 是惰性缓存）。不重建就会拿昨天的最后交易日
+            # 去比今天，守卫每天必然判成「非交易日」——实测 2026-11-26：日线
+            # 15:30 已入库，这里读到的还是 11-25，收盘任务跳过，复盘日记一篇没生成。
+            reset_market()
             mkt = get_market()
             # 今天到底有没有**新的交易日**？没有就别往下走。
             #
@@ -497,16 +510,27 @@ class Autopilot:
             trade_day = mkt.trade_date.isoformat() if mkt.trade_date else None
             if trade_day != today:
                 reason = (f"本地最新交易日是 {trade_day or '（无数据）'}，不是今天 {today}"
-                          "——非交易日，或日线源还没更新。今天不推进、不复盘、不记账；"
-                          "交易日恢复后模拟盘会按日历逐格补齐")
+                          "——日线源还没更新，或今天休市")
+                retry = dict(self.state.get("eod_retry") or {})
+                if retry.get("date") != today:
+                    retry = {"date": today, "count": 0}
+                retry["count"] = int(retry.get("count") or 0) + 1
+                give_up = retry["count"] >= EOD_MAX_RETRY
+                if give_up:
+                    reason += (f"。已自动重试 {retry['count']} 次，今天不再自动跑；"
+                               "数据到齐后点「生成复盘日记」")
                 steps.append({"step": "跳过收盘任务", "reason": reason})
                 with self._lock:
+                    self.state["eod_retry"] = retry
+                    self.state["eod_skip_at"] = now.isoformat(timespec="seconds")
                     self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
                                          "date": today, "steps": steps,
-                                         "skipped": True, "reason": reason}
-                    # 标记成「今天跑过了」，否则巡检每 30 秒重试一次同步，
-                    # 每次两分钟，把整个后台线程占满。要补跑点页面上的按钮。
-                    self.state["last_eod_date"] = today
+                                         "skipped": True, "reason": reason,
+                                         "retry": retry["count"]}
+                    # 只有用尽重试才标记「今天跑过」。否则 15:05 数据的源还没出完
+                    # 就永久放弃这一天的复盘——20 分钟后巡检会再试一次。
+                    if give_up:
+                        self.state["last_eod_date"] = today
                     self.state["error"] = None
                 self._save()
                 return self.state["eod"]
@@ -623,6 +647,7 @@ class Autopilot:
                                      "date": today, "steps": steps, "evolved": evolved}
                 self.state["last_eod_date"] = today
                 self.state["eod_retry"] = {"date": None, "count": 0}
+                self.state["eod_skip_at"] = None
                 self.state["error"] = None
             self._save()
             return self.state["eod"]
@@ -634,6 +659,7 @@ class Autopilot:
             exhausted = retry["count"] >= EOD_MAX_RETRY
             with self._lock:
                 self.state["eod_retry"] = retry
+                self.state["eod_skip_at"] = None
                 self.state["error"] = f"{type(exc).__name__}: {exc}"
                 if exhausted:
                     # 用尽自动重试后必须把 last_eod_date 补上，否则巡检会继续
@@ -641,7 +667,7 @@ class Autopilot:
                     steps.append({
                         "step": "自动重试已用尽",
                         "reason": f"今天已连续失败 {retry['count']} 次，不再自动重试。"
-                                  "处理完数据源问题后，点页面上的「补跑收盘」手动跑一次"})
+                                  "处理完数据源问题后，点页面上的「生成复盘日记」手动跑一次"})
                     self.state["last_eod_date"] = today
                 self.state["eod"] = {"at": now.isoformat(timespec="seconds"),
                                      "date": today, "steps": steps,
@@ -655,12 +681,13 @@ class Autopilot:
             self._save()
 
     def reset_eod(self) -> dict:
-        """清掉「今天已跑过收盘」的标记，用于手动补跑。"""
+        """清掉「今天已跑过收盘」的标记，用于手动重跑。"""
         with self._lock:
             self.state["last_eod_date"] = None
             # 手动补跑是用户明确要求的，重试计数跟着清零，否则下一次
             # 自动重试还没开始就已经被判成「用尽」。
             self.state["eod_retry"] = {"date": None, "count": 0}
+            self.state["eod_skip_at"] = None
         self._save()
         return self.status()
 

@@ -36,22 +36,30 @@ const store = useAppStore()
 </template>
 
 <style scoped>
+/* 外层固定视口高度：滚动交给 .content 内部，文档本身不再滚。
+   之前是 min-height:100vh，正文一长就把顶栏和侧栏一起推出视口。 */
 .shell {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   align-items: stretch;
+  overflow: hidden;
   background: var(--af-bg);
 }
 
 .main {
   flex: 1;
   min-width: 0;
+  /* 不加这条，flex 子项的 min-height 默认是内容高度，.content 撑不高也滚不动 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
 .content {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   width: 100%;
   max-width: 1680px;
   margin: 0 auto;

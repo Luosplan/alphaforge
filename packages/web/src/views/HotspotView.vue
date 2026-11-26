@@ -171,7 +171,6 @@ onMounted(load)
         <div class="panel-head">
           <div class="panel-title">
             炒作主线
-            <span class="panel-sub">板块名归到题材词根，共振越多越算主线</span>
           </div>
         </div>
         <div class="themes">
@@ -203,7 +202,6 @@ onMounted(load)
           <div class="panel-head">
             <div class="panel-title">
               板块热度
-              <span class="panel-sub">涨幅、红盘面、资金、量能综合，鼠标悬停看拆解</span>
             </div>
             <div class="seg" role="tablist">
               <button

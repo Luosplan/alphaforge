@@ -414,7 +414,7 @@ def _begin_evolve(sid: str, spec: dict, *, population: int, generations: int,
 
 
 def run_evolve_blocking(strategy_id: str, *, apply: bool = True) -> dict:
-    """同步跑一轮进化，返回采纳结论。给收盘自动驾驶调用。
+    """同步跑一轮进化，返回采纳结论。给收盘任务调用。
 
     与 HTTP 入口共用 `_EVOLVE_LOCK`：两边同时跑会各搜一遍、互相覆盖结果，
     进度条也会来回跳。拿不到锁就跳过这一轮——**收盘任务不该因为
@@ -547,7 +547,7 @@ def all_plans(request: Request):
     })
 
 
-# ---------------------------------------------------------------- 自动驾驶
+# ---------------------------------------------------------------- 实时盯盘
 @router.get("/autopilot")
 def autopilot_status(request: Request):
     """盘中盯盘 + 收盘复盘的最新状态。前端 30 秒轮询一次。"""
@@ -573,7 +573,7 @@ def llm_test(request: Request):
 
 @router.post("/autopilot/toggle")
 def autopilot_toggle(request: Request, payload: dict | None = None):
-    """开/关自动驾驶。开了之后进程活着就一直在跑，重启后自动恢复。"""
+    """开/关实时盯盘。开了之后进程活着就一直在跑，重启后自动恢复。"""
     from ..autopilot import get_pilot
 
     pilot = get_pilot()
@@ -584,7 +584,7 @@ def autopilot_toggle(request: Request, payload: dict | None = None):
 
 @router.post("/autopilot/run")
 def autopilot_run(request: Request, payload: dict | None = None):
-    """手动触发一轮：`mode=intraday` 立刻盯一次盘，`mode=eod` 补跑收盘任务。
+    """手动触发一轮：`mode=intraday` 立刻盯一次盘，`mode=eod` 生成复盘日记。
 
     收盘任务会同步日线 + 进化，几十秒起步，所以放在后台线程里跑，
     接口立刻返回——前端看 GET /lab/autopilot 的 running 字段。

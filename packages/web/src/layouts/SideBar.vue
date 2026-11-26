@@ -61,12 +61,11 @@ const initial = computed(() => accountName.value.slice(0, 1))
 
 <style scoped>
 .side {
-  position: sticky;
-  top: 0;
-  z-index: 30;
   flex: 0 0 auto;
   width: 232px;
-  height: 100vh;
+  /* 外壳不再滚动，sticky 在这个容器里已无参照可贴，改成撑满外壳高度。
+     导航列表自己滚（.nav 那层有 overflow-y: auto）。 */
+  height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--af-rail);

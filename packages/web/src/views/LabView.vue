@@ -151,7 +151,7 @@ const loopSteps = computed(() => {
       key: 'review', label: '收盘复盘',
       value: reviewed ? '已跑' : '待跑',
       tone: reviewed ? 'brand' : 'flat',
-      hint: reviewed ? `复盘日期 ${rev?.as_of}` : '15:05 之后自动跑，也可以在盯盘页补跑',
+      hint: reviewed ? `复盘日期 ${rev?.as_of}` : '15:05 之后自动生成，也可以去盯盘页手动跑一次',
     },
     {
       key: 'evolve', label: '进化换参',
@@ -166,7 +166,7 @@ async function togglePilot(enabled: boolean) {
   busy.value = 'pilot'
   try {
     pilot.value = await api.autopilotToggle(enabled)
-    ElMessage.success(enabled ? '自动循环已开启：每个交易日 15:05 自动跑完一整轮' : '自动循环已关闭')
+    ElMessage.success(enabled ? '实时盯盘已开启：盘中每 5 分钟盯一次，15:05 生成复盘日记' : '实时盯盘已暂停')
   } catch {
     // 失败提示交给响应拦截器统一弹
   } finally {
@@ -623,13 +623,9 @@ const orderQty = (p: LabPlanCard): string => {
  * 「减仓 5800 股」和「剩余持仓 11600 股」是两件事，用户对账时要分得开。
  */
 const orderTitle = (p: LabPlanCard): string => {
-  if (p.order_kind === 'ADD') {
-    return `加仓 ${p.order_shares ?? 0} 股（补到计划 ${p.sizing.shares} 股），次日开盘市价成交`
-  }
-  if (p.order_kind === 'TRIM') {
-    return `减仓 ${p.order_shares ?? 0} 股（兑现 1/3 浮盈），次日开盘市价成交`
-  }
-  return `委托价 ${orderPx(p)}，次日开盘按市价成交`
+  if (p.order_kind === 'ADD') return `加仓 ${p.order_shares ?? 0} 股，次日开盘成交`
+  if (p.order_kind === 'TRIM') return `减仓 ${p.order_shares ?? 0} 股，次日开盘成交`
+  return '次日开盘市价成交'
 }
 
 onMounted(async () => {
@@ -687,13 +683,10 @@ onBeforeUnmount(stopPoll)
       <div class="loop-head">
         <div class="panel-title">
           自进化闭环
-          <span class="panel-sub">
-            选股 → 计划卡 → 模拟成交 → 收盘复盘 → 进化换参 → 下一个交易日
-          </span>
         </div>
         <div class="loop-switch">
           <span class="muted" :class="{ warn: pilot && !pilot.enabled }">
-            {{ pilot == null ? '状态未知' : pilot.enabled ? '自动循环已开启' : '自动循环已关闭' }}
+            {{ pilot == null ? '状态未知' : pilot.enabled ? '实时盯盘已开启' : '实时盯盘已暂停' }}
           </span>
           <el-switch
             :model-value="pilot?.enabled ?? false"
@@ -773,9 +766,6 @@ onBeforeUnmount(stopPoll)
       <div class="panel-head wrap">
         <div class="panel-title">
           策略矩阵
-          <span class="panel-sub">
-            回测 {{ btDays }} 个交易日 · 成交价取信号次日开盘 · 池子按区间日均成交额取
-          </span>
         </div>
         <div class="head-tools">
           <span class="evo-cfg">
@@ -829,9 +819,7 @@ onBeforeUnmount(stopPoll)
                 <span class="muted num">区间收益</span>
               </div>
             </div>
-            <div v-else class="sc-blank">
-              还没有回测 —— 点下方「回测」跑一遍 250 日
-            </div>
+            <div v-else class="sc-blank">暂无回测</div>
 
             <dl class="sc-metrics">
               <div>
@@ -919,15 +907,12 @@ onBeforeUnmount(stopPoll)
       <div class="panel-head wrap">
         <div class="panel-title">
           今日计划卡 · 全策略
-          <span class="panel-sub">
-            每条策略最多 3 只，宁缺勿滥；只有「待明日开盘…」（建仓 / 加仓 / 减仓）才真挂单，次日开盘价成交
-          </span>
         </div>
         <div class="head-tools">
           <el-radio-group v-model="planFilter" size="small">
             <el-radio-button value="ALL">全部</el-radio-button>
-            <el-radio-button value="ENTRY">建仓</el-radio-button>
-            <el-radio-button value="ADD">加仓</el-radio-button>
+            <el-radio-button value="ENTRY">建仓单</el-radio-button>
+            <el-radio-button value="ADD">加仓单</el-radio-button>
           </el-radio-group>
         </div>
       </div>
@@ -945,9 +930,9 @@ onBeforeUnmount(stopPoll)
                 <tr>
                   <th>标的</th>
                   <th>类型</th>
-                  <th>建仓区 / 买点</th>
+                  <th>买点</th>
                   <th>现价</th>
-                  <th>委托</th>
+                  <th>委托状态</th>
                   <th>距止损</th>
                   <th>止损</th>
                   <th>TP1 / TP2</th>
@@ -987,7 +972,7 @@ onBeforeUnmount(stopPoll)
                     :title="
                       orderLive(p)
                         ? orderTitle(p)
-                        : `${planStateLabel(p)}：今日未挂单，${orderPx(p)} 为计划价`
+                        : '未挂单，价格为计划价'
                     "
                   >
                     <span class="p-status" :class="planStateTone(p)">
@@ -1014,25 +999,9 @@ onBeforeUnmount(stopPoll)
             </table>
           </section>
         </div>
-        <div v-else class="empty">
-          还没有计划卡。点上方「推进模拟盘」让每条策略按今天的收盘数据选一次股。
-        </div>
+        <div v-else class="empty">暂无计划卡</div>
       </div>
       <div v-if="plans.length" class="p-legend">
-        <span class="pl-title">口径</span>
-        <span>建仓区与止损由 ATR(14) 定标尺；打板的买点是次日高开幅度，显示为「高开 x%~y%」</span>
-        <span class="dot">·</span>
-        <span>状态列说的是「有没有真的挂单」：蓝色「待明日开盘…」才会成交，灰色只是候选；成交见详情里的持仓与成交记录</span>
-        <span class="dot">·</span>
-        <span>委托价取计划卡基准价（信号日收盘），次日开盘按市价成交，实际成交价会偏离</span>
-        <span class="dot">·</span>
-        <span>只有蓝色状态才带股数；「加仓」「减仓」写的是本次增量，不是总仓位</span>
-        <span class="dot">·</span>
-        <span>「距止损」才是这张卡的风险成本，逐票不同</span>
-        <span class="dot">·</span>
-        <span>同一只票被多条策略选中会标出共选数</span>
-        <span class="dot">·</span>
-        <span>候选池按「个人设置 → 购买权限」过滤：未开通的板块不参与选股，也不会挂出委托</span>
         <span class="pl-note">
           共 {{ plans.length }} 张 · {{ planGroups.length }} 条策略
         </span>
@@ -1298,12 +1267,11 @@ onBeforeUnmount(stopPoll)
                   </tr>
                 </tbody>
               </table>
-              <div v-else class="empty sm">暂无持仓。开盘成交委托后才会出现。</div>
+              <div v-else class="empty sm">暂无持仓</div>
 
               <section v-if="detail.paper.orders.length">
                 <div class="block-title">
-                  待成交委托
-                  <span class="muted">下一交易日开盘按集合竞价成交</span>
+                  待明日开盘成交
                 </div>
                 <div class="orders">
                   <span v-for="o in detail.paper.orders" :key="o.code" class="chip brand">
@@ -1501,15 +1469,12 @@ onBeforeUnmount(stopPoll)
                     class="chip"
                     :class="holdoutTone(detail.evolution.holdout.level)"
                   >{{ holdoutLabel(detail.evolution.holdout.level) }}</span>
-                  这一栏才算数：上面的逐代曲线是在 250 天里挑出来的最优，好看是必然的；
-                  只有这段没参与搜索的交易日，才能看出参数是真有效还是拟合了噪声。
                 </p>
               </template>
 
               <template v-if="detail.evolution.adoption">
                 <div class="block-title">
                   该不该采纳
-                  <span class="muted">决定「进化后」那组参数要不要真的换上去</span>
                 </div>
                 <div class="adopt-box" :class="detail.evolution.adoption.action">
                   <span class="chip" :class="detail.evolution.adoption.action === 'adopt' ? 'brand' : 'flat'">
@@ -1524,11 +1489,6 @@ onBeforeUnmount(stopPoll)
                     <span class="muted num">实际 {{ c.value }}</span>
                   </li>
                 </ul>
-                <p class="dt-hint">
-                  搜索每次都必然给出「比基线分高」的结果——它就是在训练集上挑最好的。
-                  所以分数不能当采纳依据，只能看样本外；而且要求连续两次都赢，
-                  因为样本外只跑一遍，单次的 edge 里有一半是噪声。
-                </p>
               </template>
 
               <div class="block-title">参数对比</div>
@@ -1602,7 +1562,7 @@ onBeforeUnmount(stopPoll)
                         <span class="f-name">{{ f.label }}</span>
                         <span class="num">{{ f.op }} {{ f.value }}</span>
                       </div>
-                      <p v-if="!specFilters.length" class="muted">这套策略不设过滤条件，直接吃排序结果。</p>
+                      <p v-if="!specFilters.length" class="muted">不设过滤条件</p>
                     </div>
                   </div>
 
@@ -2114,11 +2074,6 @@ onBeforeUnmount(stopPoll)
   background: var(--af-surface-2);
   font-size: 11px;
   color: var(--af-ink-3);
-}
-
-.pl-title {
-  font-weight: 600;
-  color: var(--af-ink-2);
 }
 
 .pl-note {

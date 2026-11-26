@@ -146,7 +146,6 @@ onMounted(load)
         <div class="panel-head">
           <div class="panel-title">
             持仓明细
-            <span class="panel-sub">成本口径：加权平均 · 每行都来自计划卡成交</span>
           </div>
           <span class="chip">{{ data.holdings.length }} 只</span>
         </div>
@@ -210,7 +209,7 @@ onMounted(load)
         <div class="panel-head">
           <div class="panel-title">
             成交流水
-            <span class="panel-sub">实验室模拟盘：计划卡挂单 → 次日开盘成交</span>
+            <span class="panel-sub">模拟盘</span>
           </div>
           <span class="chip">最近 {{ Math.min(trades.length, 30) }} 笔</span>
         </div>

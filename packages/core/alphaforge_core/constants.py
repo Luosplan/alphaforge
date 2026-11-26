@@ -14,10 +14,10 @@ class SignalType(str, Enum):
 
 
 SIGNAL_LABEL = {
-    SignalType.ENTRY: "建仓",
-    SignalType.ADD: "加仓",
-    SignalType.TRIM: "减仓",
-    SignalType.EXIT: "清仓",
+    SignalType.ENTRY: "建仓单",
+    SignalType.ADD: "加仓单",
+    SignalType.TRIM: "减仓单",
+    SignalType.EXIT: "清仓单",
     SignalType.WATCH: "观察",
 }
 

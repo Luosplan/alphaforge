@@ -678,10 +678,12 @@ function flowHeight(net: number) {
   font-weight: 550;
 }
 
+/* 滚动容器从文档换成了内容区，sticky 的参照边也跟着从视口顶变成内容区顶，
+   原来的 74px（顶栏 + 状态条）现在会变成一段空白。 */
 .watch {
   position: sticky;
-  top: 74px;
-  max-height: calc(100vh - 90px);
+  top: 0;
+  max-height: calc(100vh - 104px);
   display: flex;
   flex-direction: column;
   padding: 14px 8px 10px;
