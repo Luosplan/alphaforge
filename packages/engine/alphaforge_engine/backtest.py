@@ -37,6 +37,9 @@ from alphaforge_core.universe import pc as price_limit
 
 from .conditions import ConditionError, evaluate, normalize, normalize_all
 from .gate import board_allow, buyable
+# 连板区间与分档只写一份：回测和「今日选股」各算一套，同一条策略就会出现
+# 页面买首板、回测买最高板这种分叉。
+from .selector import in_limit_band, limit_band, tier_of
 
 # 减仓阈值与模拟盘共用一处定义。写在 `signal.py` 里是因为「浮盈多少算该减」
 # 首先是**计划卡**的语言（卡片上那句「减仓」就是它触发的），回测与模拟盘
@@ -97,7 +100,12 @@ TRADING_DAYS = 252
 # 滞涨」定义买点——那是低吸的语义，不是打板。同时打板不再受大盘位置约束
 # （market_ma=0），出手沿用高开 1%~7% 区间与「当日不封板次日走」的纪律。
 # 选股池与撮合条件同时变，v12 及以前的存档与进化结论全部不可比。
-MODEL_VERSION = 13
+# v14：打板不再「按连板数取前 3」——那等于每天都买当日最高的那一板。
+# 改成只做 1~2 板（pool_limit_max=2）、区间内按题材强度打分排序，并把
+# 「今日选股」与回测的排序口径统一（此前 sort 只有选股页读，回测一直按
+# 因子分排，页面推荐最高板、回测却在买分数最高那只，两张账对不上）。
+# 选股池变了，v13 及以前的打板回测不可比。
+MODEL_VERSION = 14
 
 
 # 多取一段做预热：mom60 / dist_high / vol20 在模拟首日就得有值
@@ -171,6 +179,12 @@ DEFAULTS: dict = {
     # 选股池硬门槛：连板数 ≥ 该值才进候选。0 = 不设门槛（默认）。
     # 打板类策略靠它把「涨停池之外」的票挡在外面，否则涨停股不够量时会凑数。
     "pool_limit_min": 0,
+    # 连板上限。0 = 不限。打板只做 1~2 板，没有上限时排序会把账户推到
+    # 当日最高的那只票上——那是涨幅最贵、容错最窄的位置。
+    "pool_limit_max": 0,
+    # 情绪闸门（打板用）：当日最高连板 ≥ 该值才开新仓，0 = 不看。
+    # 打板赚的是接力情绪，情绪冰点的时候没有下一棒，选出来的票再强也没人接。
+    "sent_min_top": 0,
     # 已废弃：调仓周期。回测现在**每天**扫描空缺仓位，与模拟盘（`paper.py`
     # 的 `_next_plans` 每天跑一次）保持同一套进场规则。保留这个键只是为了让
     # 早先落盘的 params 还能被读进来，不参与撮合、也不再进搜索基因组。
@@ -270,7 +284,7 @@ class Panel:
     __slots__ = ("trade_date", "dates", "codes", "names", "industries", "st",
                  "limit", "bars", "bar", "z", "eligible", "coverage",
                  "pool_size", "universe_size", "min_amount", "dropped_flow",
-                 "bench")
+                 "bench", "senti")
 
     def __init__(self) -> None:
         self.trade_date: str = ""
@@ -293,6 +307,9 @@ class Panel:
         self.bench: list[tuple[str, float]] = []
         self.min_amount: float = 0.0
         self.dropped_flow: list[str] = []
+        # 每日市场情绪（见 `_senti_series`）。和 `bench` 一样只存事实不存结论：
+        # 阈值是策略参数，不同策略可以取不同档，面板不该提前判死。
+        self.senti: list[dict] = []
 
     @property
     def n(self) -> int:
@@ -374,6 +391,7 @@ def slice_panel(panel: Panel, lo: int, hi: int) -> Panel:
     # `panel.bench` 是空列表，择时静默失效——样本外验证跑出来的就成了
     # 「没有择时」的成绩，和全样本口径不一致。
     sub.bench = panel.bench
+    sub.senti = panel.senti[lo:hi]
     return sub
 
 
@@ -449,7 +467,39 @@ def _build(engine, days: int, max_codes: int, min_amount: float,
     _fill_industry(panel)
     _cross_section(panel)
     panel.bench = _bench_series(engine, len(panel.dates))
+    panel.senti = _senti_series(panel)
     return panel
+
+
+def _senti_series(panel: Panel) -> list[dict]:
+    """每日市场情绪：涨停家数、最高连板、涨停占比。
+
+    只统计 `eligible` 的票（有 K 线、非 ST、成交额过门槛），和策略真正能买到
+    的池子同口径。用全市场（含停牌、ST）去算，阈值会跟着池子大小漂——同一
+    个「涨停 30 家」在 600 只的面板里是过热、在 5000 只里是冰点。
+
+    面板里没有单独的 `limit_up` 列：连板数 ≥ 1 就是当日涨停。
+    """
+    out = []
+    for d in range(panel.n):
+        row_ok = panel.eligible[d]
+        up = 0
+        top = 0
+        alive = 0
+        for ci in range(panel.ncodes):
+            if not row_ok[ci]:
+                continue
+            alive += 1
+            col = panel.bars[ci]["f"].get("limit_cnt")
+            p = panel.bar[d][ci]
+            cnt = float(col[p] or 0) if col else 0.0
+            if cnt >= 1:
+                up += 1
+                if cnt > top:
+                    top = int(cnt)
+        out.append({"up": up, "top": top,
+                    "ratio": round(up / alive * 100, 2) if alive else 0.0})
+    return out
 
 
 def _pool_codes(engine, since: str, max_codes: int) -> list[str]:
@@ -857,11 +907,15 @@ def run_backtest(engine, spec: dict | None = None, panel: Panel | None = None,
     # 风控三档 + 持有上限也必须从 spec 读。此前只读了 top_n 一类结构参数，
     # 于是 squeeze 的 stop_atr 1.5 / time_stop 6 在回测里全是 DEFAULTS 的
     # 2.2 / 20——模拟盘按 6 天走、回测按 20 天走，同一条策略两本账。
-    for key in ("top_n", "max_per_industry", "pool_limit_min", "market_ma",
-                "stop_atr", "tp1_atr", "tp2_atr", "time_stop"):
+    for key in ("top_n", "max_per_industry", "pool_limit_min", "pool_limit_max",
+                "sent_min_top",
+                "market_ma", "stop_atr", "tp1_atr", "tp2_atr", "time_stop"):
         value = spec.get(key)
         if value is not None:
             cfg[key] = value
+    # 分档不参与撮合的价格计算，只在这里决定「今天这几档各拿几只」，
+    # 与 `selector.execute()` 共用 `tier_of`，两边不能各算一套。
+    cfg["board_tiers"] = spec.get("board_tiers") or []
     for key, value in (params or {}).items():
         if value is not None:
             cfg[key] = value
@@ -1521,9 +1575,13 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
     候选里，它今天还在 Top-N 里就说明信号还在，据此决定加仓还是减仓
     （见 `_held_action`）；只在撮合时按 kind 区分动作。
 
-    `cfg["pool_limit_min"]` > 0 时先过一道硬门槛：只在连板数 ≥ 该值的票里选。
-    打板策略必须靠这道门槛——单纯把连板数当因子加权，在涨停股少于 top_n 的
-    日子会「凑数」买进一串连板数为 0 的普通股，那不是策略跑偏，是根本没在打板。
+    `cfg["pool_limit_min"]` / `pool_limit_max` 是连板区间，超出区间的票直接
+    不进候选。打板策略必须靠这道门槛——单纯把连板数当因子加权，在涨停股
+    少于 top_n 的日子会「凑数」买进一串连板数为 0 的普通股，那不是策略跑偏，
+    是根本没在打板。上限同理：只做 1~2 板，不去接高位板。
+
+    `cfg["board_tiers"]` 是分档名额（首板 2 只、二板 1 只这一类）。板数是
+    **准入门槛**，不是排序键——按连板数降序排，等于每天都买当日最高的那一板。
 
     `cfg["filters"]` 是 v6 新增的**真正生效**的条件过滤。埋伏型策略的买点
     几乎全部由条件定义（如「回踩 5 日线不破」「行业至少 2 家涨停」），
@@ -1531,13 +1589,20 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
     """
     if limit <= 0:
         return []
+    # 情绪闸门：冰点日不挂新单。已持仓的票照常按止损止盈走完，
+    # 这里只影响「今天该不该开新仓」。
+    min_top = float(cfg.get("sent_min_top") or 0)
+    if panel.senti and min_top and panel.senti[d]["top"] < min_top:
+        return []
     held = held or set()
     row_ok = panel.eligible[d]
     zs = {k: panel.z[k][d] for k in weights if k in panel.z}
     filters = cfg.get("filters") or []
     if not zs and not filters:
         return []
-    pool_min = float(cfg.get("pool_limit_min") or 0.0)
+    band = limit_band(cfg)
+    tiers = cfg.get("board_tiers") or []
+    gated = band[0] > 0 or band[1] > 0
     scored: list[tuple[int, float]] = []
     for ci in range(panel.ncodes):
         if not row_ok[ci] or ci in held:
@@ -1545,9 +1610,9 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
         p = panel.bar[d][ci]
         if p < 0:
             continue
-        if pool_min > 0:
+        if gated:
             col = panel.bars[ci]["f"].get("limit_cnt")
-            if not col or col[p] < pool_min:
+            if not in_limit_band(col[p] if col else None, band):
                 continue
         if filters and not evaluate(filters,
                                     lambda k, ci=ci, p=p: _filter_cell(panel, ci, p, k)):
@@ -1568,14 +1633,30 @@ def _select(panel: Panel, d: int, weights: dict[str, float], cfg: dict,
         scored.sort(key=lambda r: panel.bars[r[0]]["pct"][panel.bar[d][r[0]]],
                     reverse=True)
 
+    if tiers:
+        def _cnt(ci: int) -> float:
+            col = panel.bars[ci]["f"].get("limit_cnt")
+            return float(col[panel.bar[d][ci]] or 0) if col else 0.0
+
+        # 稳定排序：档内保持上面那一轮的顺序（因子分），所以「首板 2 只」
+        # 拿的是首板里分最高的两只，不是全池分最高、恰好是首板的那两只。
+        scored.sort(key=lambda r: tier_of(_cnt(r[0]), tiers))
+
     picked: list[tuple[int, float]] = []
     count: dict[str, int] = {}
+    tier_used: dict[int, int] = {}
     for ci, score in scored:
+        if tiers:
+            t = tier_of(_cnt(ci), tiers)
+            if t < len(tiers) and tier_used.get(t, 0) >= tiers[t]["slots"]:
+                continue
         ind = panel.industries[ci]
         if count.get(ind, 0) >= cfg["max_per_industry"]:
             continue
         picked.append((ci, score))
         count[ind] = count.get(ind, 0) + 1
+        if tiers:
+            tier_used[t] = tier_used.get(t, 0) + 1
         if len(picked) >= limit:
             break
     return picked

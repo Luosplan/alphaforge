@@ -488,7 +488,7 @@ onMounted(async () => {
             <el-icon class="arrow"><CaretRight /></el-icon>
           </button>
           <div v-if="!loading && !(result?.items.length)" class="empty-list">
-            当前条件下没有标的。放宽一条条件，或换个问法。
+            {{ result?.notice || '当前条件下没有标的。放宽一条条件，或换个问法。' }}
           </div>
         </div>
 

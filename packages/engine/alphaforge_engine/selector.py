@@ -38,25 +38,28 @@ from .profile import board_tag
 # 把它单独做成一条策略，等于把同一个动作拆成两个账户、两套参数、两个
 # 进化名额，选出来的票还互相重叠。
 #
-# 打板：今日涨停池按连板高度取前 3。买的是**已经封住的强**，卖的是次日
-#   的溢价。它的风险不在选股，在出手价——所以出手时机用弱转强那套：
-#   次日高开 1%~7% 才按，高开不足说明承接没来，高开过头已经一字、
-#   买不到也没溢价。当日没封住＝判断错，次日开盘走。
+# 打板：今日涨停池里只做 1~2 板，区间内按题材强度取前 3。买的是**已经封住
+#   的强**，卖的是次日的溢价。它的风险不在选股，在出手价——所以出手时机用
+#   弱转强那套：次日高开 1%~7% 才按，高开不足说明承接没来，高开过头已经
+#   一字、买不到也没溢价。当日没封住＝判断错，次日开盘走。
+#   还要看在不在情绪周期上：最高连板 ≥ 5 才开新仓（见 spec 里 `sent_min_top`）。
 # 波段：中期动量 + 量能放大，持有 3~8 天吃趋势延续。它是另一套完全不同的
 #   持仓周期（周级），不该和打板共用一套参数去进化。
 #
 # 打板不看大盘位置（`market_ma = 0`）。涨停潮本身就是情绪指标，沪深300
 #   在半年线下方时照样有连板梯队；拿指数位置去管打板，等于用一个滞后
-#   指标去否掉当天最热的那批票。波段相反：它赚的是趋势延续，指数在
-#   半年线下方时中期动量本身就在衰减，弱市停手是它 edge 的一部分。
+#   指标去否掉当天最热的那批票。情绪周期要管就管真正的那个量——当日最高
+#   连板数（`sent_min_top`），它和指数位置经常给出相反答案。
+#   波段相反：它赚的是趋势延续，指数在半年线下方时中期动量本身就在衰减，
+#   弱市停手是它 edge 的一部分。
 STRATEGIES: list[dict] = [
     {
         "id": "daban",
         "name": "打板",
-        "desc": "今日涨停池按连板高度取前 3，次日高开 1%~7% 才出手",
-        # 权重只做排序，不做准入：买什么由 filters（涨停池）与 sort（连板数）
-        # 定义。同板数之间优先给行业里正在抱团的那只——打板能不能成，
-        # 题材强度比个股形态更说了算。
+        "desc": "今日涨停池只做 1~2 板，情绪不冰点（最高 ≥5 板）才出手，次日高开 1%~7% 成交",
+        # 权重只做排序，不做准入：买什么由 filters（涨停池）与连板区间定义。
+        # 区间内优先给行业里正在抱团的那只——打板能不能成，题材强度比个股
+        # 形态更说了算，所以四项权重全压在行业与量能上。
         "weights": {"ind_limit_cnt": 0.34, "volratio": 0.26,
                     "ind_strength": 0.22, "ind_rank_pct": 0.18},
         "filters": [
@@ -67,21 +70,48 @@ STRATEGIES: list[dict] = [
             # 成交额下限 5000 万：没人接的板，次日高开也卖不掉。
             {"field": "amount", "op": ">=", "value": 0.5},
         ],
-        # 连板高度优先：首板、二板、三板的风险完全不同，连板数是最该排在前面的
-        # 一列。只在涨停池里按连板数降序，同板数再按上面的权重分。
-        "sort": {"by": "limit_cnt", "desc": True},
-        # 涨停池门槛。与 filters 里的 `limit_up` 是同一件事的两道表达：
-        # 选股阶段用它把「涨停股不够 top_n 时凑数」的普通股挡在外面，
-        # 回测与模拟盘撮合阶段也读它——三处必须是同一个数。
+        # 这里**没有** `sort`，是故意的。原来写的是 `{"by": "limit_cnt", "desc": True}`
+        # ——那等于每天都买当日最高的那一板。连板数高不代表强，代表**贵**：
+        # 空间被前面几板吃掉了，接力盘的容错只剩一个板。
+        #
+        # 顺带补一处口径分叉：`sort` 只有「今日选股」读，回测 `_select` 一直
+        # 按因子分排。于是同一条打板策略，页面推荐最高连板、回测却在买
+        # 因子分最高的那只，两张账从来对不上。删掉之后两边都按题材强度打分。
+        #
+        # 只做 1~2 板。三板往上每多一板，次日溢价被前面的人多分一份、
+        # 炸板的代价大一截；四板以上是纯情绪接力，不是这条策略的赔率结构。
+        # 实测（其余参数不动，只改上限）：
+        #   1260 天 −5.2%（回撤 −50.5%）→ −1.9%（回撤 −40.1%）
+        #   250 天  −39.2%（回撤 −38.8%）→ −28.8%（回撤 −29.7%）
+        # 两个窗口同向改善、回撤各收 10 个点，所以这条留着。
         "pool_limit_min": 1,
+        "pool_limit_max": 2,
+        # 分档名额（首板 2 只 + 二板 1 只）试过，**更差**：250 天窗口上
+        # 年化 −28.8% → −43.8%、回撤 −29.7% → −46.9%。原因是「档位优先」
+        # 把分数更高的二板挤掉了——板数适合当准入区间，不适合当排序键。
+        # 所以这里不设分档，区间内仍按题材强度打分。
+        "board_tiers": [],
         "top_n": 3,
         "max_per_industry": 2,
-        # 持有上限 3 天。打板赚的是封板次日的溢价，第三天还在手里说明
-        # 「次日高开」这个前提已经反复落空，继续拿着就是拿着一个普通仓位。
-        # 写在这里而不是让它进搜索区间：持有周期是策略定义，不是调参项。
+        # 持有上限 3 天，是搜索区间的锚点（区间按声明值 ±2 / +4 收窄）。
+        # 注意实测结论和这段最初的推理相反：1260 天窗口上 time_stop=7 比 3 好
+        # （−1.9% vs −14.8%），250 天窗口同样（−28.8% vs −32.5%）。搜索把它
+        # 推到区间上界不是跑偏——短线也需要时间等回摆，只是不能无限拖。
         "time_stop": 3,
         # 不看大盘位置：详见文件头「市场定位」那段。
         "market_ma": 0,
+        # 情绪周期闸门：当日最高连板 ≥ 5 才开新仓。判断依据是「接力梯队还在
+        # 不在」——市场最高只有 3、4 板，说明没人愿意去接高位，这时候 1~2 板
+        # 的次日溢价同样拿不到，选股再准也是空转。
+        # 实测（连板区间 1~2 板，其余参数不动）：
+        #   1260 天 −1.9%（回撤 −40.1%）→ +9.4%（回撤 −18.3%）
+        #   250 天（600 只）−15.4%（回撤 −37.0%）→ +4.6%（回撤 −30.7%）
+        #   分段：前段 1.6%→3.3%、后段 −8.0%→+15.9%（回撤 −39.9%→−13.3%）
+        # 阈值不是「越高越好」：top≥4 是 −8.6%、top≥6 是 +0.9%、top≥7 是 −2.9%，
+        # 只有 5 是尖峰。它对应的是一个真实位置——梯队刚接上、但还没到人人
+        # 都知道的纯情绪赌命段。涨停家数占比那类阈值试过，600 只与 1500 只
+        # 面板上结论完全相反，不可移植，所以这里只用「最高连板」这一个绝对量。
+        "sent_min_top": 5,
         # 弱市照做。打板赚的是情绪周期，指数在半年线下方时连板梯队照样存在；
         # 让它停手，等于在最需要「只做最强的」的时候把账户锁死。
         "weak_participate": True,
@@ -181,6 +211,23 @@ def _clean_weights(raw: dict | None) -> dict[str, float]:
     return {k: round(v / total, 4) for k, v in picked.items()}
 
 
+def _clean_tiers(raw: list[dict] | None) -> list[dict]:
+    """连板分档：每档给几个名额。
+
+    打板赚的是「从这一板到下一板」的溢价，不同板数根本不是一个赔率：
+    首板是试错（空间大、确定性低），二板是确认（1 进 2 的分水岭），
+    三板往上每多一板，次日的溢价就被前面的人多分走一份、炸板的代价大一截。
+    全按一个池子、一个排序去取，等于永远买在最高的那一板上——那是最贵的位置。
+    """
+    out = []
+    for t in raw or []:
+        lo = max(1, int(t.get("min") or 1))
+        hi = max(lo, int(t.get("max") or lo))
+        out.append({"label": t.get("label") or f"{lo} 板", "min": lo, "max": hi,
+                    "slots": max(1, int(t.get("slots") or 1))})
+    return sorted(out, key=lambda t: t["min"])
+
+
 def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
     """把任意来源的 spec 规整成执行层要的形状。"""
     base = STRATEGY_MAP.get(spec.get("id", ""), {})
@@ -199,6 +246,14 @@ def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
         # 两条撮合开关：池门槛（打板用）与择时（趋势用）。
         # 不进 `weights`，也不参与打分，只是往下传给回测/模拟盘。
         "pool_limit_min": max(0, min(int(merged.get("pool_limit_min") or 0), 5)),
+        # 上限是这条策略「不追高」的那一半：0 = 不限。打板只做 1~2 板，
+        # 没有上限时排序会把账户一路推到当日最高的那只票上。
+        "pool_limit_max": max(0, min(int(merged.get("pool_limit_max") or 0), 10)),
+        "board_tiers": _clean_tiers(merged.get("board_tiers")),
+        # 情绪闸门（打板用）：当日最高连板 ≥ N 才开新仓。不设占比门槛——
+        # 涨停占比的分子分母都受面板规模影响（600 只和 5000 只的「2%」不是
+        # 一个意思），同一组阈值换个 max_codes 就失效，不可移植。
+        "sent_min_top": max(0, min(int(merged.get("sent_min_top") or 0), 15)),
         "market_ma": max(0, min(int(merged.get("market_ma") or 0), 250)),
         "exclude_st": bool(merged.get("exclude_st", True)),
         # 买点属性只在撮合层生效，但要跟着 spec 一起带出去：今日选股页
@@ -211,6 +266,78 @@ def normalize_spec(spec: dict, top_n: int | None = None) -> dict:
         "limit_close_frac": float(merged.get("limit_close_frac") or 1.0),
         "builtin": spec.get("id", "") in STRATEGY_MAP,
     }
+
+
+def limit_band(cfg: dict) -> tuple[float, float]:
+    """可做的连板区间 (下限, 上限)，0 表示这一端不限。"""
+    return (float(cfg.get("pool_limit_min") or 0),
+            float(cfg.get("pool_limit_max") or 0))
+
+
+def band_label(band: tuple[float, float]) -> str:
+    lo, hi = band
+    if lo and hi:
+        return f"{lo:g}~{hi:g} 板"
+    if lo:
+        return f"≥ {lo:g} 板"
+    return f"≤ {hi:g} 板"
+
+
+def in_limit_band(cnt, band: tuple[float, float]) -> bool:
+    """连板数是否落在可做区间。`cnt` 为 None（因子表缺这一行）时只有不限下限才放行。"""
+    lo, hi = band
+    if cnt is None:
+        return not lo
+    value = float(cnt)
+    if lo and value < lo:
+        return False
+    if hi and value > hi:
+        return False
+    return True
+
+
+def tier_of(cnt, tiers: list[dict]) -> int:
+    """落在第几档。不在任何一档的排到最后一档之后（正常已被区间挡掉）。"""
+    if not tiers:
+        return 0
+    for i, t in enumerate(tiers):
+        if t["min"] <= cnt <= t["max"]:
+            return i
+    return len(tiers)
+
+
+def market_sentiment(board, mask: list[bool]) -> dict:
+    """当日市场情绪：涨停家数、最高连板、涨停占比。
+
+    `mask` 必须是**采购权限之后、策略过滤之前**的买方池：情绪是全市场的事，
+    拿策略自己的条件去算，等于「我选不出票所以情绪差」，本末倒置。
+
+    面板/因子表里没有 `limit_up` 列，连板数 ≥ 1 就是当日涨停。
+    """
+    col = board.column("limit_cnt")
+    up = 0
+    top = 0
+    alive = 0
+    for i, ok in enumerate(mask):
+        if not ok:
+            continue
+        alive += 1
+        cnt = float(col[i] or 0)
+        if cnt >= 1:
+            up += 1
+            if cnt > top:
+                top = int(cnt)
+    return {"up": up, "top": top,
+            "ratio": round(up / alive * 100, 2) if alive else 0.0}
+
+
+def sentiment_block(cfg: dict, senti: dict) -> str:
+    """情绪不到位时返回停手理由，到位返回空串。回测与今日选股共用。"""
+    min_top = float(cfg.get("sent_min_top") or 0)
+    if not min_top or senti["top"] >= min_top:
+        return ""
+    return (f"情绪冰点：今日最高只有 {senti['top']} 板、涨停 {senti['up']} 只，"
+            f"够不上「最高 ≥ {min_top:g} 板」，接力梯队断了，不挂新单")
 
 
 def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
@@ -254,20 +381,25 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         if blocked == len(pool):
             return _empty(engine, cfg, "「个人设置 → 购买权限」里没有开通任何板块，"
                                       "开通后才能选股")
+    # 情绪要在「权限之后、条件之前」算：它是全市场的事，拿策略自己的过滤
+    # 条件去算等于「我选不出票所以情绪差」。
+    senti = market_sentiment(board, mask)
+    veto = sentiment_block(cfg, senti)
     if filters:
         for i in range(len(mask)):
             if mask[i] and not evaluate(filters, lambda k, i=i: board.column(k)[i]):
                 mask[i] = False
     after_filters = sum(1 for m in mask if m)
 
-    # 池门槛（打板用）：只在连板数 ≥ N 的票里选。
+    # 连板区间（打板用）：只在区间内的票里选。
     # 必须在「今日选股」这一步就生效，不能只写在回测与下单里——否则页面上
     # 列出的候选是「全市场按因子打分的前几名」（实测包含当天没涨停的票），
     # 而实际挂单时又被这道门槛挡掉，看到的和买到的不是同一批。
-    if cfg["pool_limit_min"] > 0:
-        need = float(cfg["pool_limit_min"])
+    band = limit_band(cfg)
+    tiers = cfg["board_tiers"]
+    if band[0] > 0 or band[1] > 0:
         for i, cell in enumerate(board.column("limit_cnt")):
-            if mask[i] and (cell is None or float(cell) < need):
+            if mask[i] and not in_limit_band(cell, band):
                 mask[i] = False
 
     eligible = [(i, sym) for i, sym in enumerate(pool) if mask[i]]
@@ -308,17 +440,34 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         column = board.column("change_pct")
         rows.sort(key=lambda r: _rank_value(column[r["idx"]], True), reverse=True)
 
+    # 分档优先：板数是**准入档位**，不是排序键。稳定排序，档内保持上面
+    # 那一轮的顺序（因子分 / 用户指定的排序），所以「首板 2 只」拿的是
+    # 首板里分最高的两只，而不是全池分最高、恰好是首板的那两只。
+    if tiers:
+        cnt_col = board.column("limit_cnt")
+        rows.sort(key=lambda r: tier_of(float(cnt_col[r["idx"]] or 0), tiers))
+
     # 行业分散
     picked: list[dict] = []
     industry_count: dict[str, int] = {}
+    tier_used: dict[int, int] = {}
     for row in rows:
+        if veto:
+            break
+        if len(picked) >= cfg["top_n"]:
+            break
+        if tiers:
+            t = tier_of(float(board.column("limit_cnt")[row["idx"]] or 0), tiers)
+            if t < len(tiers) and tier_used.get(t, 0) >= tiers[t]["slots"]:
+                continue
         ind = row["sym"]["industry"]
         if industry_count.get(ind, 0) >= cfg["max_per_industry"]:
             continue
         picked.append(row)
         industry_count[ind] = industry_count.get(ind, 0) + 1
-        if len(picked) >= cfg["top_n"]:
-            break
+        if tiers:
+            t = tier_of(float(board.column("limit_cnt")[row["idx"]] or 0), tiers)
+            tier_used[t] = tier_used.get(t, 0) + 1
 
     items = []
     for rank, row in enumerate(picked, 1):
@@ -399,6 +548,8 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
             "change_pct": round((bars[-1]["close"] / bars[-2]["close"] - 1) * 100, 2),
             "atr": next((v for v in reversed(a) if v is not None), 0.0),
             "ma20": next((v for v in reversed(sma(closes, 20)) if v is not None), 0.0),
+            # 连板数是打板的档位标识，卡片上要能看出这只票是首板还是二板
+            "limit_cnt": float(board.column("limit_cnt")[i] or 0),
             "factors": factors,
             "reason": {"positive": positive, "negative": negative},
             "hits": hits,
@@ -416,8 +567,8 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
     if allow is not None:
         steps.append({"key": "board", "label": "可买板块", "count": pool_size})
     steps.append({"key": "filters", "label": "条件命中", "count": after_filters})
-    if cfg["pool_limit_min"] > 0:
-        steps.append({"key": "pool_limit", "label": f"连板 ≥ {cfg['pool_limit_min']:g}",
+    if band[0] > 0 or band[1] > 0:
+        steps.append({"key": "pool_limit", "label": f"连板 {band_label(band)}",
                       "count": len(eligible)})
     steps.append({"key": "picks", "label": "入选", "count": len(items)})
     return {
@@ -448,6 +599,12 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         # 该写哪个价。
         "entry_rule": _entry_rule(cfg),
         "pool_limit_min": cfg["pool_limit_min"],
+        "pool_limit_max": cfg["pool_limit_max"],
+        "board_tiers": tiers,
+        "sentiment": senti,
+        "sentiment_note": veto,
+        "sent_min_top": cfg["sent_min_top"],
+        "notice": veto,
     }
 
 
@@ -475,6 +632,11 @@ def _empty(engine: MarketEngine, cfg: dict, message: str) -> dict:
         "notice": message,
         "entry_rule": _entry_rule(cfg),
         "pool_limit_min": cfg["pool_limit_min"],
+        "pool_limit_max": cfg["pool_limit_max"],
+        "board_tiers": cfg["board_tiers"],
+        "sentiment": None,
+        "sentiment_note": "",
+        "sent_min_top": cfg["sent_min_top"],
     }
 
 

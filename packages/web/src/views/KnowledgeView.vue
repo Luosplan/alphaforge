@@ -71,14 +71,22 @@ const quotaTags = computed<Tag[]>(() => {
   const s = active.value?.selection
   if (!s) return []
   const tags: Tag[] = [{ t: '同行业', v: `≤ ${s.max_per_industry} 只` }]
-  if (s.pool_limit_min > 0) tags.push({ t: '连板', v: `≥ ${s.pool_limit_min}` })
+  const lo = s.pool_limit_min
+  const hi = s.pool_limit_max
+  if (lo || hi) {
+    tags.push({
+      t: '连板',
+      v: lo && hi ? `${lo}~${hi} 板` : lo ? `≥ ${lo} 板` : `≤ ${hi} 板`,
+    })
+  }
   tags.push({ t: '取前', v: `${s.top_n} 只` })
   return tags
 })
 
 const entryRules = computed<Rule[]>(() => {
-  const e = active.value?.entry
-  if (!e) return []
+  const a = active.value
+  const e = a?.entry
+  if (!e || !a) return []
   const s = e.sizing
   const rules: Rule[] = [
     {
@@ -112,6 +120,18 @@ const entryRules = computed<Rule[]>(() => {
         : '涨停梯队在熊市里照样存在',
     },
   ]
+  const sel = a.selection
+  if (sel.sent_min_top) {
+    const top = sel.sentiment.top
+    rules.push({
+      k: '情绪',
+      tags: [
+        { t: '最高连板', v: `≥ ${sel.sent_min_top} 板` },
+        top ? { t: '今日最高', v: `${top} 板 · 涨停 ${sel.sentiment.up} 只` } : { t: '今日', v: '—' },
+      ],
+      why: '最高只有几板说明没人愿意接高位，1~2 板的次日溢价也拿不到',
+    })
+  }
   if (e.market_ma && e.weak_participate) {
     rules.push({
       k: '弱势',
@@ -287,6 +307,9 @@ const exitRules = computed<Rule[]>(() => {
                   <span class="pk-rank num">{{ p.rank }}</span>
                   <b class="pk-name">{{ p.name }}</b>
                   <span class="pk-code num">{{ p.code }}</span>
+                  <span v-if="p.limit_cnt && active.selection.pool_limit_min" class="tg brand">
+                    <b>{{ p.limit_cnt }} 板</b>
+                  </span>
                   <span class="chip">{{ p.industry }}</span>
                   <span class="pk-chg num" :class="(p.change_pct ?? 0) >= 0 ? 'up' : 'down'">
                     {{ signed(p.change_pct) }}%
@@ -325,6 +348,9 @@ const exitRules = computed<Rule[]>(() => {
                 </footer>
               </article>
             </div>
+            <p v-else-if="active.selection.sentiment_note" class="muted">
+              {{ active.selection.sentiment_note }}
+            </p>
             <p v-else class="muted">今天没有符合条件的标的：宁缺勿滥，不凑数</p>
           </div>
         </div>

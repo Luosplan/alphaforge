@@ -59,18 +59,34 @@ def _roster() -> list[dict]:
     return strategy_list(store().strategies())
 
 
+# 账户快照里**允许覆盖代码声明**的字段：只有进化真正写进 spec 的那一项。
+# 其余一律以代码为准：
+# - filters / sort / pool_limit_* / board_tiers / gap_band / desc 是策略定义，
+#   冻结在采纳那天就等于「改了代码却不生效」；
+# - time_stop / top_n 是**搜索边界**的锚点（见 `harness.bounds_for`），一旦
+#   被账户里的运行值覆盖，下一轮的区间会从 1~7 漂到 5~11，几代之后打板
+#   就悄悄变成中线。它们的运行值走 `_live_params`，不走 spec。
+_LIVE_OVERRIDE = frozenset({"weights"})
+
+
 def _live_spec(strategy: str, inline: dict | None = None) -> dict:
-    """当前真正在跑的策略定义：采纳过进化的账户，用它自己那份 spec。
+    """当前真正在跑的策略定义：采纳过进化的账户，用它自己那份权重。
 
     进化、回测、详情都必须从这里出发。以前一律用 `STRATEGY_MAP` 的声明值，
     采纳后的权重只落在账户里，下一轮读不到——搜索从同一点、同一个种子重跑，
     结果一模一样，表现就是「采纳了一次，之后再也进化不动」。
+
+    但只能覆盖权重。账户里那份是采纳那一刻的整份 spec 快照，连 `sort` /
+    `filters` 一起冻结了：代码里把打板的「按连板数降序」删掉，账户快照里的
+    旧 `sort` 还会把它盖回来，页面继续按最高板选股——改了代码却不生效，
+    比不生效更难查。
     """
     spec = _spec_of(strategy, inline)
     if inline:
         return spec
     acc = get_lab().account(strategy) or {}
-    return {**spec, **(acc.get("spec") or {})}
+    snap = acc.get("spec") or {}
+    return {**spec, **{k: v for k, v in snap.items() if k in _LIVE_OVERRIDE}}
 
 
 def _live_params(strategy: str) -> dict:

@@ -65,6 +65,7 @@ def _picks(result: dict, params: dict) -> list[dict]:
             "score": it.get("score"),
             "price": price,
             "change_pct": it.get("change_pct"),
+            "limit_cnt": it.get("limit_cnt"),
             "atr": round(atr, 3),
             "levels": {
                 "stop": round(price - stop_atr * atr, 2),
@@ -122,6 +123,10 @@ def playbook(request: Request):
                 "top_n": result.get("top_n"),
                 "max_per_industry": result.get("max_per_industry"),
                 "pool_limit_min": int(result.get("pool_limit_min") or 0),
+                "pool_limit_max": int(result.get("pool_limit_max") or 0),
+                "sent_min_top": int(result.get("sent_min_top") or 0),
+                "sentiment": result.get("sentiment") or {},
+                "sentiment_note": result.get("sentiment_note") or "",
                 "factors": _factors(result.get("weights") or {}),
                 "picks": _picks(result, params),
                 "notice": result.get("notice") or result.get("rank_hint") or "",

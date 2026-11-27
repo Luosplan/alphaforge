@@ -650,6 +650,8 @@ export interface SelectResult {
   max_per_industry: number
   exclude_st: boolean
   rank_hint: string
+  /** 策略层面的停手理由（情绪闸门等）。非空时「没选出票」不是条件太严 */
+  notice?: string | null
   /** 选股池的购买权限口径：applied=false 表示这次没按权限过滤（纯研究） */
   board_filter?: BoardFilter
   parsed?: AiParse
@@ -1471,6 +1473,7 @@ export interface PlaybookPick {
   score: number
   price: number
   change_pct: number | null
+  limit_cnt: number | null
   atr: number
   levels: { stop: number; tp1: number; tp2: number }
   hits: Array<{ field: string; label: string; op: string; target: unknown; value: number | null; unit: string }>
@@ -1508,6 +1511,10 @@ export interface PlaybookStrategy {
     top_n: number
     max_per_industry: number
     pool_limit_min: number
+    pool_limit_max: number
+    sent_min_top: number
+    sentiment: { up?: number; top?: number; ratio?: number }
+    sentiment_note: string
     factors: Array<{ key: string; label: string; weight: number; desc: string }>
     picks: PlaybookPick[]
     notice: string
