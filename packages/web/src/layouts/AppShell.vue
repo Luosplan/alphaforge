@@ -23,10 +23,6 @@ const store = useAppStore()
             <component :is="Component" />
           </transition>
         </router-view>
-        <footer class="foot">
-          <span>AlphaForge 0.8.0</span>
-          <span>仅供研究，不构成投资建议</span>
-        </footer>
       </main>
     </div>
     <BottomNav v-if="store.isMobile" />
@@ -63,23 +59,10 @@ const store = useAppStore()
   width: 100%;
   max-width: 1680px;
   margin: 0 auto;
-  padding: 18px 22px 0;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.foot {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  align-items: center;
-  padding: 18px 2px 20px;
-  color: var(--af-ink-4);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  border-top: 1px solid var(--af-border);
-  margin-top: auto;
 }
 
 .fade-enter-active,
@@ -98,12 +81,8 @@ const store = useAppStore()
     padding-bottom: 62px;
   }
   .content {
-    padding: 10px 10px 0;
+    padding: 12px;
     gap: 12px;
-  }
-  .foot {
-    margin-top: auto;
-    padding: 12px 2px 14px;
   }
 }
 </style>

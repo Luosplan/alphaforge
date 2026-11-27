@@ -312,25 +312,36 @@ class Autopilot:
     # ---------------------------------------------------------------- 对象
     @staticmethod
     def _strategy_ids() -> list[str]:
-        """盯盘/推进/进化的对象：**当前策略集里的账户**。
+        """盯盘/推进/进化的对象：**当前策略集**。
 
-        之前写死 `("trend", "limitup")`（两条都已删除），新增的策略即使开了户也永远不会被
-        盯盘、不会被推进、不会进化——用户看到的就是「新策略是死的」。
-        改成读账户表之后，开一个账户就自动进入这条流水线。
+        内置战法（打板 / 一进二 / 波段）一律在列，哪怕还没开过户——收盘那一步
+        会顺手建账户再推进。只认账户表的话，新加进来的战法要等有人手工点开
+        一次才会动，表现就是「左边有这个 tab，但它永远没数据」。
 
-        还要再按当前策略集过一道：已删除策略（缩量蓄势 / 板块联动 / 弱转强）
-        的旧账户留在 lab.json 里，如果照样推进，页面上会多出三个永远不动的
+        自定义战法只在已经有账户时进列：它们是用户临时试的一条定义，全塞进
+        进化预算里会把收盘任务拖长几倍，而用户根本没打算让它们天天跑。
+
+        最后按当前策略集过一道：已删除策略（缩量蓄势 / 板块联动 / 弱转强）
+        的旧账户留在 lab.json 里，照样推进的话页面上会多出几个永远不动的
         账户，进化也会把预算花在已经不存在的策略上。
         """
-        from alphaforge_engine.selector import STRATEGY_MAP
+        from alphaforge_engine.selector import STRATEGY_MAP, strategy_list
 
         try:
-            from .lab_store import get_lab
-            ids = list((get_lab().state.get("accounts") or {}).keys())
+            from .deps import store
+            names = [row["id"] for row in strategy_list(store().strategies())]
         except Exception:                                # noqa: BLE001
-            ids = list(STRATEGY_MAP)
-        live = [sid for sid in ids if sid in STRATEGY_MAP]
-        return live or list(STRATEGY_MAP)
+            names = list(STRATEGY_MAP)
+        try:
+            from .lab_store import get_lab
+            owned = list((get_lab().state.get("accounts") or {}).keys())
+        except Exception:                                # noqa: BLE001
+            owned = []
+
+        builtin = [sid for sid in names if sid in STRATEGY_MAP]
+        custom = [sid for sid in names
+                  if sid not in STRATEGY_MAP and sid in owned]
+        return builtin + custom
 
     # ---------------------------------------------------------------- 盘中
     def run_intraday(self) -> dict:
@@ -613,6 +624,23 @@ class Autopilot:
                 as_of=today, plan_stats=plan_stats, holdings=holdings)
             review = aiwatch.analyze_review(review_ctx)
             steps.append({"step": "收盘复盘", "source": review.get("source")})
+
+            # ---- 复盘经验库：赚亏与「为什么没买」落成 md，再用累计样本重写《经验》。
+            # 顺序不能反：经验是拿今天的 md 一起总结的，先写日记再写总结，
+            # 否则今天这一课要等到明天才进经验库。
+            from alphaforge_engine import journal
+            try:
+                accs = {sid: lab.account(sid) for sid in self._strategy_ids()}
+                doc = journal.write_day(mkt, today,
+                                        {k: v for k, v in accs.items() if v})
+                journal.write_lessons({k: v for k, v in accs.items() if v})
+                steps.append({"step": "复盘经验库", "file": doc["file"],
+                              **doc["stats"]})
+            except Exception as exc:                     # noqa: BLE001
+                # 经验库写失败不该把收盘任务判成失败：账户已经推进、复盘已经生成，
+                # 第二天还能手动补一篇；把整条链路重跑一遍反而会让账户多走一天。
+                steps.append({"step": "复盘经验库",
+                              "error": f"{type(exc).__name__}: {exc}"})
 
             # ---- 进化：每个账户各跑一轮，采纳与否由门槛决定
             evolved = []

@@ -1,45 +1,61 @@
 <script setup lang="ts">
 /**
- * 策略实验室：把「回测 → 自进化 → 模拟盘」串成一条能自己走的路。
+ * 策略实验室：左栏是策略清单，右栏是选中那一条的全部数据。
  *
- * 三块内容的因果顺序是固定的，界面上也按这个顺序排：
- *   1. 策略矩阵 —— 每条策略历史上是什么水平（回测）
- *   2. 今日计划卡 —— 它今天选出了什么，现价走到建仓区没有
- *   3. 详情抽屉 —— 净值、成交、持仓、进化曲线，逐项对账
+ * 为什么拆成两栏：策略从两条变成三条之后，「策略矩阵 + 全策略计划卡 + 详情抽屉」
+ * 这套排布把同一条策略的回测、模拟盘、进化摊在了卡片和抽屉两处，对一次账要在
+ * 页面上来回搬眼睛。左栏只回答「有哪几条、各自什么水平」，右栏回答「这一条现在
+ * 怎么样」，两边不重叠。
+ *
+ * 左栏顺序可以拖，整份存进 store.json（`PUT /lab/order`）。顺序只是给人看的，
+ * 不影响任何计算——盯盘与收盘推进按策略集遍历，不按这个顺序。
  *
  * 一个刻意的取舍：回测不自动跑。装一次回测面板要十几秒（600 只 × 340 天），
  * 而「打开页面」这个动作不值得等这么久。所以首屏只推进模拟盘（那一格很快），
- * 回测交给「回测 / 全部回测」按钮，跑完就落盘，下次打开直接读。
+ * 回测交给右栏和左栏底部的按钮，跑完就落盘，下次打开直接读。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Edit } from '@element-plus/icons-vue'
 import { api, type LabStrategyDetail } from '@/api'
 import type {
-  AutopilotState,
+  FieldMeta,
   LabEvolveState,
   LabGenome,
   LabOverview,
   LabPlanCard,
   LabStrategyRow,
+  Strategy,
 } from '@/types'
 import { fmtMoney, fmtPct, toneOf } from '@/utils/format'
 import Sparkline from '@/components/Sparkline.vue'
 import EquityChart from '@/components/EquityChart.vue'
+import StrategyEditor from '@/components/StrategyEditor.vue'
 
 const loading = ref(true)
 const overview = ref<LabOverview | null>(null)
 const busy = ref('')
 const batch = ref({ running: false, done: 0, total: 0, label: '' })
 
+/* 左栏选中项。`''` 是顶上那格「全部策略」，其余是策略 id。 */
+const activeId = ref('')
+const order = ref<string[]>([])
+const dragId = ref('')
+const overId = ref('')
+
 const detail = ref<LabStrategyDetail | null>(null)
-const drawer = ref(false)
-const detailTab = ref<'backtest' | 'paper' | 'evolution'>('backtest')
+/* 右栏页签。`board` 只在「全部策略」下存在：选中某条策略之后，
+ * 首屏是它的收益概览，计划卡、测试收益、模拟盘、进化各占一页。 */
+const rightTab = ref<'board' | 'overview' | 'plans' | 'backtest' | 'paper' | 'evolution'>('board')
 const planFilter = ref<'ALL' | 'ENTRY' | 'ADD'>('ALL')
 
+/* 新建 / 编辑自定义策略走全站同一个编辑器（因子权重 · 条件 · 排序），
+ * 这里只负责把「当前这条的定义」喂进去，存完跳回它自己。 */
+const editorOpen = ref(false)
+const editing = ref<Strategy | null>(null)
+const fields = ref<FieldMeta[]>([])
+
 const evo = ref<LabEvolveState | null>(null)
-/* 收盘任务的状态机。这一块只读它里面三样东西：开没开、昨天复盘跑没跑、
- * 今天进化采纳了几个——它们合起来才是「闭环有没有真的在转」。 */
-const pilot = ref<AutopilotState | null>(null)
 /* 回测区间：250 天只能覆盖一种市场状态，牛熊一轮都走不完，
  * 在上头挑参数等于对着一段行情过拟合。默认 5 年——这一段里含两轮下跌
  * （2021-09~2022-12 沪深300 −20%、2022-12~2024-07 −10%）和一轮上涨
@@ -70,8 +86,21 @@ const FACTOR_LABEL: Record<string, string> = {
   ind_rank_pct: '行业内排名分位',
 }
 
-const stats = computed(() => overview.value?.stats)
 const strategies = computed<LabStrategyRow[]>(() => overview.value?.strategies ?? [])
+
+/** 左栏渲染顺序。`order` 是落盘的顺序；表里漏掉的 id（刚新建还没存顺序）
+ *  保持后端原顺序挂在末尾，不会被吞掉。 */
+const ordered = computed<LabStrategyRow[]>(() => {
+  const rank = new Map(order.value.map((id, i) => [id, i]))
+  return [...strategies.value].sort(
+    (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  )
+})
+
+const active = computed<LabStrategyRow | null>(
+  () => strategies.value.find((s) => s.id === activeId.value) ?? null,
+)
 
 /* 择时状态。打板不设大盘闸（market_ma=0），波段跌破半年线就停手，所以不能
  * 随便取第一条——优先展示「还在做」的那条：用户想知道的不是谁停手了，
@@ -100,79 +129,27 @@ const regimeHint = computed(() => {
   return '波段弱市停手，打板照常出手'
     + (regimeStopped.value ? `；当前 ${regimeStopped.value} 条策略停手` : '')
 })
+
+const activeRegime = computed(() => active.value?.paper?.regime ?? null)
+
+const allPlans = computed<LabPlanCard[]>(() => overview.value?.plans ?? [])
+
+/** 右栏展示的计划卡：选中某条策略时只看它自己的，选中「全部」时看全部。 */
 const plans = computed<LabPlanCard[]>(() => {
-  const all = overview.value?.plans ?? []
-  if (planFilter.value === 'ALL') return all
-  return all.filter((p) => p.signal_type === planFilter.value)
+  const base = activeId.value
+    ? allPlans.value.filter((p) => p.strategy_id === activeId.value)
+    : allPlans.value
+  if (planFilter.value === 'ALL') return base
+  return base.filter((p) => p.signal_type === planFilter.value)
 })
 
 /** 计划卡里同一只票可能被多条策略同时选中，这里标出来而不是去重：
  *  「两条策略都选了它」本身就是信息。 */
 const planOverlap = computed(() => {
   const count: Record<string, number> = {}
-  for (const p of overview.value?.plans ?? []) count[p.code] = (count[p.code] ?? 0) + 1
+  for (const p of allPlans.value) count[p.code] = (count[p.code] ?? 0) + 1
   return count
 })
-
-/* ------------------------------------------------------------ 自进化闭环
- * 五个环节必须**各自可见**。只写一句「自进化已开启」，用户没法判断今天
- * 卡在哪一环：策略没选股？计划卡生成了但一张没成交？复盘跑了但进化没采纳？
- * 每个环节都带上今天的事实值，出问题的那一环会自己浮出来。
- */
-const health = computed(() => pilot.value?.plan_health ?? null)
-
-const loopSteps = computed(() => {
-  const asOf = overview.value?.as_of ?? ''
-  const started = strategies.value.filter((s) => s.paper).length
-  const rev = pilot.value?.review
-  const evolved = pilot.value?.eod?.evolved ?? []
-  const adopted = evolved.filter((e) => e?.action === 'adopt').length
-  const filled = rev?.plan?.filled_count ?? 0
-  const orders = rev?.plan?.order_count ?? 0
-  const reviewed = !!rev && rev.as_of === asOf
-  return [
-    {
-      key: 'select', label: '选股', value: asOf ? `${started} 条策略` : '未就绪',
-      tone: started ? 'brand' : 'flat',
-      hint: asOf ? `按 ${asOf} 收盘数据选股，每条策略最多 3 只` : '本地库还没有交易日数据',
-    },
-    {
-      key: 'plan', label: '计划卡', value: `${plans.value.length} 张`,
-      tone: plans.value.length ? 'brand' : 'flat',
-      hint: '候选来自选股结果，不是写死的名单',
-    },
-    {
-      key: 'fill', label: '模拟成交',
-      value: reviewed ? `${filled}/${orders} 张` : '待收盘',
-      tone: reviewed && filled ? 'brand' : 'flat',
-      hint: '昨日挂单在今日开盘按市价撮合，一字板买不到',
-    },
-    {
-      key: 'review', label: '收盘复盘',
-      value: reviewed ? '已跑' : '待跑',
-      tone: reviewed ? 'brand' : 'flat',
-      hint: reviewed ? `复盘日期 ${rev?.as_of}` : '15:05 之后自动生成，也可以去盯盘页手动跑一次',
-    },
-    {
-      key: 'evolve', label: '进化换参',
-      value: evolved.length ? `采纳 ${adopted}/${evolved.length}` : '待收盘',
-      tone: adopted ? 'brand' : 'flat',
-      hint: '样本外打赢 + 风控达标 + 执行无异常才换参',
-    },
-  ]
-})
-
-async function togglePilot(enabled: boolean) {
-  busy.value = 'pilot'
-  try {
-    pilot.value = await api.autopilotToggle(enabled)
-    ElMessage.success(enabled ? '实时盯盘已开启：盘中每 5 分钟盯一次，15:05 生成复盘日记' : '实时盯盘已暂停')
-  } catch {
-    // 失败提示交给响应拦截器统一弹
-  } finally {
-    busy.value = ''
-  }
-}
 
 /** 按策略分组。48 张卡平铺成一张大表读不动，分组之后一眼能看出谁选了谁。 */
 interface PlanGroup {
@@ -204,7 +181,9 @@ const planGroups = computed<PlanGroup[]>(() => {
 
 // ------------------------------------------------------------------ 数据
 async function load() {
-  overview.value = await api.labOverview()
+  const res = await api.labOverview()
+  overview.value = res
+  order.value = res.strategies.map((s) => s.id)
 }
 
 /** 首屏把模拟盘推一格：没跑过就建账户 + 出计划卡，跑过就直接跳过。 */
@@ -215,6 +194,11 @@ async function bootstrap() {
     /* 推进失败不影响看历史回测 */
   }
   await load()
+}
+
+async function refresh() {
+  await load()
+  if (activeId.value) await loadDetail(activeId.value)
 }
 
 async function tick(force = false) {
@@ -233,7 +217,7 @@ async function tick(force = false) {
       0,
     )
     ElMessage.success(moved ? `已推进 ${moved} 个账户 · ${trades} 笔动作` : '今天已经推进过了')
-    await load()
+    await refresh()
   } finally {
     busy.value = ''
   }
@@ -244,7 +228,7 @@ async function runBacktest(id: string, quiet = false) {
   try {
     await api.labBacktest({ strategy: id, days: btDays.value })
     if (!quiet) ElMessage.success('回测完成')
-    await load()
+    await refresh()
   } finally {
     busy.value = ''
   }
@@ -281,6 +265,90 @@ async function resetPaper(id?: string) {
   await bootstrap()
 }
 
+// ------------------------------------------------------------------ 左栏
+function onDragStart(id: string, event: DragEvent) {
+  dragId.value = id
+  overId.value = ''
+  event.dataTransfer?.setData('text/plain', id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function onDragOver(id: string) {
+  if (dragId.value && dragId.value !== id) overId.value = id
+}
+
+function onDragEnd() {
+  dragId.value = ''
+  overId.value = ''
+}
+
+/** 拖到谁身上就插到谁前面。落盘失败时重拉一次，把顺序退回后端的版本 ——
+ *  界面上留一个只有本机相信的顺序，比不排序更糟。 */
+async function onDrop(targetId: string) {
+  const from = dragId.value
+  onDragEnd()
+  if (!from || from === targetId) return
+  const ids = order.value.filter((id) => id !== from)
+  const at = ids.indexOf(targetId)
+  ids.splice(at < 0 ? ids.length : at, 0, from)
+  order.value = ids
+  try {
+    await api.labSaveOrder(ids)
+  } catch {
+    await load()
+  }
+}
+
+function toStrategy(row: LabStrategyRow): Strategy {
+  return {
+    id: row.id,
+    name: row.name,
+    desc: row.desc,
+    weights: { ...row.spec.weights },
+    filters: row.spec.filters as unknown as Strategy['filters'],
+    sort: row.spec.sort as unknown as Strategy['sort'],
+    top_n: row.spec.top_n,
+    max_per_industry: row.spec.max_per_industry,
+    exclude_st: row.spec.exclude_st,
+    builtin: row.builtin,
+  }
+}
+
+function openCreate() {
+  editing.value = null
+  editorOpen.value = true
+}
+
+function openEdit(row: LabStrategyRow) {
+  editing.value = toStrategy(row)
+  editorOpen.value = true
+}
+
+async function onSaved(saved: Strategy) {
+  await load()
+  activeId.value = saved.id
+}
+
+async function removeStrategy(row: LabStrategyRow) {
+  if (row.builtin) {
+    ElMessage.warning('内置策略写在代码里，删不掉；可以「编辑」另存一份副本再改')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `删除「${row.name}」：它的模拟盘账户、回测与进化记录会一起清掉，不可恢复。`,
+      '删除策略',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await api.labDeleteStrategy(row.id)
+  ElMessage.success('已删除')
+  if (activeId.value === row.id) activeId.value = ''
+  await load()
+}
+
 // ------------------------------------------------------------------ 进化
 function startEvolve(id: string) {
   const row = strategies.value.find((s) => s.id === id)
@@ -295,7 +363,7 @@ function startEvolve(id: string) {
       await api.labEvolve({ strategy: id, ...evoForm.value, apply: false })
       ElMessage.info('已开始，进度在页面上方')
       beginPoll()
-      await load()
+      await refresh()
     })
     .catch(() => {})
 }
@@ -309,7 +377,7 @@ function beginPoll() {
         stopPoll()
         if (evo.value.error) ElMessage.error(`进化失败：${evo.value.error}`)
         else if (evo.value.result) ElMessage.success('进化完成，详情里可以对比与采纳')
-        await load()
+        await refresh()
       }
     } catch {
       stopPoll()
@@ -334,21 +402,27 @@ async function applyEvolution(id: string) {
   }
   const res = await api.labEvolveApply(id)
   ElMessage.success(`已采纳，当前第 ${res.generation} 代`)
-  await load()
-  if (drawer.value) await openDetail(id)
+  await refresh()
 }
 
 // ------------------------------------------------------------------ 详情
-async function openDetail(id: string) {
+/** 右栏的四个页签共用一份 detail。切策略时只换数据，不换页签——
+ *  连着看三条策略的测试收益时，每次都被弹回计划卡是纯打扰；
+ *  只有从「全部策略」进到某一条时，才落到计划卡。 */
+async function loadDetail(id: string) {
+  if (!id) {
+    detail.value = null
+    return
+  }
   detail.value = await api.labStrategy(id)
-  detailTab.value = detail.value.backtest ? 'backtest' : 'paper'
-  drawer.value = true
+  if (!detail.value.backtest && rightTab.value === 'backtest') rightTab.value = 'plans'
 }
 
-function planCardsFor(row: LabStrategyRow): LabPlanCard[] {
-  const items = overview.value?.plans ?? []
-  return items.filter((p) => p.strategy_id === row.id)
-}
+watch(activeId, (id) => {
+  if (!id) rightTab.value = 'board'
+  else if (rightTab.value === 'board') rightTab.value = 'overview'
+  loadDetail(id)
+})
 
 // ------------------------------------------------------------------ 展示
 function pct(value: number | null | undefined, digits = 2, signed = true): string {
@@ -368,8 +442,8 @@ function px(value: number | null | undefined): string {
   return Number(value).toFixed(2)
 }
 
-function navValues(row: LabStrategyRow): number[] {
-  return (row.backtest?.equity ?? []).map((e) => e.value)
+function navValues(row: LabStrategyRow | null): number[] {
+  return (row?.backtest?.equity ?? []).map((e) => e.value)
 }
 
 /** 净值曲线归一到 100，和沪深300 同轴对比；否则一边 100 万一边 100 点没法看 */
@@ -587,9 +661,6 @@ const planStateTone = (p: LabPlanCard): string => {
  * 口径跟计划卡一致——`ref_price` 是生成这张卡时的基准价（信号日收盘），
  * 委托就是照着它挂、次日开盘按市价成交，所以它就是「委托价」本身；
  * 不要用 `live_price` 顶替，现价盘中会动，委托价挂了就不动。
- *
- * 没有真挂单时（择时关闭 / 已持有 / 仅备选）价格照样显示，但标注清楚
- * 那只是计划执行价 —— 灰掉一个数字比整列空着更容易被当成「没数据」。
  */
 const orderPx = (p: LabPlanCard): string | null => px(p.ref_price)
 
@@ -630,15 +701,13 @@ const orderTitle = (p: LabPlanCard): string => {
 
 onMounted(async () => {
   try {
+    fields.value = await api.fields()
+  } catch {
+    /* 拿不到字段只是不能新建策略，不影响看数据 */
+  }
+  try {
     await bootstrap()
     evo.value = await api.labEvolveStatus()
-    // 闭环状态单独拉一次：它来自收盘任务的状态机（autopilot.json），
-    // 不在 /lab/overview 里。拉失败不该让整页报错，所以单独 try。
-    try {
-      pilot.value = await api.autopilot()
-    } catch {
-      pilot.value = null
-    }
     if (evo.value?.running) beginPoll()
   } catch {
     ElMessage.error('实验室数据加载失败')
@@ -651,88 +720,7 @@ onBeforeUnmount(stopPoll)
 </script>
 
 <template>
-  <div class="lab" v-loading="loading">
-    <section class="strip">
-      <div class="s-card">
-        <span class="k">策略数</span>
-        <span class="v num">{{ stats?.strategies ?? 0 }}</span>
-        <span class="s-sub">已回测 {{ strategies.filter((s) => s.backtest?.available).length }} 条</span>
-      </div>
-      <div class="s-card">
-        <span class="k">平均胜率</span>
-        <span class="v num">{{ stats?.avg_win_rate != null ? `${stats.avg_win_rate}%` : '—' }}</span>
-        <span class="s-sub">仅统计已了结交易</span>
-      </div>
-      <div class="s-card">
-        <span class="k">最优卡玛</span>
-        <span class="v num" :class="toneOf(stats?.best_calmar)">{{ stats?.best_calmar ?? '—' }}</span>
-        <span class="s-sub">年化收益 ÷ 最大回撤</span>
-      </div>
-      <div class="s-card">
-        <span class="k">模拟盘总净值</span>
-        <span class="v num">{{ fmtMoney(stats?.paper_nav) }}</span>
-        <span class="s-sub num" :class="toneOf(stats?.paper_pnl)">
-          盈亏 {{ wan(stats?.paper_pnl) }} · 计划卡 {{ stats?.plan_count ?? 0 }} 张
-        </span>
-      </div>
-    </section>
-
-    <!-- 自进化闭环。五个环节各带今天的事实值：出问题的那一环会自己浮出来，
-         比一句「自进化已开启」有用得多。 -->
-    <section class="panel loop" :class="{ paused: pilot && !pilot.enabled }">
-      <div class="loop-head">
-        <div class="panel-title">
-          自进化闭环
-        </div>
-        <div class="loop-switch">
-          <span class="muted" :class="{ warn: pilot && !pilot.enabled }">
-            {{ pilot == null ? '状态未知' : pilot.enabled ? '实时盯盘已开启' : '实时盯盘已暂停' }}
-          </span>
-          <el-switch
-            :model-value="pilot?.enabled ?? false"
-            :loading="busy === 'pilot'"
-            @change="(v: string | number | boolean) => togglePilot(!!v)"
-          />
-        </div>
-      </div>
-
-      <div class="loop-steps">
-        <div v-for="(s, i) in loopSteps" :key="s.key" class="loop-step" :title="s.hint">
-          <span class="loop-idx num">{{ i + 1 }}</span>
-          <span class="loop-k">{{ s.label }}</span>
-          <span class="loop-v num" :class="s.tone">{{ s.value }}</span>
-        </div>
-      </div>
-
-      <div class="loop-foot">
-        <span class="chip" :class="health?.tone ?? 'flat'">
-          {{ health?.label ?? '还没有成交样本' }}
-        </span>
-        <span v-if="health && health.orders" class="muted num">
-          近 {{ health.days }} 个有挂单的交易日：挂 {{ health.orders }} 张、成交
-          {{ health.filled }} 张（{{ health.fill_rate ?? '—' }}%），平均不利滑点
-          {{ health.avg_adverse_bps ?? '—' }}bp
-        </span>
-        <span v-else class="muted">
-          执行质量要等有委托在真行情上撮合过才算得出来：择时关闭时不开新仓，
-          样本会一直为 0
-        </span>
-      </div>
-    </section>
-
-    <!-- 择时状态。模拟盘一单不挂的时候，这一行是页面上唯一能解释原因的地方。
-         但要分清三件事：正常 / 弱势只打抱团（照做但减仓）/ 该策略弱市停手。 -->
-    <div v-if="regime" class="regime-line">
-      <span
-        class="chip"
-        :class="regime.open_new ? 'brand' : ((regime.scale ?? 0) > 0 ? 'warn' : 'flat')"
-      >
-        {{ regime.label }}
-      </span>
-      <span class="num">{{ regime.detail }}</span>
-      <span class="muted">{{ regimeHint }}</span>
-    </div>
-
+  <div v-loading="loading" class="lab">
     <!-- 进化进度：只在跑的时候出现，不占常驻版面 -->
     <section v-if="evo?.running || batch.running" class="panel progress">
       <div class="pg-head">
@@ -761,837 +749,991 @@ onBeforeUnmount(stopPoll)
       </div>
     </section>
 
-    <!-- 策略矩阵 -->
-    <section class="panel">
-      <div class="panel-head wrap">
-        <div class="panel-title">
-          策略矩阵
-        </div>
-        <div class="head-tools">
-          <span class="evo-cfg">
-            <span class="muted">区间</span>
-            <el-select v-model="btDays" size="small" style="width: 82px">
-              <el-option v-for="o in DAY_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
-            </el-select>
-          </span>
-          <span class="evo-cfg hide-md">
-            <span class="muted">种群</span>
-            <el-select v-model="evoForm.population" size="small" style="width: 74px">
-              <el-option :value="12" label="12" />
-              <el-option :value="24" label="24" />
-              <el-option :value="36" label="36" />
-            </el-select>
-            <span class="muted">代</span>
-            <el-select v-model="evoForm.generations" size="small" style="width: 64px">
-              <el-option :value="3" label="3" />
-              <el-option :value="6" label="6" />
-              <el-option :value="10" label="10" />
-            </el-select>
-          </span>
-          <el-button size="small" :loading="busy === 'tick'" @click="tick()">推进模拟盘</el-button>
-          <el-button size="small" :disabled="batch.running" @click="runAllBacktests">全部回测</el-button>
-          <el-button size="small" text @click="resetPaper()">清空模拟盘</el-button>
-        </div>
-      </div>
-      <div class="panel-body">
-        <div class="cards">
-          <article v-for="s in strategies" :key="s.id" class="scard">
-            <header class="sc-head">
-              <div class="sc-title">
-                <span class="sc-name">{{ s.name }}</span>
-                <span v-if="s.builtin" class="chip">内置</span>
-                <span v-if="s.generation" class="chip brand">已进化 {{ s.generation }} 代</span>
-              </div>
-              <span class="sc-id num">{{ s.id }}</span>
-            </header>
-            <p class="sc-desc">{{ s.desc || '用户自定义策略' }}</p>
+    <div class="split">
+      <!-- ------------------------------------------------ 左栏：策略清单 -->
+      <aside class="panel side">
+        <header class="side-head">
+          <div class="panel-title">策略</div>
+          <span class="muted num">{{ strategies.length }} 条</span>
+        </header>
 
-            <div v-if="s.backtest?.available" class="sc-curve">
-              <Sparkline
-                :values="navValues(s)"
-                :tone="toneOf(s.backtest.metrics.total_return)"
-                :height="38"
-              />
-              <div class="sc-curve-side">
-                <span class="num sc-ret" :class="toneOf(s.backtest.metrics.total_return)">
-                  {{ pct(s.backtest.metrics.total_return) }}
-                </span>
-                <span class="muted num">区间收益</span>
+        <ul class="slist">
+          <li class="sitem sall" :class="{ active: !activeId }" @click="activeId = ''">
+            <div class="si-body">
+              <div class="si-top">
+                <span class="si-name">全部策略</span>
+              </div>
+              <div class="si-meta num">
+                <span class="muted">{{ allPlans.length }} 张计划卡</span>
               </div>
             </div>
-            <div v-else class="sc-blank">暂无回测</div>
+          </li>
 
-            <dl class="sc-metrics">
-              <div>
-                <dt>年化</dt>
-                <dd class="num" :class="toneOf(s.backtest?.metrics.annual_return)">
-                  {{ s.backtest ? pct(s.backtest.metrics.annual_return) : '—' }}
-                </dd>
+          <li
+            v-for="s in ordered"
+            :key="s.id"
+            class="sitem"
+            :class="{
+              active: s.id === activeId,
+              dragging: s.id === dragId,
+              'drop-before': s.id === overId,
+            }"
+            draggable="true"
+            @click="activeId = s.id"
+            @dragstart="onDragStart(s.id, $event)"
+            @dragover.prevent="onDragOver(s.id)"
+            @drop.prevent="onDrop(s.id)"
+            @dragend="onDragEnd"
+          >
+            <span class="si-grab" title="拖动排序">⋮⋮</span>
+            <div class="si-body">
+              <div class="si-top">
+                <span class="si-name">{{ s.name }}</span>
+                <span v-if="s.generation" class="chip brand">{{ s.generation }} 代</span>
               </div>
-              <div>
-                <dt>最大回撤</dt>
-                <dd class="num" :class="toneOf(s.backtest?.metrics.max_drawdown)">
-                  {{ s.backtest ? pct(s.backtest.metrics.max_drawdown) : '—' }}
-                </dd>
+              <div class="si-meta num">
+                <span :class="toneOf(s.backtest?.metrics.total_return)">
+                  {{ s.backtest ? pct(s.backtest.metrics.total_return) : '未回测' }}
+                </span>
+                <template v-if="s.paper">
+                  <span class="dot">·</span>
+                  <span :class="toneOf(s.paper.summary.pnl)">
+                    {{ fmtPct(s.paper.summary.pnl_pct) }}
+                  </span>
+                  <span class="dot">·</span>
+                  <span class="muted">{{ s.paper.plans }} 张</span>
+                </template>
+                <template v-else>
+                  <span class="dot">·</span>
+                  <span class="muted">模拟盘未启动</span>
+                </template>
               </div>
-              <div>
-                <dt>波动率</dt>
-                <dd class="num">
-                  {{ s.backtest ? pct(s.backtest.metrics.volatility, 2, false) : '—' }}
-                </dd>
-              </div>
-              <div>
-                <dt>夏普</dt>
-                <dd class="num" :class="toneOf(s.backtest?.metrics.sharpe)">
-                  {{ s.backtest ? s.backtest.metrics.sharpe : '—' }}
-                </dd>
-              </div>
-              <div>
-                <dt>卡玛</dt>
-                <dd class="num" :class="toneOf(s.backtest?.metrics.calmar)">
-                  {{ s.backtest ? s.backtest.metrics.calmar : '—' }}
-                </dd>
-              </div>
-              <div>
-                <dt>胜率</dt>
-                <dd class="num">
-                  {{ s.backtest ? `${s.backtest.metrics.win_rate}%` : '—' }}
-                  <i v-if="s.backtest" class="sc-sub num">
-                    /{{ s.backtest.metrics.closed_count }} 笔
-                  </i>
-                </dd>
-              </div>
-            </dl>
+            </div>
+            <div class="si-ops" @click.stop>
+              <el-tooltip content="编辑" placement="top" :show-after="150">
+                <button class="si-op" type="button" @click="openEdit(s)">
+                  <el-icon><Edit /></el-icon>
+                </button>
+              </el-tooltip>
+              <el-tooltip
+                v-if="!s.builtin"
+                content="删除"
+                placement="top"
+                :show-after="150"
+              >
+                <button class="si-op danger" type="button" @click="removeStrategy(s)">
+                  <el-icon><Delete /></el-icon>
+                </button>
+              </el-tooltip>
+            </div>
+          </li>
+        </ul>
 
-            <div class="sc-paper">
-              <template v-if="s.paper">
-                <span class="muted">模拟盘</span>
-                <b class="num" :class="toneOf(s.paper.summary.pnl)">
-                  {{ fmtMoney(s.paper.summary.nav) }}
-                </b>
-                <span class="num" :class="toneOf(s.paper.summary.pnl)">
-                  {{ fmtPct(s.paper.summary.pnl_pct) }}
+        <footer class="side-foot">
+          <el-button class="side-add" plain @click="openCreate">+ 添加策略</el-button>
+        </footer>
+      </aside>
+
+      <!-- ------------------------------------------------ 右栏 -->
+      <!-- 一块面板 + 页签：计划卡 / 测试收益 / 模拟盘 / 自进化。
+           以前计划卡是一张独立卡片，回测、模拟盘、进化挤在下面另一个页签组里，
+           同一批数字散在两处，对账要在页面上来回搬眼睛。 -->
+      <section class="main">
+        <section class="panel lab-main">
+          <div class="panel-head wrap">
+            <div v-if="!active" class="panel-title">
+              策略一览
+              <span class="panel-sub">点任意一行看它的计划卡、测试收益与进化</span>
+            </div>
+            <div v-else class="mh-left">
+              <div class="panel-title">
+                {{ active.name }}
+                <span v-if="active.generation" class="chip brand">
+                  已进化 {{ active.generation }} 代
                 </span>
-                <span class="muted num">
-                  持仓 {{ s.paper.summary.holdings_count }} · 计划 {{ s.paper.plans }}
-                  <template v-if="s.paper.is_stale"> · 待推进</template>
-                </span>
+                <span v-if="active.paper?.is_stale" class="chip warn">待推进</span>
+              </div>
+              <p class="mh-desc">{{ active.desc || '用户自定义策略' }}</p>
+            </div>
+
+            <div class="head-tools">
+              <template v-if="!active">
+                <el-button size="small" :loading="busy === 'tick'" @click="tick()">
+                  推进模拟盘
+                </el-button>
+                <el-select v-model="btDays" size="small" style="width: 76px" title="全部回测用的区间">
+                  <el-option
+                    v-for="o in DAY_OPTIONS"
+                    :key="o.value"
+                    :value="o.value"
+                    :label="o.label"
+                  />
+                </el-select>
+                <el-button size="small" :disabled="batch.running" @click="runAllBacktests">
+                  全部回测
+                </el-button>
+                <el-button size="small" text @click="resetPaper()">清空模拟盘</el-button>
               </template>
-              <span v-else class="muted">模拟盘未启动</span>
+              <template v-else>
+                <el-button size="small" :loading="busy === active.id" @click="runBacktest(active.id)">
+                  回测
+                </el-button>
+                <el-button size="small" :disabled="!!evo?.running" @click="startEvolve(active.id)">
+                  进化
+                </el-button>
+                <el-button size="small" @click="openEdit(active)">编辑</el-button>
+                <el-button v-if="!active.builtin" size="small" @click="removeStrategy(active)">
+                  删除
+                </el-button>
+                <el-button size="small" text @click="resetPaper(active.id)">清空模拟盘</el-button>
+              </template>
             </div>
+          </div>
 
-            <!-- 摘掉权重这件事必须在卡片上就说，不能只藏在抽屉里：
-                 否则「低估值策略」回测出 -30% 会让人以为回测坏了 -->
-            <p v-if="s.backtest?.dropped?.length" class="sc-drop">
-              回测摘掉 {{ s.backtest.dropped.length }} 项无历史序列的权重（{{
-                s.backtest.dropped.map((d) => d.label).join('、')
-              }}）
-            </p>
-
-            <footer class="sc-actions">
-              <el-button size="small" :loading="busy === s.id" @click="runBacktest(s.id)">
-                回测
-              </el-button>
-              <el-button size="small" :disabled="!!evo?.running" @click="startEvolve(s.id)">
-                进化
-              </el-button>
-              <el-button size="small" text @click="openDetail(s.id)">详情</el-button>
-            </footer>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- 全策略计划卡 -->
-    <section class="panel">
-      <div class="panel-head wrap">
-        <div class="panel-title">
-          今日计划卡 · 全策略
-        </div>
-        <div class="head-tools">
-          <el-radio-group v-model="planFilter" size="small">
-            <el-radio-button value="ALL">全部</el-radio-button>
-            <el-radio-button value="ENTRY">建仓单</el-radio-button>
-            <el-radio-button value="ADD">加仓单</el-radio-button>
-          </el-radio-group>
-        </div>
-      </div>
-      <div class="panel-body flush">
-        <div v-if="planGroups.length" class="plans-scroll">
-          <section v-for="g in planGroups" :key="g.strategy_id" class="pgroup">
-            <header class="pg-row">
-              <span class="pg-name">{{ g.strategy_name }}</span>
-              <span class="chip">{{ g.items.length }} 张</span>
-              <span v-if="g.generation" class="chip brand">第 {{ g.generation }} 代参数</span>
-              <span v-if="g.last_run" class="muted num pg-run">基于 {{ g.last_run }} 收盘生成</span>
-            </header>
-            <table class="ptable">
-              <thead>
-                <tr>
-                  <th>标的</th>
-                  <th>类型</th>
-                  <th>买点</th>
-                  <th>现价</th>
-                  <th>委托状态</th>
-                  <th>距止损</th>
-                  <th>止损</th>
-                  <th>TP1 / TP2</th>
-                  <th>置信</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="p in g.items" :key="p.plan_id" class="prow">
-                  <td>
-                    <div class="p-name">
-                      {{ p.name }}
-                      <span v-if="(planOverlap[p.code] ?? 0) > 1" class="chip brand x2">
-                        {{ planOverlap[p.code] }} 策略共选
-                      </span>
-                    </div>
-                    <div class="p-code num">{{ p.code }} · {{ p.industry }}</div>
-                  </td>
-                  <td>
-                    <span class="pill" :class="p.signal_type === 'ADD' ? 'holding' : 'triggered'">
-                      {{ p.signal_label }}
-                    </span>
-                  </td>
-                  <td
-                    class="num"
-                    :title="
-                      p.entry_rule
-                        ? `次日开盘落在 ${p.entry_rule} 区间才建仓；ATR 区间只用来定止损`
-                        : '建仓区由 ATR(14) 定标尺'
-                    "
-                  >
-                    <template v-if="p.entry_rule">{{ p.entry_rule }}</template>
-                    <template v-else>{{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}</template>
-                  </td>
-                  <td class="num">{{ px(p.live_price ?? p.ref_price) }}</td>
-                  <td
-                    class="c-order"
-                    :title="
-                      orderLive(p)
-                        ? orderTitle(p)
-                        : '未挂单，价格为计划价'
-                    "
-                  >
-                    <span class="p-status" :class="planStateTone(p)">
-                      {{ planStateLabel(p) }}
-                    </span>
-                    <span class="p-order num" :class="{ muted: !orderLive(p) }">
-                      {{ orderPx(p) }}{{ orderQty(p) }}
-                    </span>
-                  </td>
-                  <td class="num down">
-                    {{ p.stop_distance_pct == null ? '—' : fmtPct(p.stop_distance_pct) }}
-                  </td>
-                  <td class="num down">{{ px(p.zones.stop.high) }}</td>
-                  <td class="num">
-                    <span class="up">{{ px(p.zones.target[0]?.high) }}</span>
-                    <template v-if="p.zones.target[1]">
-                      <span class="muted"> / </span>
-                      <span class="up">{{ px(p.zones.target[1].high) }}</span>
-                    </template>
-                  </td>
-                  <td class="num">{{ p.confidence }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-        </div>
-        <div v-else class="empty">暂无计划卡</div>
-      </div>
-      <div v-if="plans.length" class="p-legend">
-        <span class="pl-note">
-          共 {{ plans.length }} 张 · {{ planGroups.length }} 条策略
-        </span>
-      </div>
-    </section>
-
-    <!-- 详情 -->
-    <el-drawer
-      v-model="drawer"
-      size="min(880px, 96vw)"
-      :title="detail ? `${detail.name} · 策略详情` : '策略详情'"
-    >
-      <div v-if="detail" class="dt">
-        <el-tabs v-model="detailTab">
-          <!-- ------------------------------------------------ 回测 -->
-          <el-tab-pane label="回测" name="backtest">
-            <div v-if="detail.backtest?.available" class="dt-body">
-              <div class="dt-strip">
-                <div>
-                  <span class="k">区间收益</span>
-                  <b class="num" :class="toneOf(detail.backtest.metrics.total_return)">
-                    {{ pct(detail.backtest.metrics.total_return) }}
-                  </b>
-                </div>
-                <div>
-                  <span class="k">年化</span>
-                  <b class="num" :class="toneOf(detail.backtest.metrics.annual_return)">
-                    {{ pct(detail.backtest.metrics.annual_return) }}
-                  </b>
-                </div>
-                <div>
-                  <span class="k">最大回撤</span>
-                  <b class="num down">{{ pct(detail.backtest.metrics.max_drawdown) }}</b>
-                </div>
-                <div>
-                  <span class="k">波动率</span>
-                  <b class="num">{{ pct(detail.backtest.metrics.volatility, 2, false) }}</b>
-                </div>
-                <div>
-                  <span class="k">卡玛</span>
-                  <b class="num" :class="toneOf(detail.backtest.metrics.calmar)">
-                    {{ detail.backtest.metrics.calmar }}
-                  </b>
-                </div>
-              </div>
-
-              <div class="block-title">
-                净值曲线（归一 100）
-                <span class="muted">
-                  {{ detail.backtest.period.start }} → {{ detail.backtest.period.end }} ·
-                  {{ detail.backtest.period.days }} 个交易日
+          <div class="panel-body">
+            <template v-if="active">
+              <div class="run-cfg">
+                <span class="rc-k">回测区间</span>
+                <el-select v-model="btDays" size="small" style="width: 76px">
+                  <el-option
+                    v-for="o in DAY_OPTIONS"
+                    :key="o.value"
+                    :value="o.value"
+                    :label="o.label"
+                  />
+                </el-select>
+                <span class="rc-sep" />
+                <span class="rc-k">进化</span>
+                <el-select v-model="evoForm.population" size="small" style="width: 66px">
+                  <el-option :value="12" label="12" />
+                  <el-option :value="24" label="24" />
+                  <el-option :value="36" label="36" />
+                </el-select>
+                <span class="rc-x">×</span>
+                <el-select v-model="evoForm.generations" size="small" style="width: 58px">
+                  <el-option :value="3" label="3" />
+                  <el-option :value="6" label="6" />
+                  <el-option :value="12" label="12" />
+                </el-select>
+                <span class="rc-k">代</span>
+                <span class="rc-note num">
+                  {{ evoForm.population * evoForm.generations }} 次回测 · 搜完只给结论，不自动改参数
                 </span>
               </div>
-              <EquityChart :curve="normalizedCurve.curve" :benchmark="normalizedCurve.bench" :height="248" />
+            </template>
 
-              <div class="block-title">分项指标</div>
-              <div class="mgrid">
-                <div><span>胜率</span><b class="num">{{ detail.backtest.metrics.win_rate }}%</b></div>
-                <div>
-                  <span>盈亏笔数</span>
-                  <b class="num">
-                    {{ detail.backtest.metrics.win_count }} / {{ detail.backtest.metrics.loss_count }}
-                  </b>
-                </div>
-                <div>
-                  <span>盈亏比</span>
-                  <b class="num">{{ detail.backtest.metrics.profit_factor }}</b>
-                </div>
-                <div>
-                  <span>平均持仓</span>
-                  <b class="num">{{ detail.backtest.metrics.avg_hold_days }} 日</b>
-                </div>
-                <div>
-                  <span>年换手</span>
-                  <b class="num">{{ detail.backtest.metrics.turnover }} 倍</b>
-                  <!-- 仓位和换手放一格：它们是一对，单看换手高会以为是调仓勤，
-                       实际可能是「钱没买满 + 反复补仓」 -->
-                  <i class="dt-sub num">
-                    平均仓位 {{ Math.round((detail.backtest.metrics.avg_exposure ?? 0) * 100) }}%
-                  </i>
-                </div>
-                <div>
-                  <span>夏普 / 索提诺</span>
-                  <b class="num">
-                    {{ detail.backtest.metrics.sharpe }} / {{ detail.backtest.metrics.sortino }}
-                  </b>
-                </div>
-                <div>
-                  <span>基准收益</span>
-                  <b class="num">{{ pct(detail.backtest.metrics.benchmark_return) }}</b>
-                </div>
-                <div>
-                  <span>超额收益</span>
-                  <b class="num" :class="toneOf(detail.backtest.metrics.excess_return)">
-                    {{ pct(detail.backtest.metrics.excess_return) }}
-                  </b>
-                </div>
-              </div>
-
-              <div class="block-title">生效权重</div>
-              <div class="wg">
-                <div v-for="(w, k) in detail.backtest.weights" :key="k" class="wg-row">
-                  <span class="wg-label">{{ FACTOR_LABEL[k] ?? k }}</span>
-                  <span class="wg-bar"><i :style="{ width: `${Math.max(w * 100, 2)}%` }" /></span>
-                  <span class="num">{{ (w * 100).toFixed(1) }}%</span>
-                </div>
-                <div v-if="!Object.keys(detail.backtest.weights).length" class="muted">
-                  这条策略没有可回测的权重（全部依赖估值字段）
-                </div>
-              </div>
-
-              <template v-if="detail.backtest.dropped.length">
-                <div class="block-title">回测中摘掉的权重</div>
-                <div class="drops">
-                  <div v-for="d in detail.backtest.dropped" :key="d.key" class="drop">
-                    <b>{{ d.label }}</b>
-                    <span class="num">{{ (d.weight * 100).toFixed(0) }}%</span>
-                    <span class="drop-why">{{ d.reason }}</span>
+            <el-tabs v-model="rightTab" class="lab-tabs">
+              <el-tab-pane v-if="active" label="收益概览" name="overview">
+                <div class="dt-strip mh-strip">
+                  <div>
+                    <span class="k">区间收益</span>
+                    <b class="num" :class="toneOf(active.backtest?.metrics.total_return)">
+                      {{ active.backtest ? pct(active.backtest.metrics.total_return) : '—' }}
+                    </b>
+                  </div>
+                  <div>
+                    <span class="k">年化</span>
+                    <b class="num" :class="toneOf(active.backtest?.metrics.annual_return)">
+                      {{ active.backtest ? pct(active.backtest.metrics.annual_return) : '—' }}
+                    </b>
+                  </div>
+                  <div>
+                    <span class="k">最大回撤</span>
+                    <b class="num down">
+                      {{ active.backtest ? pct(active.backtest.metrics.max_drawdown) : '—' }}
+                    </b>
+                  </div>
+                  <div>
+                    <span class="k">卡玛</span>
+                    <b class="num" :class="toneOf(active.backtest?.metrics.calmar)">
+                      {{ active.backtest ? active.backtest.metrics.calmar : '—' }}
+                    </b>
+                  </div>
+                  <div>
+                    <span class="k">回测胜率</span>
+                    <b class="num">
+                      {{ active.backtest ? `${active.backtest.metrics.win_rate}%` : '—' }}
+                    </b>
+                  </div>
+                  <div>
+                    <span class="k">模拟盘净值</span>
+                    <b class="num">{{ active.paper ? fmtMoney(active.paper.summary.nav) : '未启动' }}</b>
+                  </div>
+                  <div>
+                    <span class="k">累计盈亏</span>
+                    <b class="num" :class="toneOf(active.paper?.summary.pnl)">
+                      {{ active.paper ? wan(active.paper.summary.pnl) : '—' }}
+                    </b>
                   </div>
                 </div>
-              </template>
-
-              <div class="block-title">
-                期末持仓
-                <span class="muted">{{ detail.backtest.positions.length }} 只</span>
-              </div>
-              <table class="dtable">
-                <thead>
-                  <tr>
-                    <th>标的</th>
-                    <th class="ta-r">股数</th>
-                    <th class="ta-r">成本</th>
-                    <th class="ta-r">现价</th>
-                    <th class="ta-r">浮动盈亏</th>
-                    <th class="ta-r">止损 / TP1</th>
-                    <th class="ta-r">持有</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="h in detail.backtest.positions" :key="h.code">
-                    <td>
-                      {{ h.name }}<span class="num muted"> {{ h.code }}</span>
-                    </td>
-                    <td class="ta-r num">{{ h.shares }}</td>
-                    <td class="ta-r num">{{ h.cost }}</td>
-                    <td class="ta-r num">{{ h.price }}</td>
-                    <td class="ta-r num" :class="toneOf(h.pnl)">
-                      {{ fmtMoney(h.pnl) }} / {{ fmtPct(h.pnl_pct) }}
-                    </td>
-                    <td class="ta-r num muted">{{ h.stop }} / {{ h.tp1 }}</td>
-                    <td class="ta-r num">{{ h.hold_days }} 日</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div class="block-title">
-                成交流水
-                <span class="muted">最近 {{ detail.backtest.trades.length }} 笔</span>
-              </div>
-              <table class="dtable">
-                <thead>
-                  <tr>
-                    <th class="ta-r">日期</th>
-                    <th>标的</th>
-                    <th>方向</th>
-                    <th class="ta-r">价格</th>
-                    <th class="ta-r">股数</th>
-                    <th class="ta-r">盈亏</th>
-                    <th>原因</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="t in [...detail.backtest.trades].reverse()" :key="t.id">
-                    <td class="ta-r num">{{ t.date.slice(5) }}</td>
-                    <td>{{ t.name }}<span class="num muted"> {{ t.code }}</span></td>
-                    <td>
-                      <span class="pill" :class="t.side === 'BUY' ? 'triggered' : 'holding'">
-                        {{ t.side === 'BUY' ? '买入' : '卖出' }}
-                      </span>
-                    </td>
-                    <td class="ta-r num">{{ t.price }}</td>
-                    <td class="ta-r num">{{ t.shares }}</td>
-                    <td class="ta-r num" :class="t.pnl == null ? '' : toneOf(t.pnl)">
-                      {{ t.pnl == null ? '—' : fmtMoney(t.pnl) }}
-                    </td>
-                    <td class="muted">{{ t.reason }}</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div class="block-title">口径说明</div>
-              <ul class="notes">
-                <li v-for="(n, i) in detail.backtest.notes" :key="i">{{ n }}</li>
-              </ul>
-            </div>
-            <div v-else class="empty">
-              这条策略还没有回测记录。
-              <el-button size="small" type="primary" plain @click="runBacktest(detail.id)">
-                跑一遍 250 日回测
-              </el-button>
-            </div>
-          </el-tab-pane>
-
-          <!-- ------------------------------------------------ 模拟盘 -->
-          <el-tab-pane label="模拟盘" name="paper">
-            <div v-if="detail.paper" class="dt-body">
-              <div class="dt-strip">
-                <div>
-                  <span class="k">净值</span>
-                  <b class="num">{{ fmtMoney(detail.paper.summary.nav) }}</b>
-                </div>
-                <div>
-                  <span class="k">累计盈亏</span>
-                  <b class="num" :class="toneOf(detail.paper.summary.pnl)">
-                    {{ fmtMoney(detail.paper.summary.pnl) }} · {{ fmtPct(detail.paper.summary.pnl_pct) }}
-                  </b>
-                </div>
-                <div>
-                  <span class="k">仓位</span>
-                  <b class="num">{{ detail.paper.summary.position_ratio }}%</b>
-                </div>
-                <div>
-                  <span class="k">已了结胜率</span>
-                  <b class="num">{{ detail.paper.statistics.win_rate }}%</b>
-                </div>
-                <div>
-                  <span class="k">进度</span>
-                  <b class="num">{{ detail.paper.last_run ?? '未启动' }}</b>
-                </div>
-              </div>
-
-              <div class="block-title">
-                持仓
-                <span class="muted">{{ detail.paper.positions.length }} 只 · 第
-                  {{ detail.paper.generation }} 代参数</span>
-              </div>
-              <table v-if="detail.paper.positions.length" class="dtable">
-                <thead>
-                  <tr>
-                    <th>标的</th>
-                    <th class="ta-r">股数</th>
-                    <th class="ta-r">成本</th>
-                    <th class="ta-r">现价</th>
-                    <th class="ta-r">浮动盈亏</th>
-                    <th class="ta-r">止损</th>
-                    <th class="ta-r">TP1 / TP2</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="h in detail.paper.positions" :key="h.code">
-                    <td>{{ h.name }}<span class="num muted"> {{ h.code }}</span></td>
-                    <td class="ta-r num">{{ h.shares }}</td>
-                    <td class="ta-r num">{{ h.cost }}</td>
-                    <td class="ta-r num">{{ h.price }}</td>
-                    <td class="ta-r num" :class="toneOf(h.pnl)">
-                      {{ fmtMoney(h.pnl) }} / {{ fmtPct(h.pnl_pct) }}
-                    </td>
-                    <td class="ta-r num down">{{ h.stop }}</td>
-                    <td class="ta-r num">
-                      <span class="up">{{ h.tp1 }}</span> / {{ h.tp2 }}
-                      <i v-if="h.tp1_done" class="chip warn">TP1 已减</i>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              <div v-else class="empty sm">暂无持仓</div>
-
-              <section v-if="detail.paper.orders.length">
-                <div class="block-title">
-                  待明日开盘成交
-                </div>
-                <div class="orders">
-                  <span v-for="o in detail.paper.orders" :key="o.code" class="chip brand">
-                    {{ o.name }} {{ o.code }}
-                  </span>
-                </div>
-              </section>
-
-              <section>
-                <div class="block-title">今日计划卡</div>
-                <div class="mini-plans">
-                  <div v-for="p in detail.paper.plans" :key="p.plan_id" class="mini-plan">
-                    <div class="mp-head">
-                      <b>{{ p.name }}</b>
-                      <span class="num muted">{{ p.code }}</span>
-                      <span class="p-status" :class="planStateTone(p)">
-                        {{ planStateLabel(p) }}
-                      </span>
-                    </div>
-                    <div class="mp-zones num">
-                      建仓 {{ px(p.zones.entry.low) }}–{{ px(p.zones.entry.high) }} · 现价
-                      <b>{{ px(p.live_price ?? p.ref_price) }}</b> · 止损
-                      <span class="down">{{ px(p.zones.stop.high) }}</span>
-                      <template v-if="p.stop_distance_pct != null">
-                        · 距止损 <span class="down">{{ fmtPct(p.stop_distance_pct) }}</span>
-                      </template>
-                    </div>
-                  </div>
-                  <div v-if="!detail.paper.plans.length" class="empty sm">暂无计划卡</div>
-                </div>
-              </section>
-
-              <section v-if="detail.paper.trades.length">
-                <div class="block-title">成交记录</div>
-                <table class="dtable">
-                  <thead>
-                    <tr>
-                      <th class="ta-r">日期</th>
-                      <th>标的</th>
-                      <th>方向</th>
-                      <th class="ta-r">价格</th>
-                      <th class="ta-r">股数</th>
-                      <th class="ta-r">盈亏</th>
-                      <th>原因</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="t in [...detail.paper.trades].reverse()" :key="t.id">
-                      <td class="ta-r num">{{ t.date.slice(5) }}</td>
-                      <td>{{ t.name }}<span class="num muted"> {{ t.code }}</span></td>
-                      <td>
-                        <span class="pill" :class="t.side === 'BUY' ? 'triggered' : 'holding'">
-                          {{ t.side === 'BUY' ? '买入' : '卖出' }}
-                        </span>
-                      </td>
-                      <td class="ta-r num">{{ t.price }}</td>
-                      <td class="ta-r num">{{ t.shares }}</td>
-                      <td class="ta-r num" :class="t.pnl == null ? '' : toneOf(t.pnl)">
-                        {{ t.pnl == null ? '—' : fmtMoney(t.pnl) }}
-                      </td>
-                      <td class="muted">{{ t.reason }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
-
-              <div class="dt-foot">
-                <el-button size="small" @click="resetPaper(detail.id)">清空这条策略的模拟盘</el-button>
-              </div>
-            </div>
-            <div v-else class="empty">
-              还没有模拟盘账户。
-              <el-button size="small" type="primary" plain @click="tick()">推进一格建账户</el-button>
-            </div>
-          </el-tab-pane>
-
-          <!-- ------------------------------------------------ 进化 -->
-          <el-tab-pane label="自进化" name="evolution">
-            <div v-if="detail.evolution" class="dt-body">
-              <div class="dt-strip">
-                <div>
-                  <span class="k">进化后得分</span>
-                  <b class="num up">{{ detail.evolution.best.score }}</b>
-                </div>
-                <div>
-                  <span class="k">起点得分</span>
-                  <b class="num">{{ detail.evolution.baseline.score }}</b>
-                </div>
-                <div>
-                  <span class="k">提升</span>
-                  <b class="num up">
-                    {{ (detail.evolution.best.score - detail.evolution.baseline.score).toFixed(3) }}
-                  </b>
-                </div>
-                <div>
-                  <span class="k">耗时</span>
-                  <b class="num">{{ detail.evolution.elapsed }}s</b>
-                </div>
-                <div>
-                  <span class="k">已采纳代次</span>
-                  <b class="num">第 {{ detail.paper?.generation ?? 0 }} 代</b>
-                </div>
-              </div>
-
-              <div class="block-title">
-                逐代最优 / 均值
-                <span class="muted">
-                  得分 = min(卡玛, 4) + 0.6×（胜率−50%）+ 0.2×（仓位−50%）− 0.02×换手
-                </span>
-              </div>
-              <table class="dtable center">
-                <thead>
-                  <tr>
-                    <th>代</th>
-                    <th>累计最优</th>
-                    <th>本代最优</th>
-                    <th>种群均值</th>
-                    <th>区间收益</th>
-                    <th>回撤</th>
-                    <th>胜率</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="h in detail.evolution.history" :key="h.generation">
-                    <td class="num">{{ h.generation }}</td>
-                    <td class="num up">{{ h.sofar_score ?? h.best_score }}</td>
-                    <td class="num">{{ h.best_score }}</td>
-                    <td class="num">{{ h.mean_score }}</td>
-                    <td class="num" :class="toneOf(h.best?.total_return)">
-                      {{ pct(h.best?.total_return) }}
-                    </td>
-                    <td class="num down">{{ pct(h.best?.max_drawdown) }}</td>
-                    <td class="num">
-                      {{ h.best?.win_rate != null ? `${h.best.win_rate}%` : '—' }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <template v-if="detail.evolution.holdout">
-                <div class="block-title">
-                  样本外验证
-                  <span class="muted">
-                    {{ detail.evolution.holdout.start }} → {{ detail.evolution.holdout.end }} ·
-                    {{ detail.evolution.holdout.days }} 个交易日，没参与搜索
-                  </span>
-                </div>
-                <table class="dtable center">
-                  <thead>
-                    <tr>
-                      <th>口径</th>
-                      <th>原始策略</th>
-                      <th>进化后</th>
-                      <th>差距</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>得分</td>
-                      <td class="num">{{ detail.evolution.holdout.baseline.score.toFixed(4) }}</td>
-                      <td class="num up">{{ detail.evolution.holdout.best.score.toFixed(4) }}</td>
-                      <td class="num" :class="toneOf(detail.evolution.holdout.edge)">
-                        {{ detail.evolution.holdout.edge >= 0 ? '+' : ''
-                        }}{{ detail.evolution.holdout.edge.toFixed(4) }}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>区间收益</td>
-                      <td class="num">{{ pct(detail.evolution.holdout.baseline.total_return) }}</td>
-                      <td class="num">{{ pct(detail.evolution.holdout.best.total_return) }}</td>
-                      <td class="muted">—</td>
-                    </tr>
-                    <tr>
-                      <td>最大回撤</td>
-                      <td class="num down">
-                        {{ pct(detail.evolution.holdout.baseline.max_drawdown) }}
-                      </td>
-                      <td class="num down">
-                        {{ pct(detail.evolution.holdout.best.max_drawdown) }}
-                      </td>
-                      <td class="muted">—</td>
-                    </tr>
-                    <tr>
-                      <td>胜率</td>
-                      <td class="num">
-                        {{ detail.evolution.holdout.baseline.win_rate ?? '—' }}%
-                      </td>
-                      <td class="num">{{ detail.evolution.holdout.best.win_rate ?? '—' }}%</td>
-                      <td class="muted">—</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p class="dt-hint">
+                <div v-if="activeRegime" class="regime-line">
                   <span
                     class="chip"
-                    :class="holdoutTone(detail.evolution.holdout.level)"
-                  >{{ holdoutLabel(detail.evolution.holdout.level) }}</span>
+                    :class="activeRegime.open_new ? 'brand' : ((activeRegime.scale ?? 0) > 0 ? 'warn' : 'flat')"
+                  >
+                    {{ activeRegime.label }}
+                  </span>
+                  <span class="num">{{ activeRegime.detail }}</span>
+                </div>
+                <p class="ov-note">
+                  区间收益、年化、回撤、卡玛、胜率来自回测；模拟盘净值与累计盈亏来自纸面账户，两者互不影响。
                 </p>
-              </template>
+              </el-tab-pane>
 
-              <template v-if="detail.evolution.adoption">
-                <div class="block-title">
-                  该不该采纳
-                </div>
-                <div class="adopt-box" :class="detail.evolution.adoption.action">
-                  <span class="chip" :class="detail.evolution.adoption.action === 'adopt' ? 'brand' : 'flat'">
-                    {{ detail.evolution.adoption.action === 'adopt' ? '建议采纳' : '暂不采纳' }}
+              <el-tab-pane v-if="!active" label="策略一览" name="board">
+                <div v-if="regime" class="regime-line">
+                  <span
+                    class="chip"
+                    :class="regime.open_new ? 'brand' : ((regime.scale ?? 0) > 0 ? 'warn' : 'flat')"
+                  >
+                    {{ regime.label }}
                   </span>
-                  <span class="adopt-reason">{{ detail.evolution.adoption.reason }}</span>
+                  <span class="num">{{ regime.detail }}</span>
+                  <span class="muted">{{ regimeHint }}</span>
                 </div>
-                <ul class="adopt-checks">
-                  <li v-for="c in detail.evolution.adoption.checks" :key="c.key">
-                    <span class="tick" :class="c.pass ? 'ok' : 'no'">{{ c.pass ? '✓' : '✗' }}</span>
-                    <span>{{ c.label }}</span>
-                    <span class="muted num">实际 {{ c.value }}</span>
-                  </li>
-                </ul>
-              </template>
+                <table class="vtable">
+                  <thead>
+                    <tr>
+                      <th>策略</th>
+                      <th class="ta-r">区间收益</th>
+                      <th class="ta-r">年化</th>
+                      <th class="ta-r">最大回撤</th>
+                      <th class="ta-r">卡玛</th>
+                      <th class="ta-r">胜率</th>
+                      <th class="ta-r">模拟盘</th>
+                      <th class="ta-r">持仓</th>
+                      <th>曲线</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="s in ordered"
+                      :key="s.id"
+                      class="vrow"
+                      @click="activeId = s.id"
+                    >
+                      <td>
+                        <div class="v-name">
+                          {{ s.name }}
+                          <span v-if="s.generation" class="chip brand">{{ s.generation }} 代</span>
+                        </div>
+                        <div class="p-code">{{ s.desc || '用户自定义策略' }}</div>
+                      </td>
+                      <td class="ta-r num" :class="toneOf(s.backtest?.metrics.total_return)">
+                        {{ s.backtest ? pct(s.backtest.metrics.total_return) : '—' }}
+                      </td>
+                      <td class="ta-r num" :class="toneOf(s.backtest?.metrics.annual_return)">
+                        {{ s.backtest ? pct(s.backtest.metrics.annual_return) : '—' }}
+                      </td>
+                      <td class="ta-r num down">
+                        {{ s.backtest ? pct(s.backtest.metrics.max_drawdown) : '—' }}
+                      </td>
+                      <td class="ta-r num" :class="toneOf(s.backtest?.metrics.calmar)">
+                        {{ s.backtest ? s.backtest.metrics.calmar : '—' }}
+                      </td>
+                      <td class="ta-r num">
+                        {{ s.backtest ? `${s.backtest.metrics.win_rate}%` : '—' }}
+                      </td>
+                      <td class="ta-r num" :class="toneOf(s.paper?.summary.pnl)">
+                        {{ s.paper ? fmtMoney(s.paper.summary.nav) : '—' }}
+                      </td>
+                      <td class="ta-r num">
+                        {{ s.paper ? s.paper.summary.holdings_count : '—' }}
+                      </td>
+                      <td class="vcurve">
+                        <Sparkline
+                          v-if="s.backtest?.available"
+                          :values="navValues(s)"
+                          :tone="toneOf(s.backtest.metrics.total_return)"
+                          :height="26"
+                        />
+                        <span v-else class="muted">—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
 
-              <div class="block-title">参数对比</div>
-              <table class="dtable center">
-                <thead>
-                  <tr>
-                    <th>参数</th>
-                    <th>起点</th>
-                    <th>进化后</th>
-                    <th>变化</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="g in genomeRows" :key="g.key">
-                    <td>{{ g.label }}</td>
-                    <td class="num">
-                      {{ g.kind === 'weight' ? `${(g.before * 100).toFixed(1)}%` : g.before }}
-                    </td>
-                    <td class="num">
-                      {{ g.kind === 'weight' ? `${(g.after * 100).toFixed(1)}%` : g.after }}
-                    </td>
-                    <td class="num" :class="toneOf(g.after - g.before)">
-                      {{ g.after - g.before >= 0 ? '+' : ''
-                      }}{{
-                        g.kind === 'weight'
-                          ? `${((g.after - g.before) * 100).toFixed(1)}%`
-                          : (g.after - g.before).toFixed(2)
-                      }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              </el-tab-pane>
 
-              <ul class="notes">
-                <li v-for="(n, i) in detail.evolution.notes" :key="i">{{ n }}</li>
-              </ul>
-
-              <template v-if="evoSpec">
-                <div class="block-title">
-                  进化产物 · 最终策略
-                  <span class="muted">
-                    这份就是搜索出来的完整定义；采纳后原样写进账户，下一次选股开始生效
+              <el-tab-pane label="计划卡" name="plans">
+                <div class="plans-bar">
+                  <span>
+                    今日计划卡 · {{ active ? active.name : '全策略' }}
+                  </span>
+                  <el-radio-group v-model="planFilter" size="small">
+                    <el-radio-button value="ALL">全部</el-radio-button>
+                    <el-radio-button value="ENTRY">建仓单</el-radio-button>
+                    <el-radio-button value="ADD">加仓单</el-radio-button>
+                  </el-radio-group>
+                </div>
+                <div v-if="planGroups.length" class="plans-scroll">
+                  <section v-for="g in planGroups" :key="g.strategy_id" class="pgroup">
+                    <header class="pg-row">
+                      <span class="pg-name">{{ g.strategy_name }}</span>
+                      <span class="chip">{{ g.items.length }} 张</span>
+                      <span v-if="g.generation" class="chip brand">第 {{ g.generation }} 代参数</span>
+                      <span v-if="g.last_run" class="muted num pg-run">
+                        基于 {{ g.last_run }} 收盘生成
+                      </span>
+                    </header>
+                    <table class="ptable">
+                      <thead>
+                        <tr>
+                          <th>标的</th>
+                          <th>类型</th>
+                          <th>买点</th>
+                          <th>现价</th>
+                          <th>委托状态</th>
+                          <th>距止损</th>
+                          <th>止损</th>
+                          <th>TP1 / TP2</th>
+                          <th>置信</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="p in g.items" :key="p.plan_id" class="prow">
+                          <td>
+                            <div class="p-name">
+                              {{ p.name }}
+                              <span v-if="(planOverlap[p.code] ?? 0) > 1" class="chip brand x2">
+                                {{ planOverlap[p.code] }} 策略共选
+                              </span>
+                            </div>
+                            <div class="p-code num">{{ p.code }} · {{ p.industry }}</div>
+                          </td>
+                          <td>
+                            <span
+                              class="pill"
+                              :class="p.signal_type === 'ADD' ? 'holding' : 'triggered'"
+                            >
+                              {{ p.signal_label }}
+                            </span>
+                          </td>
+                          <td
+                            class="num"
+                            :title="
+                              p.entry_rule
+                                ? `次日开盘落在 ${p.entry_rule} 区间才建仓；ATR 区间只用来定止损`
+                                : '建仓区由 ATR(14) 定标尺'
+                            "
+                          >
+                            <template v-if="p.entry_rule">{{ p.entry_rule }}</template>
+                            <template v-else>
+                              {{ px(p.zones.entry.low) }} – {{ px(p.zones.entry.high) }}
+                            </template>
+                          </td>
+                          <td class="num">{{ px(p.live_price ?? p.ref_price) }}</td>
+                          <td
+                            class="c-order"
+                            :title="orderLive(p) ? orderTitle(p) : '未挂单，价格为计划价'"
+                          >
+                            <span class="p-status" :class="planStateTone(p)">
+                              {{ planStateLabel(p) }}
+                            </span>
+                            <span class="p-order num" :class="{ muted: !orderLive(p) }">
+                              {{ orderPx(p) }}{{ orderQty(p) }}
+                            </span>
+                            <span v-if="p.llm?.reason" class="p-llm" :title="p.llm.reason">
+                              模型：{{ p.llm.reason }}
+                            </span>
+                          </td>
+                          <td class="num down">
+                            {{ p.stop_distance_pct == null ? '—' : fmtPct(p.stop_distance_pct) }}
+                          </td>
+                          <td class="num down">{{ px(p.zones.stop.high) }}</td>
+                          <td class="num">
+                            <span class="up">{{ px(p.zones.target[0]?.high) }}</span>
+                            <template v-if="p.zones.target[1]">
+                              <span class="muted"> / </span>
+                              <span class="up">{{ px(p.zones.target[1].high) }}</span>
+                            </template>
+                          </td>
+                          <td class="num">{{ p.confidence }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </section>
+                </div>
+                <div v-else class="empty">暂无计划卡</div>
+                <div v-if="plans.length" class="p-legend">
+                  <span class="pl-note">
+                    共 {{ plans.length }} 张 · {{ planGroups.length }} 条策略
                   </span>
                 </div>
 
-                <div class="spec-card">
-                  <div class="spec-head">
-                    <b>{{ specName }}</b>
-                    <span class="muted">{{ specDesc }}</span>
-                  </div>
+              </el-tab-pane>
 
-                  <div class="spec-grid">
-                    <div v-for="r in specRows" :key="r.key" class="spec-cell">
-                      <span class="k">{{ r.label }}</span>
-                      <span class="v num">{{ r.value }}</span>
+              <el-tab-pane v-if="active" label="测试收益" name="backtest">
+                <template v-if="detail && detail.id === active?.id">
+                  <div v-if="detail.backtest?.available" class="dt-body">
+
+                    <div class="block-title">
+                      净值曲线（归一 100）
+                      <span class="muted">
+                        {{ detail.backtest.period.start }} → {{ detail.backtest.period.end }} ·
+                        {{ detail.backtest.period.days }} 个交易日
+                      </span>
                     </div>
-                  </div>
+                    <EquityChart :curve="normalizedCurve.curve" :benchmark="normalizedCurve.bench" :height="248" />
 
-                  <div class="spec-cols">
-                    <div>
-                      <div class="spec-sub">因子权重</div>
-                      <div v-for="w in specWeights" :key="w.key" class="w-row">
-                        <span class="w-name">{{ w.label }}</span>
-                        <span class="w-bar"><i :style="{ width: `${w.width}%` }" /></span>
-                        <span class="w-val num">{{ w.value }}</span>
+                    <div class="block-title">分项指标</div>
+                    <div class="mgrid">
+                      <div><span>胜率</span><b class="num">{{ detail.backtest.metrics.win_rate }}%</b></div>
+                      <div>
+                        <span>盈亏笔数</span>
+                        <b class="num">
+                          {{ detail.backtest.metrics.win_count }} / {{ detail.backtest.metrics.loss_count }}
+                        </b>
+                      </div>
+                      <div>
+                        <span>盈亏比</span>
+                        <b class="num">{{ detail.backtest.metrics.profit_factor }}</b>
+                      </div>
+                      <div>
+                        <span>平均持仓</span>
+                        <b class="num">{{ detail.backtest.metrics.avg_hold_days }} 日</b>
+                      </div>
+                      <div>
+                        <span>年换手</span>
+                        <b class="num">{{ detail.backtest.metrics.turnover }} 倍</b>
+                        <!-- 仓位和换手放一格：它们是一对，单看换手高会以为是调仓勤，
+                             实际可能是「钱没买满 + 反复补仓」 -->
+                        <i class="dt-sub num">
+                          平均仓位 {{ Math.round((detail.backtest.metrics.avg_exposure ?? 0) * 100) }}%
+                        </i>
+                      </div>
+                      <div>
+                        <span>夏普 / 索提诺</span>
+                        <b class="num">
+                          {{ detail.backtest.metrics.sharpe }} / {{ detail.backtest.metrics.sortino }}
+                        </b>
+                        <i class="dt-sub num">
+                          波动率 {{ pct(detail.backtest.metrics.volatility, 2, false) }}
+                        </i>
+                      </div>
+                      <div>
+                        <span>基准收益</span>
+                        <b class="num">{{ pct(detail.backtest.metrics.benchmark_return) }}</b>
+                      </div>
+                      <div>
+                        <span>超额收益</span>
+                        <b class="num" :class="toneOf(detail.backtest.metrics.excess_return)">
+                          {{ pct(detail.backtest.metrics.excess_return) }}
+                        </b>
                       </div>
                     </div>
-                    <div>
-                      <div class="spec-sub">选股条件</div>
-                      <div v-for="f in specFilters" :key="f.key" class="f-row">
-                        <span class="f-name">{{ f.label }}</span>
-                        <span class="num">{{ f.op }} {{ f.value }}</span>
+
+                    <div class="block-title">生效权重</div>
+                    <div class="wg">
+                      <div v-for="(w, k) in detail.backtest.weights" :key="k" class="wg-row">
+                        <span class="wg-label">{{ FACTOR_LABEL[k] ?? k }}</span>
+                        <span class="wg-bar"><i :style="{ width: `${Math.max(w * 100, 2)}%` }" /></span>
+                        <span class="num">{{ (w * 100).toFixed(1) }}%</span>
                       </div>
-                      <p v-if="!specFilters.length" class="muted">不设过滤条件</p>
+                      <div v-if="!Object.keys(detail.backtest.weights).length" class="muted">
+                        这条策略没有可回测的权重（全部依赖估值字段）
+                      </div>
+                    </div>
+
+                    <template v-if="detail.backtest.dropped.length">
+                      <div class="block-title">回测中摘掉的权重</div>
+                      <div class="drops">
+                        <div v-for="d in detail.backtest.dropped" :key="d.key" class="drop">
+                          <b>{{ d.label }}</b>
+                          <span class="num">{{ (d.weight * 100).toFixed(0) }}%</span>
+                          <span class="drop-why">{{ d.reason }}</span>
+                        </div>
+                      </div>
+                    </template>
+
+                    <div class="block-title">
+                      期末持仓
+                      <span class="muted">{{ detail.backtest.positions.length }} 只</span>
+                    </div>
+                    <table class="dtable">
+                      <thead>
+                        <tr>
+                          <th>标的</th>
+                          <th class="ta-r">股数</th>
+                          <th class="ta-r">成本</th>
+                          <th class="ta-r">现价</th>
+                          <th class="ta-r">浮动盈亏</th>
+                          <th class="ta-r">止损 / TP1</th>
+                          <th class="ta-r">持有</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="h in detail.backtest.positions" :key="h.code">
+                          <td>
+                            {{ h.name }}<span class="num muted"> {{ h.code }}</span>
+                          </td>
+                          <td class="ta-r num">{{ h.shares }}</td>
+                          <td class="ta-r num">{{ h.cost }}</td>
+                          <td class="ta-r num">{{ h.price }}</td>
+                          <td class="ta-r num" :class="toneOf(h.pnl)">
+                            {{ fmtMoney(h.pnl) }} / {{ fmtPct(h.pnl_pct) }}
+                          </td>
+                          <td class="ta-r num muted">{{ h.stop }} / {{ h.tp1 }}</td>
+                          <td class="ta-r num">{{ h.hold_days }} 日</td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <div class="block-title">
+                      成交流水
+                      <span class="muted">最近 {{ detail.backtest.trades.length }} 笔</span>
+                    </div>
+                    <table class="dtable">
+                      <thead>
+                        <tr>
+                          <th class="ta-r">日期</th>
+                          <th>标的</th>
+                          <th>方向</th>
+                          <th class="ta-r">价格</th>
+                          <th class="ta-r">股数</th>
+                          <th class="ta-r">盈亏</th>
+                          <th>原因</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="t in [...detail.backtest.trades].reverse()" :key="t.id">
+                          <td class="ta-r num">{{ t.date.slice(5) }}</td>
+                          <td>{{ t.name }}<span class="num muted"> {{ t.code }}</span></td>
+                          <td>
+                            <span class="pill" :class="t.side === 'BUY' ? 'triggered' : 'holding'">
+                              {{ t.side === 'BUY' ? '买入' : '卖出' }}
+                            </span>
+                          </td>
+                          <td class="ta-r num">{{ t.price }}</td>
+                          <td class="ta-r num">{{ t.shares }}</td>
+                          <td class="ta-r num" :class="t.pnl == null ? '' : toneOf(t.pnl)">
+                            {{ t.pnl == null ? '—' : fmtMoney(t.pnl) }}
+                          </td>
+                          <td class="muted">{{ t.reason }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <div class="block-title">口径说明</div>
+                    <ul class="notes">
+                      <li v-for="(n, i) in detail.backtest.notes" :key="i">{{ n }}</li>
+                    </ul>
+                  </div>
+                  <div v-else class="empty">
+                    这条策略还没有回测记录。
+                    <el-button size="small" type="primary" plain @click="runBacktest(detail.id)">
+                      按当前区间跑一遍
+                    </el-button>
+                  </div>
+
+                </template>
+                <div v-else class="empty">正在加载这条策略的历史数据…</div>
+              </el-tab-pane>
+
+              <el-tab-pane v-if="active" label="模拟盘" name="paper">
+                <template v-if="detail && detail.id === active?.id">
+                  <div v-if="detail.paper" class="dt-body">
+                    <div class="dt-strip">
+                      <div>
+                        <span class="k">净值</span>
+                        <b class="num">{{ fmtMoney(detail.paper.summary.nav) }}</b>
+                      </div>
+                      <div>
+                        <span class="k">累计盈亏</span>
+                        <b class="num" :class="toneOf(detail.paper.summary.pnl)">
+                          {{ fmtMoney(detail.paper.summary.pnl) }} · {{ fmtPct(detail.paper.summary.pnl_pct) }}
+                        </b>
+                      </div>
+                      <div>
+                        <span class="k">仓位</span>
+                        <b class="num">{{ detail.paper.summary.position_ratio }}%</b>
+                      </div>
+                      <div>
+                        <span class="k">已了结胜率</span>
+                        <b class="num">{{ detail.paper.statistics.win_rate }}%</b>
+                      </div>
+                      <div>
+                        <span class="k">进度</span>
+                        <b class="num">{{ detail.paper.last_run ?? '未启动' }}</b>
+                      </div>
+                    </div>
+
+                    <div class="block-title">
+                      持仓
+                      <span class="muted">{{ detail.paper.positions.length }} 只 · 第
+                        {{ detail.paper.generation }} 代参数</span>
+                    </div>
+                    <table v-if="detail.paper.positions.length" class="dtable">
+                      <thead>
+                        <tr>
+                          <th>标的</th>
+                          <th class="ta-r">股数</th>
+                          <th class="ta-r">成本</th>
+                          <th class="ta-r">现价</th>
+                          <th class="ta-r">浮动盈亏</th>
+                          <th class="ta-r">止损</th>
+                          <th class="ta-r">TP1 / TP2</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="h in detail.paper.positions" :key="h.code">
+                          <td>{{ h.name }}<span class="num muted"> {{ h.code }}</span></td>
+                          <td class="ta-r num">{{ h.shares }}</td>
+                          <td class="ta-r num">{{ h.cost }}</td>
+                          <td class="ta-r num">{{ h.price }}</td>
+                          <td class="ta-r num" :class="toneOf(h.pnl)">
+                            {{ fmtMoney(h.pnl) }} / {{ fmtPct(h.pnl_pct) }}
+                          </td>
+                          <td class="ta-r num down">{{ h.stop }}</td>
+                          <td class="ta-r num">
+                            <span class="up">{{ h.tp1 }}</span> / {{ h.tp2 }}
+                            <i v-if="h.tp1_done" class="chip warn">TP1 已减</i>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div v-else class="empty sm">暂无持仓</div>
+
+                    <section v-if="detail.paper.orders.length">
+                      <div class="block-title">
+                        待明日开盘成交
+                      </div>
+                      <div class="orders">
+                        <span v-for="o in detail.paper.orders" :key="o.code" class="chip brand">
+                          {{ o.name }} {{ o.code }}
+                        </span>
+                      </div>
+                    </section>
+
+                    <section>
+                      <div class="block-title">今日计划卡</div>
+                      <div class="mini-plans">
+                        <div v-for="p in detail.paper.plans" :key="p.plan_id" class="mini-plan">
+                          <div class="mp-head">
+                            <b>{{ p.name }}</b>
+                            <span class="num muted">{{ p.code }}</span>
+                            <span class="p-status" :class="planStateTone(p)">
+                              {{ planStateLabel(p) }}
+                            </span>
+                          </div>
+                          <div class="mp-zones num">
+                            建仓 {{ px(p.zones.entry.low) }}–{{ px(p.zones.entry.high) }} · 现价
+                            <b>{{ px(p.live_price ?? p.ref_price) }}</b> · 止损
+                            <span class="down">{{ px(p.zones.stop.high) }}</span>
+                            <template v-if="p.stop_distance_pct != null">
+                              · 距止损 <span class="down">{{ fmtPct(p.stop_distance_pct) }}</span>
+                            </template>
+                          </div>
+                          <div v-if="p.llm?.reason" class="mp-llm">模型：{{ p.llm.reason }}</div>
+                        </div>
+                        <div v-if="!detail.paper.plans.length" class="empty sm">暂无计划卡</div>
+                      </div>
+                    </section>
+
+                    <section v-if="detail.paper.trades.length">
+                      <div class="block-title">成交记录</div>
+                      <table class="dtable">
+                        <thead>
+                          <tr>
+                            <th class="ta-r">日期</th>
+                            <th>标的</th>
+                            <th>方向</th>
+                            <th class="ta-r">价格</th>
+                            <th class="ta-r">股数</th>
+                            <th class="ta-r">盈亏</th>
+                            <th>原因</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="t in [...detail.paper.trades].reverse()" :key="t.id">
+                            <td class="ta-r num">{{ t.date.slice(5) }}</td>
+                            <td>{{ t.name }}<span class="num muted"> {{ t.code }}</span></td>
+                            <td>
+                              <span class="pill" :class="t.side === 'BUY' ? 'triggered' : 'holding'">
+                                {{ t.side === 'BUY' ? '买入' : '卖出' }}
+                              </span>
+                            </td>
+                            <td class="ta-r num">{{ t.price }}</td>
+                            <td class="ta-r num">{{ t.shares }}</td>
+                            <td class="ta-r num" :class="t.pnl == null ? '' : toneOf(t.pnl)">
+                              {{ t.pnl == null ? '—' : fmtMoney(t.pnl) }}
+                            </td>
+                            <td class="muted">{{ t.reason }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </section>
+
+                    <div class="dt-foot">
+                      <el-button size="small" @click="resetPaper(detail.id)">清空这条策略的模拟盘</el-button>
                     </div>
                   </div>
-
-                  <div class="spec-foot">
-                    <el-button size="small" plain @click="copySpec">复制定义 JSON</el-button>
-                    <el-button size="small" plain @click="exportSpec">导出知识库 .md</el-button>
+                  <div v-else class="empty">
+                    还没有模拟盘账户。
+                    <el-button size="small" type="primary" plain @click="tick()">推进一格建账户</el-button>
                   </div>
-                </div>
-              </template>
 
-              <div class="dt-foot">
-                <el-button size="small" type="primary" @click="applyEvolution(detail.id)">
-                  采纳这组参数
-                </el-button>
-                <el-button size="small" :disabled="!!evo?.running" @click="startEvolve(detail.id)">
-                  再搜一轮
-                </el-button>
-              </div>
-            </div>
-            <div v-else class="empty">
-              还没有进化记录。
-              <el-button size="small" type="primary" plain @click="startEvolve(detail.id)">
-                开始遗传搜索
-              </el-button>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-      </div>
-    </el-drawer>
+                </template>
+                <div v-else class="empty">正在加载…</div>
+              </el-tab-pane>
+
+              <el-tab-pane v-if="active" label="自进化" name="evolution">
+                <template v-if="detail && detail.id === active?.id">
+                  <div v-if="detail.evolution" class="dt-body">
+                    <div class="dt-strip">
+                      <div>
+                        <span class="k">进化后得分</span>
+                        <b class="num up">{{ detail.evolution.best.score }}</b>
+                      </div>
+                      <div>
+                        <span class="k">起点得分</span>
+                        <b class="num">{{ detail.evolution.baseline.score }}</b>
+                      </div>
+                      <div>
+                        <span class="k">提升</span>
+                        <b class="num up">
+                          {{ (detail.evolution.best.score - detail.evolution.baseline.score).toFixed(3) }}
+                        </b>
+                      </div>
+                      <div>
+                        <span class="k">耗时</span>
+                        <b class="num">{{ detail.evolution.elapsed }}s</b>
+                      </div>
+                      <div>
+                        <span class="k">已采纳代次</span>
+                        <b class="num">第 {{ detail.paper?.generation ?? 0 }} 代</b>
+                      </div>
+                    </div>
+
+                    <div class="block-title">
+                      逐代最优 / 均值
+                      <span class="muted">
+                        得分 = min(卡玛, 4) + 0.6×（胜率−50%）+ 0.2×（仓位−50%）− 0.02×换手
+                      </span>
+                    </div>
+                    <table class="dtable center">
+                      <thead>
+                        <tr>
+                          <th>代</th>
+                          <th>累计最优</th>
+                          <th>本代最优</th>
+                          <th>种群均值</th>
+                          <th>区间收益</th>
+                          <th>回撤</th>
+                          <th>胜率</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="h in detail.evolution.history" :key="h.generation">
+                          <td class="num">{{ h.generation }}</td>
+                          <td class="num up">{{ h.sofar_score ?? h.best_score }}</td>
+                          <td class="num">{{ h.best_score }}</td>
+                          <td class="num">{{ h.mean_score }}</td>
+                          <td class="num" :class="toneOf(h.best?.total_return)">
+                            {{ pct(h.best?.total_return) }}
+                          </td>
+                          <td class="num down">{{ pct(h.best?.max_drawdown) }}</td>
+                          <td class="num">
+                            {{ h.best?.win_rate != null ? `${h.best.win_rate}%` : '—' }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <template v-if="detail.evolution.holdout">
+                      <div class="block-title">
+                        样本外验证
+                        <span class="muted">
+                          {{ detail.evolution.holdout.start }} → {{ detail.evolution.holdout.end }} ·
+                          {{ detail.evolution.holdout.days }} 个交易日，没参与搜索
+                        </span>
+                      </div>
+                      <table class="dtable center">
+                        <thead>
+                          <tr>
+                            <th>口径</th>
+                            <th>原始策略</th>
+                            <th>进化后</th>
+                            <th>差距</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>得分</td>
+                            <td class="num">{{ detail.evolution.holdout.baseline.score.toFixed(4) }}</td>
+                            <td class="num up">{{ detail.evolution.holdout.best.score.toFixed(4) }}</td>
+                            <td class="num" :class="toneOf(detail.evolution.holdout.edge)">
+                              {{ detail.evolution.holdout.edge >= 0 ? '+' : ''
+                              }}{{ detail.evolution.holdout.edge.toFixed(4) }}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td>区间收益</td>
+                            <td class="num">{{ pct(detail.evolution.holdout.baseline.total_return) }}</td>
+                            <td class="num">{{ pct(detail.evolution.holdout.best.total_return) }}</td>
+                            <td class="muted">—</td>
+                          </tr>
+                          <tr>
+                            <td>最大回撤</td>
+                            <td class="num down">
+                              {{ pct(detail.evolution.holdout.baseline.max_drawdown) }}
+                            </td>
+                            <td class="num down">
+                              {{ pct(detail.evolution.holdout.best.max_drawdown) }}
+                            </td>
+                            <td class="muted">—</td>
+                          </tr>
+                          <tr>
+                            <td>胜率</td>
+                            <td class="num">
+                              {{ detail.evolution.holdout.baseline.win_rate ?? '—' }}%
+                            </td>
+                            <td class="num">{{ detail.evolution.holdout.best.win_rate ?? '—' }}%</td>
+                            <td class="muted">—</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <p class="dt-hint">
+                        <span
+                          class="chip"
+                          :class="holdoutTone(detail.evolution.holdout.level)"
+                        >{{ holdoutLabel(detail.evolution.holdout.level) }}</span>
+                      </p>
+                    </template>
+
+                    <template v-if="detail.evolution.adoption">
+                      <div class="block-title">
+                        该不该采纳
+                      </div>
+                      <div class="adopt-box" :class="detail.evolution.adoption.action">
+                        <span class="chip" :class="detail.evolution.adoption.action === 'adopt' ? 'brand' : 'flat'">
+                          {{ detail.evolution.adoption.action === 'adopt' ? '建议采纳' : '暂不采纳' }}
+                        </span>
+                        <span class="adopt-reason">{{ detail.evolution.adoption.reason }}</span>
+                      </div>
+                      <ul class="adopt-checks">
+                        <li v-for="c in detail.evolution.adoption.checks" :key="c.key">
+                          <span class="tick" :class="c.pass ? 'ok' : 'no'">{{ c.pass ? '✓' : '✗' }}</span>
+                          <span>{{ c.label }}</span>
+                          <span class="muted num">实际 {{ c.value }}</span>
+                        </li>
+                      </ul>
+                    </template>
+
+                    <div class="block-title">参数对比</div>
+                    <table class="dtable center">
+                      <thead>
+                        <tr>
+                          <th>参数</th>
+                          <th>起点</th>
+                          <th>进化后</th>
+                          <th>变化</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="g in genomeRows" :key="g.key">
+                          <td>{{ g.label }}</td>
+                          <td class="num">
+                            {{ g.kind === 'weight' ? `${(g.before * 100).toFixed(1)}%` : g.before }}
+                          </td>
+                          <td class="num">
+                            {{ g.kind === 'weight' ? `${(g.after * 100).toFixed(1)}%` : g.after }}
+                          </td>
+                          <td class="num" :class="toneOf(g.after - g.before)">
+                            {{ g.after - g.before >= 0 ? '+' : ''
+                            }}{{
+                              g.kind === 'weight'
+                                ? `${((g.after - g.before) * 100).toFixed(1)}%`
+                                : (g.after - g.before).toFixed(2)
+                            }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <ul class="notes">
+                      <li v-for="(n, i) in detail.evolution.notes" :key="i">{{ n }}</li>
+                    </ul>
+
+                    <template v-if="evoSpec">
+                      <div class="block-title">
+                        进化产物 · 最终策略
+                        <span class="muted">
+                          这份就是搜索出来的完整定义；采纳后原样写进账户，下一次选股开始生效
+                        </span>
+                      </div>
+
+                      <div class="spec-card">
+                        <div class="spec-head">
+                          <b>{{ specName }}</b>
+                          <span class="muted">{{ specDesc }}</span>
+                        </div>
+
+                        <div class="spec-grid">
+                          <div v-for="r in specRows" :key="r.key" class="spec-cell">
+                            <span class="k">{{ r.label }}</span>
+                            <span class="v num">{{ r.value }}</span>
+                          </div>
+                        </div>
+
+                        <div class="spec-cols">
+                          <div>
+                            <div class="spec-sub">因子权重</div>
+                            <div v-for="w in specWeights" :key="w.key" class="w-row">
+                              <span class="w-name">{{ w.label }}</span>
+                              <span class="w-bar"><i :style="{ width: `${w.width}%` }" /></span>
+                              <span class="w-val num">{{ w.value }}</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div class="spec-sub">选股条件</div>
+                            <div v-for="f in specFilters" :key="f.key" class="f-row">
+                              <span class="f-name">{{ f.label }}</span>
+                              <span class="num">{{ f.op }} {{ f.value }}</span>
+                            </div>
+                            <p v-if="!specFilters.length" class="muted">不设过滤条件</p>
+                          </div>
+                        </div>
+
+                        <div class="spec-foot">
+                          <el-button size="small" plain @click="copySpec">复制定义 JSON</el-button>
+                          <el-button size="small" plain @click="exportSpec">导出知识库 .md</el-button>
+                        </div>
+                      </div>
+                    </template>
+
+                    <div class="dt-foot">
+                      <el-button size="small" type="primary" @click="applyEvolution(detail.id)">
+                        采纳这组参数
+                      </el-button>
+                      <el-button size="small" :disabled="!!evo?.running" @click="startEvolve(detail.id)">
+                        再搜一轮
+                      </el-button>
+                    </div>
+                  </div>
+                  <div v-else class="empty">
+                    还没有进化记录。
+                    <el-button size="small" type="primary" plain @click="startEvolve(detail.id)">
+                      开始遗传搜索
+                    </el-button>
+                  </div>
+
+                </template>
+                <div v-else class="empty">正在加载…</div>
+              </el-tab-pane>
+            </el-tabs>
+          </div>
+        </section>
+      </section>
+    </div>
+
+    <StrategyEditor
+      v-model="editorOpen"
+      :fields="fields"
+      :editing="editing"
+      :preset="null"
+      @saved="onSaved"
+    />
   </div>
 </template>
 
@@ -1600,132 +1742,29 @@ onBeforeUnmount(stopPoll)
   display: flex;
   flex-direction: column;
   gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
-/* ---------------------------------------------------------------- 顶部条 */
-.s-card {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* ---------------------------------------------------------------- 择时条 */
+/* 细一行，不抢计划卡的注意力，但要让人一眼看到「今天为什么不开仓」。
+   直接挂在 `.panel` 下面（策略一览）时要自己补边距，否则贴着卡片边缘。 */
+.panel > .regime-line {
+  margin: 10px 16px 0;
 }
 
-.s-card .k {
-  font-size: 12px;
-  color: var(--af-ink-3);
-}
-
-.s-card .v {
-  font-size: 24px;
-  font-weight: 640;
-  letter-spacing: -0.025em;
-  line-height: 1.25;
-}
-
-.s-sub {
-  font-size: 11px;
-  color: var(--af-ink-3);
-}
-
-/* 择时条：细一行，不抢策略矩阵的注意力，但要让人一眼看到「今天为什么不开仓」。
-   负 margin 抵掉 `.lab` 的 gap，让它贴在顶部条下面而不是自成一块。 */
 .regime-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin-top: -6px;
+  margin-top: 10px;
   padding: 7px 12px;
   border-left: 2px solid var(--af-border-strong);
   border-radius: var(--af-radius-sm);
   background: var(--af-surface-2);
   font-size: 12px;
   color: var(--af-ink-2);
-}
-
-/* ---------------------------------------------------------------- 闭环 */
-/* 一整条流水线压成一行：五个环节 + 执行质量。刻意不做成大卡片——
-   它解释的是「系统在不在转」，不是「今天该买什么」，抢视觉重心会误导。 */
-.loop {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 12px 16px 13px;
-}
-
-/* 关闭时打一条左侧警示线：这是唯一一处「闭环静默停摆」还能被试出来的地方 */
-.loop.paused {
-  border-left: 2px solid var(--af-warn);
-}
-
-.loop-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.loop-switch {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.loop-switch .warn {
-  color: var(--af-warn);
-}
-
-.loop-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.loop-step {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 11px;
-  border: 1px solid var(--af-border);
-  border-radius: var(--af-radius-sm);
-  background: var(--af-surface);
-  font-size: 12px;
-  color: var(--af-ink-3);
-}
-
-.loop-idx {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--af-surface-3);
-  color: var(--af-ink-3);
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.loop-k {
-  color: var(--af-ink-2);
-}
-
-.loop-v {
-  font-weight: 600;
-  color: var(--af-ink-3);
-}
-
-.loop-v.brand {
-  color: var(--af-brand);
-}
-
-.loop-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
 }
 
 /* ---------------------------------------------------------------- 进度 */
@@ -1760,193 +1799,49 @@ onBeforeUnmount(stopPoll)
   flex-wrap: wrap;
 }
 
-.evo-cfg {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-right: 2px;
+/* ---------------------------------------------------------------- 页签 */
+/* 页签条压在卡片顶边：右栏内容很长（测试收益几千像素），要换页签不用先滚回顶部。
+   卡片本身得放开 overflow，否则 sticky 认的是卡片这个不滚动的容器。 */
+.lab-main {
+  overflow: visible;
 }
 
-.evo-cfg .muted {
-  font-size: 11px;
-}
-
-/* ---------------------------------------------------------------- 卡片 */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.scard {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--af-border);
-  border-radius: 9px;
-  padding: 12px 13px 11px;
+.lab-tabs :deep(.el-tabs__header) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin-bottom: 12px;
+  padding-top: 4px;
   background: var(--af-surface);
-  min-width: 0;
 }
 
-.sc-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+/* Element 给内容区默认 overflow:hidden，会把计划卡的分组吸顶捏死 */
+.lab-tabs :deep(.el-tabs__content) {
+  overflow: visible;
 }
 
-.sc-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.sc-name {
-  font-size: 13.5px;
-  font-weight: 660;
-  letter-spacing: -0.01em;
-}
-
-.sc-id {
-  font-size: 10.5px;
-  color: var(--af-ink-4);
-  flex: 0 0 auto;
-}
-
-.sc-desc {
-  margin: 5px 0 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--af-ink-3);
-  min-height: 34px;
-}
-
-.sc-curve {
+.plans-bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 6px 0 2px;
-}
-
-.sc-curve :deep(.spark) {
-  flex: 1;
-}
-
-.sc-curve-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  flex: 0 0 auto;
-}
-
-.sc-ret {
-  font-size: 15px;
-  font-weight: 660;
-  letter-spacing: -0.02em;
-}
-
-.sc-curve-side .muted {
-  font-size: 10px;
-}
-
-.sc-blank {
-  margin: 12px 0 6px;
-  padding: 10px;
-  text-align: center;
+  margin-bottom: 10px;
   font-size: 11.5px;
   color: var(--af-ink-3);
-  background: var(--af-surface-2);
-  border-radius: 7px;
 }
 
-.sc-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px 6px;
-  margin: 11px 0 10px;
-  padding: 10px 0;
-  border-top: 1px solid var(--af-border);
-  border-bottom: 1px solid var(--af-border);
-}
-
-.sc-metrics > div {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.sc-metrics dt {
-  font-size: 10.5px;
-  color: var(--af-ink-3);
-}
-
-.sc-metrics dd {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 620;
-  letter-spacing: -0.015em;
-  white-space: nowrap;
-}
-
-.sc-sub {
-  font-style: normal;
-  font-size: 10px;
-  color: var(--af-ink-4);
-  font-weight: 400;
-}
-
-.sc-paper {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  flex-wrap: wrap;
-  font-size: 11.5px;
-  margin-bottom: 11px;
-}
-
-.sc-paper b {
-  font-size: 13.5px;
-  font-weight: 660;
-}
-
-.sc-paper .muted {
-  font-size: 10.5px;
-}
-
-.sc-drop {
-  margin: -4px 0 10px;
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--af-warn);
-  background: var(--af-warn-soft);
-  border-radius: 6px;
-  padding: 5px 8px;
-}
-
-.sc-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: auto;
+.plans-bar :deep(.el-radio-group) {
+  margin-left: auto;
 }
 
 /* ---------------------------------------------------------------- 计划卡表 */
-.plans-scroll {
-  max-height: 660px;
-  overflow: auto;
-}
-
+/* 右栏本身已经在滚，这里不再限高：再套一层滚动区，滚轮要先滚到底才能继续往下，
+   分组吸顶也就没了参照。 */
 .pgroup + .pgroup {
   border-top: 5px solid var(--af-surface-3);
 }
 
+/* 分组头不再自己吸顶：页签条已经吸在卡片顶边，两条一起吸会叠成一摞 */
 .pg-row {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -2044,6 +1939,20 @@ onBeforeUnmount(stopPoll)
   color: var(--af-ink-2);
 }
 
+/* 模型否决的理由：一行灰字，长了就截断，悬停看全文。
+   它比状态列更值得读——状态只说「没挂单」，理由才说清是哪条教训。 */
+.p-llm {
+  display: block;
+  max-width: 210px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--af-ink-2);
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .p-status.up {
   color: var(--af-up);
 }
@@ -2069,9 +1978,7 @@ onBeforeUnmount(stopPoll)
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 10px 16px;
-  border-top: 1px solid var(--af-border);
-  background: var(--af-surface-2);
+  margin-top: 10px;
   font-size: 11px;
   color: var(--af-ink-3);
 }
@@ -2516,6 +2423,12 @@ onBeforeUnmount(stopPoll)
   color: var(--af-ink-3);
 }
 
+.mp-llm {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--af-ink-2);
+}
+
 .dt-foot {
   display: flex;
   gap: 8px;
@@ -2525,12 +2438,6 @@ onBeforeUnmount(stopPoll)
 }
 
 /* ---------------------------------------------------------------- 响应式 */
-@media (max-width: 1439px) {
-  .cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 1199px) {
   .mgrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2541,17 +2448,8 @@ onBeforeUnmount(stopPoll)
 }
 
 @media (max-width: 767px) {
-  .cards {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .s-card .v {
-    font-size: 18px;
-  }
   .dt-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .sc-desc {
-    min-height: 0;
   }
   .spec-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2562,6 +2460,362 @@ onBeforeUnmount(stopPoll)
   }
   .w-row {
     grid-template-columns: 84px 1fr 44px;
+  }
+}
+
+/* ---------------------------------------------------------------- 两栏 */
+/* 左栏固定宽度、右栏吃掉剩余：左栏只有名字和两三个数字，给它 236px 刚好，
+   再宽就是在浪费右侧净值曲线的地方。
+   整页改成两栏各自滚动：左栏一直占满一屏，右栏内容再长也只在自己的框里滚。
+   用 sticky 做过一版——右栏滚到底时左栏会被容器底部顶上去，压在数据状态条下面。 */
+.split {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 10px 10px;
+}
+
+.side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+/* 列表吃掉中间的高度，策略多了自己滚，头尾不动 */
+.slist {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sitem {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.sitem:hover {
+  background: var(--af-surface-2);
+}
+
+.sitem.active {
+  border-color: var(--af-brand);
+  background: var(--af-brand-soft);
+}
+
+.sitem.sall {
+  margin-bottom: 4px;
+}
+
+.sitem.dragging {
+  opacity: 0.45;
+}
+
+/* 拖到谁身上就在谁头上画一条线：整块高亮会让人以为「已经放进去了」 */
+.sitem.drop-before {
+  box-shadow: 0 -2px 0 0 var(--af-brand);
+}
+
+.si-grab {
+  flex: none;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--af-ink-3);
+  cursor: grab;
+  user-select: none;
+}
+
+.si-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.si-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  /* 给右上角两颗图标留位置：名字再长也不会钻到图标底下 */
+  padding-right: 42px;
+}
+
+.si-name {
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+.si-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--af-ink-2);
+}
+
+.si-meta .dot {
+  color: var(--af-ink-3);
+}
+
+/* 编辑 / 删除常驻在右上角。只留图标——「编辑」「删除」两个词叠起来比整行内容
+   还宽，位置还随内容长度浮动。文字挪进 tooltip。
+   绝对定位而不是占位：图标不参与这一行的排版，名字和涨跌幅的左边永远对齐。 */
+.si-ops {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 1px;
+}
+
+.si-op {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--af-ink-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.si-op:hover {
+  background: var(--af-surface-3);
+  color: var(--af-ink);
+}
+
+.si-op.danger:hover {
+  color: var(--af-warn);
+}
+
+.side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--af-border);
+}
+
+/* 添加策略是左栏唯一的写操作，做得比普通小按钮高一档，别让人找 */
+.side-add {
+  width: 100%;
+  height: 36px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- 运行参数 */
+/* 回测区间与进化规模跟着「这条策略」走：换一条策略就是换一套参数，
+   挂在左栏等于让三条策略共用一份配置。 */
+.run-cfg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-surface-2);
+  font-size: 11.5px;
+}
+
+.rc-k {
+  color: var(--af-ink-3);
+}
+
+.rc-x {
+  margin: 0 -2px;
+  color: var(--af-ink-3);
+}
+
+.rc-sep {
+  width: 1px;
+  height: 12px;
+  margin: 0 4px;
+  background: var(--af-border-strong);
+}
+
+.rc-note {
+  margin-left: auto;
+  color: var(--af-ink-4);
+  font-size: 11px;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  /* 滚动条贴着卡片右缘，不给面板留一道 6px 的空白 */
+  padding-right: 2px;
+}
+
+/* 不给这条，flex 会先把每张卡片压扁到刚好塞满，而不是让它们正常排出去滚动 */
+.main > * {
+  flex: none;
+}
+
+/* 收益概览这种短内容撑不满一屏，卡片别缩在半空：右栏只有这一块，让它吃掉剩余高度 */
+.main > .lab-main {
+  flex: 1 0 auto;
+}
+
+.mh-left {
+  min-width: 0;
+}
+
+.mh-desc {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--af-ink-3);
+}
+
+/* 收益概览七格：这一页的全部内容就是这些数，所以比页签外的紧凑版留白更大 */
+.mh-strip {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.mh-strip > div {
+  gap: 4px;
+  padding: 14px 14px 15px;
+}
+
+.mh-strip b {
+  font-size: 17px;
+}
+
+.ov-note {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--af-ink-4);
+}
+
+/* ---------------------------------------------------------------- 一览表 */
+.vtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.vtable th {
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--af-ink-3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--af-border);
+}
+
+.vtable td {
+  padding: 7px 10px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--af-border);
+}
+
+/* 「105.23 万」在窄列里会折成两行，数字被拆开最难读 */
+.vtable td.num {
+  white-space: nowrap;
+}
+
+.vrow {
+  cursor: pointer;
+}
+
+.vrow:hover {
+  background: var(--af-surface-2);
+}
+
+.v-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.vcurve {
+  width: 120px;
+}
+
+@media (max-width: 1439px) {
+  .mh-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1023px) {
+  /* 窄屏回到普通文档流：左栏横过来变成一条，右栏跟着页面一起滚，
+     堆两个独立滚动区在手机上只会打架。 */
+  .lab {
+    flex: none;
+  }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side {
+    height: auto;
+  }
+  .slist {
+    flex: none;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .sitem {
+    flex: none;
+    max-width: 190px;
+  }
+  .si-ops {
+    display: none;
+  }
+  /* 九列的数字表在手机上压不进 390px：给个下限让它横向滚，别把名字挤成竖排 */
+  .vtable {
+    min-width: 720px;
+  }
+  .main {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
+  }
+  .panel-body.flush {
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 767px) {
+  .mh-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

@@ -11,3 +11,5 @@
 | [0007](0007-realtime-quotes.md) | 实时行情：批量轮询 + 短 TTL 缓存，分时改走新浪 | 已采纳 |
 | [0008](0008-weak-to-strong-buy-point.md) | 把短线买点收到「弱转强」 | 已采纳 |
 | [0009](0009-two-strategies-limit-up-and-swing.md) | 策略集收敛为「打板 + 波段」，弱转强降级为出手时机 | 已采纳 |
+| [0010](0010-journal-experience-loop.md) | 复盘经验库：把「为什么没买」变成下一轮选股的输入 | 已采纳 |
+| [0011](0011-second-board-strategy-and-lab-roster.md) | 第三条战法「一进二」与实验室左栏战法清单 | 已采纳 |

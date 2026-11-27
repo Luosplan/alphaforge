@@ -26,6 +26,7 @@ from __future__ import annotations
 from alphaforge_core.constants import RISK_LIMITS, normalize_profile, trade_fee
 from alphaforge_core.universe import pc as price_limit
 
+from . import journal
 from .backtest import (DEFAULTS, GAP_MAX_PCT, GAP_MIN_PCT, REGIME_HUDDLE_MAX_RANK,
                        REGIME_HUDDLE_MIN_LIMITS, REGIME_SCALE, TRIM_FRAC, single_cap)
 from .gate import blocked_label, board_allow, buyable
@@ -75,6 +76,10 @@ ORDER_NO_HUDDLE = "弱势 · 行业未抱团，不建仓"
 # 文案不能写「择时关闭」——那是全局开关的语气，看起来像整个系统停了；
 # 这里是**这条策略**主动不做，另外一条（板块联动首日）照样在打抱团。
 ORDER_REGIME = "弱势停手 · 该策略在弱市无 edge"
+# 经验库回灌：模型读了历史复盘后否决的建仓。文案要写明「模型」而不是
+# 「规则」，因为这是唯一一条来自文本经验、而不是来自参数的条件——
+# 事后复盘时能区分「哪条规则挡的」和「模型当时怎么想的」。
+ORDER_LLM = "模型否决 · 经验库里这类票反复亏"
 
 # 减仓一次卖多少（1/3）与「浮盈多少算该减」（`TRIM_PNL_PCT`）都从上层取：
 # 回测和模拟盘必须用同一对数，否则同一只票在实验室里减仓、在回测里继续拿着。
@@ -133,6 +138,9 @@ def empty_account(strategy_id: str, name: str, spec: dict,
         "generation": 0,
         "started_at": None,
         "log": [],
+        "screens": [],
+        "execution": [],
+        "llm_review": None,
     }
 
 
@@ -219,9 +227,9 @@ def _refresh_plans(engine, feed: _Feed, account: dict, prof: dict,
     cash = float(account.get("cash") or 0.0)
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
-    plans, orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                regime_scale=_regime_scale(engine, date_s, params),
-                                boards=prof.get("boards"))
+    plans, orders, _ = _next_plans(engine, feed, spec, params, positions, nav, date_s,
+                                   regime_scale=_regime_scale(engine, date_s, params),
+                                   boards=prof.get("boards"))
     equity = list(account.get("equity") or [])
     if equity:
         equity[-1] = {"date": date_s, "value": round(nav, 2)}
@@ -253,7 +261,15 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     cash = float(account.get("cash") or 0.0)
     allow = board_allow(prof.get("boards"))
     log: list[str] = []
+    # 结构化的「为什么没成交」。日志是给人读的句子，第二天的复盘要的是能对上
+    # 代码的字段——去解析「跳过 600000.SH：高开 +8.1%，越过 7%」这种字符串，
+    # 文案一改归因就全错。
+    skips: list[dict] = []
     seq = len(trades)
+
+    def skip(code: str, reason: str, bucket: str) -> None:
+        log.append(f"跳过 {code}：{reason}")
+        skips.append({"code": code, "bucket": bucket, "reason": reason})
 
     def sell(pos: dict, price: float, reason: str, qty: int | None = None,
              when: str = "") -> None:
@@ -334,7 +350,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         # 撮合这一步必须再拦一道——否则夜里改了权限，明早照样成交。
         # 减仓不拦：卖出不需要购买权限，拦了只会把仓位锁死。
         if kind != "TRIM" and not buyable(code, allow):
-            log.append(f"跳过 {code}：{blocked_label(code)}未开通购买权限，委托作废")
+            skip(code, f"{blocked_label(code)}未开通购买权限，委托作废", "未开通购买权限")
             continue
         bar, prev = feed.bar(code, date_s)
         if not bar:
@@ -351,7 +367,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
                 continue
             # 一字跌停卖不掉，等下一格再说（和止损那一侧同一判断）
             if prev_close > 0 and o <= prev_close * 0.9001 and hi <= o * 1.001:
-                log.append(f"跳过 {code}：一字跌停，减仓卖不掉")
+                skip(code, "一字跌停，减仓卖不掉", "一字跌停卖不掉")
                 continue
             qty = min(int(order.get("shares") or 0), pos["shares"])
             if qty < 100:
@@ -368,7 +384,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
 
         # 一字涨停买不到（加仓同样买不到）
         if prev_close > 0 and o >= prev_close * 1.0999 and hi <= o * 1.001:
-            log.append(f"跳过 {code}：开盘一字涨停，买不到")
+            skip(code, "开盘一字涨停，买不到", "一字涨停买不到")
             continue
         # 开盘校验：开盘价就是 9:25 集合竞价的撮合结果，跳空幅度决定「还值不值得买」。
         # 昨天收盘做的计划，到今天开盘可能已经不成立了：
@@ -384,17 +400,17 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
             # 是一字板或接近一字（买不到也没溢价），复盘时要分开统计。
             lo, hi = float(band[0]), float(band[1])
             if gap_pct < lo:
-                log.append(f"跳过 {code}：高开 {gap_pct:+.1f}%，未达 {lo:g}%，弱势没被修复")
+                skip(code, f"高开 {gap_pct:+.1f}%，未达 {lo:g}%，弱势没被修复", "高开不足")
                 continue
             if gap_pct > hi:
-                log.append(f"跳过 {code}：高开 {gap_pct:+.1f}%，越过 {hi:g}%，情绪已透支")
+                skip(code, f"高开 {gap_pct:+.1f}%，越过 {hi:g}%，情绪已透支", "高开越过区间")
                 continue
         elif params.get("gap_gate", True):
             if gap_pct > GAP_MAX_PCT:
-                log.append(f"跳过 {code}：高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%")
+                skip(code, f"高开 {gap_pct:.1f}%，越过追高上限 {GAP_MAX_PCT:g}%", "高开越过上限")
                 continue
             if gap_pct < GAP_MIN_PCT:
-                log.append(f"跳过 {code}：低开 {gap_pct:.1f}%，跳空破位（信号已证伪）")
+                skip(code, f"低开 {gap_pct:.1f}%，跳空破位（信号已证伪）", "低开破位")
                 continue
         if kind == "ADD":
             pos = pos_by_code.get(code)
@@ -414,7 +430,7 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
                     break
                 qty -= 100
             if qty < 100:
-                log.append(f"跳过 {code}：现金或单票上限不够，加仓不执行")
+                skip(code, "现金或单票上限不够，加仓不执行", "现金不够")
                 continue
             amount = qty * o
             fee = trade_fee(amount, "BUY", prof)
@@ -478,9 +494,10 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
     # ---- 3. 收盘：按今日选股生成计划卡与明日委托
     nav = cash + _market_value(positions, feed)
     spec = account.get("spec") or {"id": account["id"], "name": account.get("name", "")}
-    plans, new_orders = _next_plans(engine, feed, spec, params, positions, nav, date_s,
-                                    regime_scale=_regime_scale(engine, date_s, params),
-                                    boards=prof.get("boards"))
+    plans, new_orders, meta = _next_plans(
+        engine, feed, spec, params, positions, nav, date_s,
+        regime_scale=_regime_scale(engine, date_s, params),
+        boards=prof.get("boards"))
 
     # ---- 3.4 弱转强：买入当日没封板 = 判断错了，次日开盘无条件走
     #
@@ -567,6 +584,15 @@ def _advance(engine, feed: _Feed, account: dict, prof: dict, date_s: str) -> tup
         "last_run": date_s,
         "started_at": account.get("started_at") or date_s,
         "log": (log or []) + list(account.get("log") or []),
+        # 复盘归因要用的两卷流水：今天选了谁（含没挂上单的那几个）、
+        # 哪张委托开盘被哪道闸门挡掉。只留最近几天，够追溯「买的那天」。
+        "screens": journal.push_screen(account, meta["screen"]) if meta else
+                   list(account.get("screens") or []),
+        "execution": ([*list(account.get("execution") or []),
+                       {"date": date_s, "skips": skips}])[-journal.ACCOUNT_KEEP:],
+        # 每次推进都覆盖：这份复核是「今天这次」的结论，留着昨天的只会让
+        # 卡片上出现一张过期的否决理由。
+        "llm_review": (meta or {}).get("review"),
     }
     updated["log"] = updated["log"][:60]
     return updated, {
@@ -715,13 +741,24 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
     `boards` 传购买权限：模拟盘的委托是照这张卡真挂出去的（次日开盘成交），
     所以候选池必须先按权限过一遍——买不了的票进了卡，第二天照样会被成交。
     """
+    # 候选要比挂单多留一截：`top_n` 只决定挂几张，而「第 7 名后来涨了 8%」
+    # 同样要能被明天的归因指出来。只留 top_n 个的话，所有漏掉的机会都会被
+    # 归成「不在池子」，看起来像选股不行，实际常常只是名额不够。
+    depth = max(int(params["top_n"]), journal.SCREEN_DEPTH)
     try:
-        selection = execute(engine, spec, top_n=int(params["top_n"]), boards=boards)
+        selection = execute(engine, spec, top_n=depth, boards=boards)
     except Exception:                                   # noqa: BLE001 - 选股失败不该拖垮记账
-        return [], []
+        return [], [], {}
     items = selection.get("items") or []
     if not items:
-        return [], []
+        return [], [], {}
+
+    # 模型复核只在「今天」做一次。补历史（`step` 一次推多格）时不调：那些日子
+    # 的经验库里还没有对应的复盘，问了也是拿今天的教训去判一个月前的票。
+    review = None
+    if date_s == engine.trade_date.isoformat():
+        review = journal.advise(engine, spec.get("id") or "custom", spec,
+                                items[:journal.SCREEN_DEPTH], date_s)
 
     held = {p["code"] for p in positions}
     pos_by_code = {p["code"]: p for p in positions}
@@ -755,6 +792,15 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         band = params.get("gap_band")
         if band and signal_type == "ENTRY":
             plan["entry_rule"] = f"高开 {band[0]:g}%~{band[1]:g}%"
+        # 模型否决放在最前面判：卡片还是要出（人得看见「今天本来要买这只，
+        # 被经验库挡了」），但没有委托，也不占名额。
+        verdict = (review or {}).get("verdicts", {}).get(code)
+        if verdict and verdict.get("verdict") == "skip":
+            plan["llm"] = verdict
+            plan["order_state"] = ORDER_LLM
+            plan["order_tone"] = "flat"
+            plans.append(plan)
+            continue
         plans.append(plan)
         # 委托状态：这张卡到底有没有真的挂单，比「现价落在区间内」有用得多
         if code in held:
@@ -809,7 +855,9 @@ def _next_plans(engine, feed: _Feed, spec: dict, params: dict,
         slots -= 1
 
     _mark_plans(plans, feed, date_s)
-    return plans, orders
+    return plans, orders, {"review": review,
+                           "screen": journal.screen_snapshot(
+                               selection, plans, int(params["top_n"]))}
 
 
 def _mark_plans(plans: list[dict], feed: _Feed, date_s: str) -> None:

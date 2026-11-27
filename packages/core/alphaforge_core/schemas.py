@@ -163,6 +163,12 @@ class LabEvolveRequest(BaseModel):
     apply: bool = False
 
 
+class LabOrderRequest(BaseModel):
+    """实验室左栏的战法顺序。整份覆盖，不做增量——拖一次就把当前排序列出来。"""
+
+    order: list[str] = Field(default_factory=list)
+
+
 class LabPaperRequest(BaseModel):
     """推进模拟盘。`strategy` 留空 = 全部策略都推一格。"""
 

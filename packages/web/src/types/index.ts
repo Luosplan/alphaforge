@@ -960,6 +960,11 @@ export interface LabPlanCard extends PlanCard {
   order_shares?: number
   /** 建仓触发条件的人话说明。区间带策略（弱转强）买点看次日高开幅度，不是 ATR 建仓区 */
   entry_rule?: string
+  /**
+   * 经验库复核结果：模型读了历史复盘后给这张卡的裁决。
+   * 只有 verdict=skip 时才真的不挂单，`reason` 就是它引用的那条经验。
+   */
+  llm?: { verdict?: string; reason?: string }
   strategy_generation?: number
 }
 
@@ -1546,4 +1551,25 @@ export interface PlaybookStrategy {
     need_limit_close: boolean
     entry_rule: string
   }
+}
+
+/** 经验库：《经验》md + 全量平仓统计。统计是用来验证经验里每句话的 */
+export interface JournalStats {
+  count: number
+  win: number
+  loss: number
+  win_rate: number | null
+  avg_win: number | null
+  avg_loss: number | null
+  expectancy: number | null
+  by_reason: Array<{ key: string; count: number; avg: number; win_rate: number }>
+  by_held: Array<{ key: string; count: number; avg: number; win_rate: number }>
+}
+
+/** 经验库索引：一篇文章一个日期，正文按需取 */
+export interface JournalIndex {
+  items: Array<{ date: string; title: string; facts: string[] }>
+  lessons: string
+  stats: JournalStats
+  min_edge: number
 }

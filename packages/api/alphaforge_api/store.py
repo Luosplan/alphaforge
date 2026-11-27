@@ -210,7 +210,22 @@ class Store:
             if len(remain) == len(rows):
                 raise KeyError(strategy_id)
             self.state["strategies"] = remain
+            self.state["lab_order"] = [
+                sid for sid in (self.state.get("lab_order") or []) if sid != strategy_id]
             self.save()
+
+    # ---------------------------------------------------------------- 战法顺序
+    def lab_order(self) -> list[str]:
+        """实验室左栏的战法顺序。只记 id，不存在的 id 由调用方丢掉——
+        策略删了／改了名，顺序表里留个孤儿不该让整栏错位。"""
+        with self._lock:
+            return [str(x) for x in (self.state.get("lab_order") or [])]
+
+    def set_lab_order(self, ids: list[str]) -> list[str]:
+        with self._lock:
+            self.state["lab_order"] = [str(x) for x in ids if x]
+            self.save()
+            return self.state["lab_order"]
 
     # ---------------------------------------------------------------- 计划卡
     def dismissed_plans(self) -> list[dict]:

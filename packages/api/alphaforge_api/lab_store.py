@@ -95,6 +95,18 @@ class LabStore:
                 self._write()
             return existed
 
+    def purge(self, strategy_id: str) -> None:
+        """删战法时连带清掉它的账户、回测与进化记录。
+
+        只删 store.json 里那条策略是不够的：实验室读的是 lab.json 里的账户，
+        战法没了账户还在，左栏会剩下一条点开全是旧数的幽灵条目。
+        """
+        with self._lock:
+            self.state["accounts"].pop(strategy_id, None)
+            self.state["backtests"].pop(strategy_id, None)
+            self.state["evolutions"].pop(strategy_id, None)
+            self._write()
+
     def reset(self) -> int:
         with self._lock:
             count = len(self.state["accounts"])

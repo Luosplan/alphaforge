@@ -43,6 +43,8 @@ import type {
   LabAdoption,
   AutopilotState,
   ReviewJournal,
+  JournalIndex,
+  JournalStats,
   LlmTestResult,
   WatchDoc,
   LabGenome,
@@ -188,8 +190,23 @@ export const api = {
     http.post<{ as_of: string | null; results: Record<string, unknown> }>('/lab/paper/tick', payload),
   labReset: (strategy?: string) =>
     http.post<{ cleared: number }>('/lab/paper/reset', { strategy }),
+  /** 删一条自定义策略：后端连带清掉它的账户、回测与进化记录 */
+  labDeleteStrategy: (id: string) =>
+    http.delete<{ deleted: string }>(`/lab/strategies/${id}`),
+  /** 左栏拖拽后的顺序，整份覆盖 */
+  labSaveOrder: (order: string[]) =>
+    http.put<{ order: string[] }>('/lab/order', { order }),
   playbook: () =>
     http.get<{ as_of: string | null; strategies: PlaybookStrategy[] }>('/playbook'),
+  /** 经验库索引：每日 md 列表 + 滚动《经验》+ 平仓统计 */
+  journal: () => http.get<JournalIndex>('/journal'),
+  journalDay: (date: string) =>
+    http.get<{ date: string; markdown: string }>(`/journal/days/${date}`),
+  journalRebuild: (date?: string) =>
+    http.post<{ date: string; file: string; stats: Record<string, number | null> }>(
+      `/journal/rebuild${date ? `?date=${date}` : ''}`, {}),
+  journalLessons: () =>
+    http.post<{ markdown: string; stats: JournalStats }>('/journal/lessons', {}),
   labPlans: () =>
     http.get<{
       as_of: string | null

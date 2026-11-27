@@ -16,7 +16,8 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 
-from alphaforge_core.schemas import LabBacktestRequest, LabEvolveRequest, LabPaperRequest
+from alphaforge_core.schemas import (LabBacktestRequest, LabEvolveRequest,
+                                     LabOrderRequest, LabPaperRequest)
 from alphaforge_engine import backtest as bt
 from alphaforge_engine import harness, paper
 from alphaforge_engine.selector import STRATEGY_MAP, normalize_spec, strategy_list
@@ -56,7 +57,31 @@ def _spec_of(strategy: str, inline: dict | None = None) -> dict:
 
 
 def _roster() -> list[dict]:
-    return strategy_list(store().strategies())
+    """内置 + 自定义，按用户在左栏拖出来的顺序排。
+
+    顺序表里可能有已删除的 id、也可能漏掉新建的那条：前者丢掉，后者追加到末尾。
+    这样「存了顺序」和「能看见全部战法」两件事不会互相打架。
+    """
+    rows = strategy_list(store().strategies())
+    rank = {sid: i for i, sid in enumerate(store().lab_order())}
+    return sorted(rows, key=lambda r: (rank.get(r["id"], len(rank)), rows.index(r)))
+
+
+def _remove_strategy(strategy_id: str) -> dict:
+    """删一条自定义战法，连带清掉它的账户、回测与进化。
+
+    内置战法不在这里删：它们是代码里的策略定义，删掉要改代码，
+    走 `DELETE /select/strategies` 也会被拒绝（接口层的同一道门）。
+    """
+    if strategy_id in STRATEGY_MAP:
+        raise HTTPException(status_code=400, detail="内置战法不可删除")
+    try:
+        store().delete_strategy(strategy_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="战法不存在")
+    get_lab().purge(strategy_id)
+    return {"deleted": strategy_id}
+
 
 
 # 账户快照里**允许覆盖代码声明**的字段：只有进化真正写进 spec 的那一项。
@@ -311,6 +336,18 @@ def strategy_detail(request: Request, strategy_id: str):
         "backtest": _saved_backtest(strategy_id),
         "evolution": lab.evolution(strategy_id),
     })
+
+
+@router.delete("/strategies/{strategy_id}")
+def delete_strategy(request: Request, strategy_id: str):
+    """删自定义战法。内置不可删——它们是代码里的定义，不是用户数据。"""
+    return ok(_remove_strategy(strategy_id))
+
+
+@router.put("/order")
+def save_order(request: Request, payload: LabOrderRequest):
+    """左栏拖拽后的顺序，整份覆盖存进 store.json。"""
+    return ok({"order": store().set_lab_order(payload.order)})
 
 
 # ------------------------------------------------------------------ 回测

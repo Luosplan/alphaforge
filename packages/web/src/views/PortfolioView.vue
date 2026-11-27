@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api'
 import { useAppStore } from '@/stores/app'
-import type { EquityResponse, PortfolioResponse, Trade, TradeStats } from '@/types'
+import type { EquityResponse, LabOverview, PortfolioResponse, Trade, TradeStats } from '@/types'
 import { fmtAmount, fmtNum, fmtPct, toneOf } from '@/utils/format'
 import EquityChart from '@/components/EquityChart.vue'
 import MetricCard from '@/components/MetricCard.vue'
@@ -12,6 +12,10 @@ const data = ref<PortfolioResponse | null>(null)
 const equity = ref<EquityResponse | null>(null)
 const trades = ref<Trade[]>([])
 const stats = ref<TradeStats | null>(null)
+/* 策略侧的数字（条数 / 胜率 / 卡玛 / 模拟盘净值）从实验室搬到这里：
+ * 它们是「这套系统跑到什么水平」的横向对比，跟持仓、净值是同一层问题——
+ * 放在实验室顶部反而把「今天选了什么」挤到了首屏之外。 */
+const lab = ref<LabOverview | null>(null)
 const range = ref(90)
 const loading = ref(true)
 
@@ -37,6 +41,10 @@ const pending = computed(() => data.value?.pending ?? [])
 /* 模拟盘从 11-24 才开始记账，两个点的曲线折算年化会得到 -34%、卡玛 -102 这种
  * 噪声。样本不够时宁可说「不足」，也不把噪声当成业绩摆出来。 */
 const perfReady = computed(() => (equity.value?.curve.length ?? 0) >= 20)
+/** 已跑过回测的策略条数：分母是策略数，单看一个数字看不出覆盖率 */
+const backtested = computed(
+  () => (lab.value?.strategies ?? []).filter((s) => s.backtest?.available).length,
+)
 
 async function load() {
   loading.value = true
@@ -46,6 +54,12 @@ async function load() {
     equity.value = eq
     trades.value = tr.items
     stats.value = tr.stats
+    // 实验室那一份单独拉：它挂了不该让整个持仓页变空白
+    try {
+      lab.value = await api.labOverview()
+    } catch {
+      lab.value = null
+    }
   } finally {
     loading.value = false
   }
@@ -141,6 +155,50 @@ onMounted(load)
           </div>
         </section>
       </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            策略战绩
+            <span class="panel-sub">来自策略实验室 · 各策略分账跑出来的合计数</span>
+          </div>
+          <span class="chip">{{ lab?.stats.strategies ?? 0 }} 条</span>
+        </div>
+        <div class="panel-body">
+          <div class="trade-stats">
+            <div class="ts">
+              <span class="k">已回测</span>
+              <span class="v num">{{ backtested }} / {{ lab?.stats.strategies ?? 0 }}</span>
+            </div>
+            <div class="ts">
+              <span class="k">平均胜率</span>
+              <span class="v num">
+                {{ lab?.stats.avg_win_rate != null ? `${lab.stats.avg_win_rate}%` : '—' }}
+              </span>
+            </div>
+            <div class="ts">
+              <span class="k">最优卡玛</span>
+              <span class="v num" :class="toneOf(lab?.stats.best_calmar)">
+                {{ lab?.stats.best_calmar ?? '—' }}
+              </span>
+            </div>
+            <div class="ts">
+              <span class="k">模拟盘总净值</span>
+              <span class="v num">{{ lab ? `¥${fmtNum(lab.stats.paper_nav, 0)}` : '—' }}</span>
+            </div>
+            <div class="ts">
+              <span class="k">模拟盘盈亏</span>
+              <span class="v num" :class="toneOf(lab?.stats.paper_pnl)">
+                {{ lab ? `${lab.stats.paper_pnl > 0 ? '+' : ''}${fmtNum(lab.stats.paper_pnl, 0)}` : '—' }}
+              </span>
+            </div>
+            <div class="ts">
+              <span class="k">今日计划卡</span>
+              <span class="v num">{{ lab?.stats.plan_count ?? 0 }} 张</span>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section class="panel">
         <div class="panel-head">

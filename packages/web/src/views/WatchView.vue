@@ -14,10 +14,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
-import type { AutopilotState } from '@/types'
+import { useAppStore } from '@/stores/app'
 import { fmtNum, fmtPct, fmtStamp, toneOf } from '@/utils/format'
 
-const state = ref<AutopilotState | null>(null)
+const store = useAppStore()
+/* 状态机放在 store 里：顶栏那个开关和这一页写的是同一份状态，
+   两边各存一份会出现「顶栏开着、页面显示已暂停」。 */
+const state = computed(() => store.pilot)
 const loading = ref(true)
 const busy = ref('')
 let poller: number | null = null
@@ -196,7 +199,7 @@ const brokeOrders = computed(() => rows.value.filter((r) => r.brokeEntry).length
 
 async function load() {
   try {
-    state.value = await api.autopilot()
+    store.pilot = await api.autopilot()
   } catch {
     /* 轮询失败不打断页面 */
   } finally {
@@ -207,7 +210,7 @@ async function load() {
 async function toggle(enabled: boolean) {
   busy.value = 'toggle'
   try {
-    state.value = await api.autopilotToggle(enabled)
+    await store.setPilot(enabled)
     ElMessage.success(enabled ? '实时盯盘已开启' : '实时盯盘已暂停')
   } catch {
     ElMessage.error('切换失败')

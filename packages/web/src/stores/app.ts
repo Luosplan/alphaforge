@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia'
 import { api } from '@/api'
-import type { BoardMeta, DataSourceInfo, DataStatus, MarketOverview, SysMeta, UserProfile, WatchGroup } from '@/types'
+import type {
+  AutopilotState,
+  BoardMeta,
+  DataSourceInfo,
+  DataStatus,
+  MarketOverview,
+  SysMeta,
+  UserProfile,
+  WatchGroup,
+} from '@/types'
 
 export type Device = 'desktop' | 'tablet' | 'mobile'
 
@@ -44,6 +53,8 @@ export const useAppStore = defineStore('app', {
     dataStatus: null as DataStatus | null,
     /** 数据来源与口径说明，界面上「数据来源」那一栏直接读它 */
     dataSources: null as DataSourceInfo | null,
+    /** AI 盯盘状态机：顶栏开关与盯盘页共用同一份，任一处切换两处同步 */
+    pilot: null as AutopilotState | null,
   }),
   getters: {
     isMobile: (s) => s.device === 'mobile',
@@ -90,6 +101,16 @@ export const useAppStore = defineStore('app', {
     },
     setSettings(open: boolean) {
       this.settingsOpen = open
+    },
+    async loadPilot() {
+      try {
+        this.pilot = await api.autopilot()
+      } catch {
+        this.pilot = null
+      }
+    },
+    async setPilot(enabled: boolean) {
+      this.pilot = await api.autopilotToggle(enabled)
     },
     async loadProfile() {
       const data = await api.profile()

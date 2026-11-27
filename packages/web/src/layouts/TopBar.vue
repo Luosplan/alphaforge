@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { NAV_ITEMS } from '@/constants/nav'
 import AppIcon from '@/components/AppIcon.vue'
@@ -27,6 +28,34 @@ const pageLabel = computed(() => NAV_ITEMS.find((i) => i.name === route.name)?.l
 const pageSub = computed(() => PAGE_SUB[route.name as string] ?? '')
 
 const accountInitial = computed(() => store.accountName.slice(0, 1))
+
+/** 盯盘是全天候动作，开关不能只在盯盘页里：它决定明天有没有委托、收盘有没有复盘 */
+const pilotBusy = ref(false)
+
+const pilotOn = computed(() => store.pilot?.enabled ?? false)
+
+const pilotHint = computed(() => {
+  if (store.pilot == null) return '盯盘状态未知'
+  return pilotOn.value
+    ? '盘中每 5 分钟盯一次，15:05 生成复盘日记'
+    : '已暂停：不开新仓，也不生成复盘日记'
+})
+
+async function togglePilot(enabled: boolean) {
+  pilotBusy.value = true
+  try {
+    await store.setPilot(enabled)
+    ElMessage.success(enabled ? 'AI 盯盘已开启' : 'AI 盯盘已暂停')
+  } catch {
+    /* 失败提示交给响应拦截器统一弹 */
+  } finally {
+    pilotBusy.value = false
+  }
+}
+
+onMounted(() => {
+  store.loadPilot()
+})
 </script>
 
 <template>
@@ -64,6 +93,17 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
     </div>
 
     <GlobalSearch />
+
+    <div class="pilot" :class="{ on: pilotOn, paused: store.pilot && !pilotOn }" :title="pilotHint">
+      <span class="pilot-dot" />
+      <span class="pilot-label hide-mobile">AI 盯盘</span>
+      <el-switch
+        size="small"
+        :model-value="pilotOn"
+        :loading="pilotBusy"
+        @change="(v: string | number | boolean) => togglePilot(!!v)"
+      />
+    </div>
 
     <span class="date num hide-mobile">{{ store.tradeDate }}</span>
 
@@ -203,6 +243,46 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   color: var(--af-ink-3);
 }
 
+/* AI 盯盘开关。常态是顶栏里的一枚胶囊，暂停时只剩一个灰点——
+   盯盘停了不会弹任何提示，能提醒人的只有这里。 */
+.pilot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 5px 2px 9px;
+  border: 1px solid var(--af-border);
+  border-radius: 999px;
+  background: var(--af-surface-2);
+}
+
+.pilot.on {
+  border-color: color-mix(in srgb, var(--af-brand) 26%, var(--af-border));
+  background: color-mix(in srgb, var(--af-brand) 6%, var(--af-surface-2));
+}
+
+.pilot-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--af-ink-4);
+}
+
+.pilot.on .pilot-dot {
+  background: var(--af-brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--af-brand) 14%, transparent);
+}
+
+.pilot.paused .pilot-dot {
+  background: var(--af-warn);
+}
+
+.pilot-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--af-ink-2);
+  white-space: nowrap;
+}
+
 .avatar-btn {
   border-radius: var(--af-radius-sm);
   background: var(--af-brand);
@@ -229,6 +309,13 @@ const accountInitial = computed(() => store.accountName.slice(0, 1))
   .ticker {
     padding: 3px 9px;
     font-size: 11.5px;
+  }
+  /* 手机上开关本身就说明状态，圆点只是多一层噪声 */
+  .pilot-dot {
+    display: none;
+  }
+  .pilot {
+    padding: 2px 4px;
   }
   .date {
     display: none;

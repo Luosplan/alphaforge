@@ -14,7 +14,17 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api'
 import type { ReviewDoc } from '@/types'
+import JournalDocs from '@/views/JournalDocs.vue'
 import { fmtNum, fmtPct, fmtSigned, toneOf } from '@/utils/format'
+
+/**
+ * 两栏：日记 / 经验库。
+ *
+ * 经验库是「给模型看的那份原件」，日记是「给人看的那份结论」。同一天的数据
+ * 从两个角度切，分开放会让人以为它们是两件事，所以做成一页里的两个页签，
+ * 而不是侧栏再加一项——底部 tab 已经挤到 9 个了。
+ */
+const tab = ref<'diary' | 'experience'>('diary')
 
 const loading = ref(true)
 const items = ref<ReviewDoc[]>([])
@@ -109,9 +119,22 @@ onMounted(load)
   <div class="view journal" v-loading="loading">
     <section class="panel head">
       <div class="panel-title">
-        复盘日记
+        <div class="tabs">
+          <button
+            type="button"
+            class="tab"
+            :class="{ on: tab === 'diary' }"
+            @click="tab = 'diary'"
+          >复盘日记</button>
+          <button
+            type="button"
+            class="tab"
+            :class="{ on: tab === 'experience' }"
+            @click="tab = 'experience'"
+          >经验库</button>
+        </div>
       </div>
-      <div class="head-right">
+      <div v-if="tab === 'diary'" class="head-right">
         <span class="chip flat">共 {{ total }} 篇</span>
         <span v-if="pendingToday" class="chip warn" title="15:05 生成后才会写下今天的">
           今天还没写
@@ -120,7 +143,9 @@ onMounted(load)
       </div>
     </section>
 
-    <div v-if="items.length" class="j-grid">
+    <JournalDocs v-if="tab === 'experience'" />
+
+    <div v-else-if="items.length" class="j-grid">
       <!-- 左侧时间线：只放「哪天、什么天气、执行率多少」，正文在右边 -->
       <aside class="j-list">
         <button
@@ -342,6 +367,32 @@ onMounted(load)
   align-items: center;
   gap: 10px;
   font-size: 12px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--af-radius-sm);
+  background: transparent;
+  color: var(--af-ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--af-surface-2);
+}
+
+.tab.on {
+  border-color: var(--af-brand);
+  background: var(--af-brand-soft);
+  color: var(--af-brand);
 }
 
 .go {
