@@ -1461,3 +1461,81 @@ export interface PlanHealth {
   label: string
   tone: string
 }
+
+/** 知识库里的一只入选票：为什么选它，以及按当前参数算出的三个价位 */
+export interface PlaybookPick {
+  code: string
+  name: string
+  industry: string | null
+  rank: number
+  score: number
+  price: number
+  change_pct: number | null
+  atr: number
+  levels: { stop: number; tp1: number; tp2: number }
+  hits: Array<{ field: string; label: string; op: string; target: unknown; value: number | null; unit: string }>
+  factors: Array<{
+    key: string
+    label: string
+    raw: number
+    z: number
+    weight: number
+    contribution: number
+    unit: string
+    desc: string
+  }>
+  huddle: { ind_limit_cnt?: number; ind_rank_pct?: number; industry?: string }
+  reason: { positive: string[]; negative: string[] }
+}
+
+/** 策略知识库：当前生效那一版策略的选股 / 出手 / 卖出说明 */
+export interface PlaybookStrategy {
+  id: string
+  name: string
+  desc: string
+  generation: number
+  fitness: number | null
+  based_on: string | null
+  params: Record<string, number | null>
+  selection: {
+    as_of: string | null
+    universe: string
+    universe_size: number
+    board_filter: { applied: boolean; allowed: string[]; blocked: number }
+    funnel: Array<{ key: string; label: string; count: number }>
+    conditions: Array<{ field: string; label: string; op: string; target: unknown; unit: string }>
+    sort: { by: string; desc: boolean; label: string } | null
+    top_n: number
+    max_per_industry: number
+    factors: Array<{ key: string; label: string; weight: number; desc: string }>
+    picks: PlaybookPick[]
+    notice: string
+  }
+  entry: {
+    timing: string
+    gap_band: [number, number] | null
+    gap_gate: boolean
+    gap_max: number
+    gap_min: number
+    regime_scale: number
+    market_ma: number
+    weak_participate: boolean
+    weak_huddle: boolean
+    allow_add: boolean
+    sizing: {
+      top_n: number | null
+      max_per_industry: number | null
+      single_weight: number
+      risk_per_trade: number
+    }
+  }
+  exit: {
+    stop_atr: number
+    tp1_atr: number
+    tp2_atr: number
+    time_stop: number
+    breakeven_after_tp1: boolean
+    need_limit_close: boolean
+    entry_rule: string
+  }
+}

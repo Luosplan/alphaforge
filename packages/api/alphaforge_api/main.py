@@ -55,6 +55,7 @@ from alphaforge_api import __version__, auth                  # noqa: E402
 from alphaforge_api.routers import auth as auth_router        # noqa: E402
 from alphaforge_api.routers import data as data_router        # noqa: E402
 from alphaforge_api.routers import lab as lab_router          # noqa: E402
+from alphaforge_api.routers import playbook as playbook_router  # noqa: E402
 from alphaforge_api.routers import (                          # noqa: E402
     market, overview, portfolio, select, signal, system, watchlist,
 )
@@ -85,7 +86,7 @@ app.add_middleware(
 )
 
 for module in (auth_router, system, market, watchlist, portfolio, select, signal,
-               overview, lab_router, data_router):
+               overview, lab_router, playbook_router, data_router):
     app.include_router(module.router, prefix=API_PREFIX)
 
 

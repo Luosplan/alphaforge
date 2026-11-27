@@ -59,6 +59,32 @@ def _roster() -> list[dict]:
     return strategy_list(store().strategies())
 
 
+def _live_spec(strategy: str, inline: dict | None = None) -> dict:
+    """当前真正在跑的策略定义：采纳过进化的账户，用它自己那份 spec。
+
+    进化、回测、详情都必须从这里出发。以前一律用 `STRATEGY_MAP` 的声明值，
+    采纳后的权重只落在账户里，下一轮读不到——搜索从同一点、同一个种子重跑，
+    结果一模一样，表现就是「采纳了一次，之后再也进化不动」。
+    """
+    spec = _spec_of(strategy, inline)
+    if inline:
+        return spec
+    acc = get_lab().account(strategy) or {}
+    return {**spec, **(acc.get("spec") or {})}
+
+
+def _live_params(strategy: str) -> dict:
+    """账户里当前生效的搜索参数，含已采纳的 ATR 三档与时间止损。
+
+    与 `_live_spec` 分开取：`time_stop` 在 spec 里是**策略定义**（打板 3 天），
+    搜索边界要按声明值算；账户里那个 6 是采纳后的运行值，只能当搜索起点，
+    混进 spec 会让下一轮的边界从 1~7 漂到 4~10，几代之后打板就成了中线。
+    """
+    acc = get_lab().account(strategy) or {}
+    params = acc.get("params") or {}
+    return {k: params[k] for k in paper.PARAM_KEYS if params.get(k) is not None}
+
+
 def _account(strategy: str, spec: dict, capital: float | None = None) -> dict:
     """取账户；没有就开一个。
 
@@ -258,7 +284,7 @@ def overview(request: Request):
 def strategy_detail(request: Request, strategy_id: str):
     mkt = market()
     lab = get_lab()
-    spec = _spec_of(strategy_id)
+    spec = _live_spec(strategy_id)
     acc = lab.account(strategy_id)
     return ok({
         "id": strategy_id,
@@ -275,11 +301,12 @@ def strategy_detail(request: Request, strategy_id: str):
 def run_backtest(request: Request, payload: LabBacktestRequest):
     """跑一遍回测并落盘。同步执行：250 天 / 600 只大约 0.1 秒，不值得异步。"""
     mkt = market()
-    spec = _spec_of(payload.strategy, payload.spec)
+    spec = _live_spec(payload.strategy, payload.spec)
     sid = spec["id"]
     report = bt.run_backtest(
         mkt, spec, days=payload.days, capital=payload.capital,
-        params=payload.params, profile=store().profile(),
+        params={**_live_params(payload.strategy), **(payload.params or {})},
+        profile=store().profile(),
     )
     get_lab().put_backtest(sid, report)
     return ok(report)
@@ -337,11 +364,16 @@ def _run_evolve(payload: dict) -> None:
         })
 
     try:
+        # 随机种子按代次偏移：基线换成「当前生效参数」之后，如果种子还钉死，
+        # 同一代连跑两次仍会走同一条搜索路径。代次是状态的一部分，带上它
+        # 既保证「同一代可复现」，又让每代真的换一片山坡。
+        generation = int((get_lab().account(sid) or {}).get("generation") or 0)
         result = harness.evolve(
             market(), payload["spec"],
             population=payload["population"], generations=payload["generations"],
             days=payload["days"], max_codes=payload["max_codes"],
-            capital=payload["capital"], seed=payload["seed"],
+            capital=payload["capital"], seed=payload["seed"] + generation,
+            seed_params=payload.get("seed_params"),
             profile=store().profile(), progress=on_progress,
         )
         _EVOLVE["result"] = result
@@ -394,7 +426,7 @@ def _run_evolve(payload: dict) -> None:
 
 def _begin_evolve(sid: str, spec: dict, *, population: int, generations: int,
                   days: int, max_codes: int, capital: float, seed: int,
-                  apply: bool) -> dict:
+                  apply: bool, seed_params: dict | None = None) -> dict:
     """把状态机置成「正在跑」并组装 `_run_evolve` 的参数。HTTP 与收盘任务共用。"""
     _EVOLVE.update({
         "running": True, "strategy": sid, "name": spec.get("name") or sid,
@@ -406,7 +438,7 @@ def _begin_evolve(sid: str, spec: dict, *, population: int, generations: int,
         "result": None, "error": None, "apply_blocked": None,
     })
     return {
-        "strategy_id": sid, "spec": spec,
+        "strategy_id": sid, "spec": spec, "seed_params": seed_params,
         "population": population, "generations": generations,
         "days": days, "max_codes": max_codes,
         "capital": capital, "seed": seed, "apply": apply,
@@ -424,13 +456,14 @@ def run_evolve_blocking(strategy_id: str, *, apply: bool = True) -> dict:
         return {"action": "busy", "reason": "已有进化任务在跑，本轮跳过",
                 "edge": None, "applied": False}
     try:
-        spec = _spec_of(strategy_id)
+        spec = _live_spec(strategy_id)
         # 收盘任务每天为每条策略跑一轮，所以窗口必须小：60 天 × 24×6 次评估
         # 在收盘后几分钟内跑得完。以前这里是 250 天，一轮要几分钟，
         # 两条策略串起来十几分钟，收盘任务经常撞上「自动重试用尽」。
         args = _begin_evolve(spec["id"], spec, population=24, generations=6,
                              days=60, max_codes=600, capital=1_000_000,
-                             seed=20261118, apply=apply)
+                             seed=20261118, apply=apply,
+                             seed_params=_live_params(strategy_id))
         _run_evolve(args)
         res = _EVOLVE.get("result") or {}
         adoption = res.get("adoption") or {}
@@ -452,12 +485,13 @@ def evolve(request: Request, payload: LabEvolveRequest):
     try:
         if _EVOLVE["running"]:
             raise HTTPException(status_code=409, detail="已有进化任务在跑")
-        spec = _spec_of(payload.strategy, payload.spec)
+        spec = _live_spec(payload.strategy, payload.spec)
         sid = spec["id"]
         args = _begin_evolve(
             sid, spec, population=payload.population, generations=payload.generations,
             days=payload.days, max_codes=payload.max_codes,
-            capital=payload.capital, seed=payload.seed, apply=payload.apply)
+            capital=payload.capital, seed=payload.seed, apply=payload.apply,
+            seed_params=_live_params(sid))
         threading.Thread(target=_run_evolve, args=(args,), daemon=True).start()
     finally:
         _EVOLVE_LOCK.release()
@@ -497,7 +531,7 @@ def paper_tick(request: Request, payload: LabPaperRequest):
     for sid in targets:
         if payload.reset:
             lab.drop_account(sid)
-        spec = _spec_of(sid)
+        spec = _live_spec(sid)
         acc = _account(sid, spec, payload.capital)
         acc, info = paper.step(mkt, acc, profile, force=payload.force)
         lab.put_account(acc)

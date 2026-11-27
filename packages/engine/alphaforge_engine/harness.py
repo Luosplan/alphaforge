@@ -159,9 +159,15 @@ CALMAR_CAP = 4.0         # Calmar 计分封顶，避免「回撤压到 1%」的�
 EXPOSURE_WEIGHT = 0.20   # 平均仓位每偏离 50% 一个单位的分差
 
 
-def seed_genome(spec: dict | None = None) -> dict:
-    """以原策略为起点。搜索从「用户写的那条策略」出发，不是从随机点出发。"""
+def seed_genome(spec: dict | None = None, params: dict | None = None) -> dict:
+    """以原策略为起点。搜索从「用户写的那条策略」出发，不是从随机点出发。
+
+    `params` 是账户当前生效的六个搜索参数（含采纳过的 ATR 三档与时间止损）。
+    采纳之后必须从它出发，否则每一轮都被拉回声明值，把同一个山坡重搜一遍，
+    用户看到的就是「采纳了一次，再进化却一点没变」。
+    """
     spec = spec or {}
+    params = params or {}
     raw = {k: float(v) for k, v in (spec.get("weights") or {}).items()
            if k in WEIGHT_GENES and isinstance(v, (int, float)) and float(v) > 0}
     if not raw:
@@ -173,12 +179,14 @@ def seed_genome(spec: dict | None = None) -> dict:
         weights.setdefault(key, 0.0)
     return {
         "weights": weights,
-        "top_n": int(spec.get("top_n") or DEFAULTS["top_n"]),
-        "max_per_industry": int(spec.get("max_per_industry") or DEFAULTS["max_per_industry"]),
-        "stop_atr": DEFAULTS["stop_atr"],
-        "tp1_atr": DEFAULTS["tp1_atr"],
-        "tp2_atr": DEFAULTS["tp2_atr"],
-        "time_stop": DEFAULTS["time_stop"],
+        "top_n": int(params.get("top_n") or spec.get("top_n") or DEFAULTS["top_n"]),
+        "max_per_industry": int(params.get("max_per_industry")
+                                or spec.get("max_per_industry") or DEFAULTS["max_per_industry"]),
+        "stop_atr": float(params.get("stop_atr") or spec.get("stop_atr") or DEFAULTS["stop_atr"]),
+        "tp1_atr": float(params.get("tp1_atr") or spec.get("tp1_atr") or DEFAULTS["tp1_atr"]),
+        "tp2_atr": float(params.get("tp2_atr") or spec.get("tp2_atr") or DEFAULTS["tp2_atr"]),
+        "time_stop": int(params.get("time_stop") or spec.get("time_stop")
+                         or DEFAULTS["time_stop"]),
     }
 
 
@@ -545,7 +553,7 @@ def _brief(score: float, report: dict) -> dict:
 def evolve(engine, spec: dict | None = None, *, population: int = 28,
            generations: int = 8, days: int = 60, max_codes: int = 600,
            capital: float = 1_000_000.0, seed: int = 20261118,
-           holdout: float = 0.3,
+           holdout: float = 0.3, seed_params: dict | None = None,
            profile: dict | None = None, progress=None) -> dict:
     """跑一轮遗传搜索。`progress` 是给后台任务上报进度用的回调。
 
@@ -576,7 +584,7 @@ def evolve(engine, spec: dict | None = None, *, population: int = 28,
             "baseline": None, "best": None, "history": [],
         }
 
-    base = seed_genome(spec)
+    base = seed_genome(spec, seed_params)
     bounds = bounds_for(spec)
 
     # 初代：一半贴着种子（精修起点），一半全空间随机（先证明起点不是最好）

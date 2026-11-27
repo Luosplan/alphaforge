@@ -70,6 +70,13 @@ withDefaults(defineProps<{ name: string; collapsed?: boolean }>(), { collapsed: 
       <path d="M8.1 15.2h7.8" />
     </template>
 
+    <!-- 知识库：合上的手册（与「复盘日记」的摊开书区分），右侧两条正文线 -->
+    <template v-else-if="name === 'book'">
+      <rect x="4.4" y="3.4" width="15.2" height="17.2" rx="2.2" />
+      <path d="M8.8 3.4v17.2" />
+      <path d="M12.4 7.6h4.2M12.4 11h4.2" />
+    </template>
+
     <!-- 侧栏开关：面板 + 分栏线 + 方向箭头 -->
     <template v-else-if="name === 'sidebar'">
       <rect x="3.2" y="3.6" width="17.6" height="16.8" rx="2.6" />

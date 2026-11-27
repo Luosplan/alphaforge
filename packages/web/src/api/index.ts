@@ -49,6 +49,7 @@ import type {
   LabOverview,
   LabPaper,
   LabPlanCard,
+  PlaybookStrategy,
   HotspotData,
 } from '@/types'
 
@@ -187,6 +188,8 @@ export const api = {
     http.post<{ as_of: string | null; results: Record<string, unknown> }>('/lab/paper/tick', payload),
   labReset: (strategy?: string) =>
     http.post<{ cleared: number }>('/lab/paper/reset', { strategy }),
+  playbook: () =>
+    http.get<{ as_of: string | null; strategies: PlaybookStrategy[] }>('/playbook'),
   labPlans: () =>
     http.get<{
       as_of: string | null

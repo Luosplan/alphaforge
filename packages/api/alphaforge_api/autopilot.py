@@ -546,7 +546,7 @@ class Autopilot:
                 # 参数被推到 top_n=7 / 行业上限 4 / 时间止损 30 天，一笔没成交
                 # 却永久冻结——那不是超短，是另一条策略。
                 try:
-                    spec = lab_router._spec_of(sid)
+                    spec = lab_router._live_spec(sid)
                     acc = lab_router._account(sid, spec)
                 except Exception:                        # noqa: BLE001
                     acc = lab.account(sid)

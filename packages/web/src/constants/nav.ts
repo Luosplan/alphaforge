@@ -22,6 +22,7 @@ export const NAV_ITEMS: NavItem[] = [
   { name: 'signals', to: '/signals', label: '计划卡', icon: 'signals' },
   { name: 'portfolio', to: '/portfolio', label: '持仓', icon: 'portfolio' },
   { name: 'lab', to: '/lab', label: '实验室', icon: 'lab' },
+  { name: 'knowledge', to: '/knowledge', label: '策略库', short: '策略', icon: 'book' },
   { name: 'watch', to: '/watch', label: '盯盘', icon: 'watch' },
   { name: 'journal', to: '/journal', label: '复盘日记', short: '日记', icon: 'journal' },
 ]

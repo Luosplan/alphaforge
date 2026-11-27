@@ -53,7 +53,7 @@ STRATEGIES: list[dict] = [
     {
         "id": "daban",
         "name": "打板",
-        "desc": "今日涨停池按连板高度取前 3，次日高开 1%~7% 出手；当日没封住次日走",
+        "desc": "今日涨停池按连板高度取前 3，次日高开 1%~7% 才出手",
         # 权重只做排序，不做准入：买什么由 filters（涨停池）与 sort（连板数）
         # 定义。同板数之间优先给行业里正在抱团的那只——打板能不能成，
         # 题材强度比个股形态更说了算。
@@ -258,6 +258,7 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         for i in range(len(mask)):
             if mask[i] and not evaluate(filters, lambda k, i=i: board.column(k)[i]):
                 mask[i] = False
+    after_filters = sum(1 for m in mask if m)
 
     # 池门槛（打板用）：只在连板数 ≥ N 的票里选。
     # 必须在「今日选股」这一步就生效，不能只写在回测与下单里——否则页面上
@@ -410,6 +411,15 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
     # 池子大小按「可买的」算：写着「全 A 股 5578 只」而实际只在 3200 只里选，
     # 匹配数看着对不上，是这类口径最容易招骂的地方
     pool_size = len(pool) - blocked if allow is not None else len(pool)
+    # 漏斗计数给「策略知识库」用：用户要能看见 5578 只怎么一路收到 3 只。
+    steps = [{"key": "universe", "label": "全 A 股", "count": len(pool)}]
+    if allow is not None:
+        steps.append({"key": "board", "label": "可买板块", "count": pool_size})
+    steps.append({"key": "filters", "label": "条件命中", "count": after_filters})
+    if cfg["pool_limit_min"] > 0:
+        steps.append({"key": "pool_limit", "label": f"连板 ≥ {cfg['pool_limit_min']:g}",
+                      "count": len(eligible)})
+    steps.append({"key": "picks", "label": "入选", "count": len(items)})
     return {
         "strategy_id": cfg["id"],
         "strategy_name": cfg["name"],
@@ -418,6 +428,7 @@ def execute(engine: MarketEngine, spec: dict, top_n: int | None = None,
         "universe": (f"全 A 股（{pool_size} 只）" if allow is None
                      else f"可买板块（{pool_size} 只）"),
         "universe_size": pool_size,
+        "funnel": steps,
         "board_filter": {
             "applied": allow is not None,
             "allowed": allowed_labels(allow),
@@ -450,6 +461,7 @@ def _empty(engine: MarketEngine, cfg: dict, message: str) -> dict:
         "as_of": trade_date.isoformat() if trade_date else None,
         "universe": "全 A 股（0 只）",
         "universe_size": 0,
+        "funnel": [],
         "top_n": cfg["top_n"],
         "items": [],
         "weights": cfg["weights"],
@@ -469,7 +481,11 @@ def _empty(engine: MarketEngine, cfg: dict, message: str) -> dict:
 def _entry_rule(cfg: dict) -> str:
     band = cfg.get("gap_band")
     if band:
-        return f"次日高开 {band[0]:g}%~{band[1]:g}% 出手，当日没封住次日走"
+        rule = f"次日高开 {band[0]:g}%~{band[1]:g}% 出手"
+        # 「当日没封住次日走」只在策略真的启用了这条纪律时才写：打板默认关着
+        # 它（T+1 下当天卖不掉，只能等次日开盘，那是最差价位之一），
+        # 无条件挂在买点后面等于告诉用户一条系统根本不会执行的动作。
+        return rule + ("，当日没封住次日走" if cfg.get("need_limit_close") else "")
     return "次日开盘按建仓区挂单"
 
 
