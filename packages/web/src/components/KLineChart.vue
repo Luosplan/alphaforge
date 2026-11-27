@@ -247,17 +247,19 @@ const { getChart } = useEChart(
             silent: true,
             symbol: 'none',
             label: {
-              position: 'insideEndTop',
+              position: 'insideStartTop',
               fontSize: 10,
               color: chartColors.ink3,
               formatter: (p: any) => p.name,
             },
-            data: zones.value.map((z) => ({
-              name: z.name === '建仓区' || z.name === '止损区' ? `${z.name} ${z.mid.toFixed(2)}` : '',
-              yAxis: z.mid,
-              lineStyle: { color: z.color, type: 'dashed', width: 1, opacity: 0.75 },
-              label: { color: z.color, fontSize: 10, opacity: 1, backgroundColor: 'rgba(255,255,255,0.9)', padding: [1, 3], borderRadius: 4 },
-            })),
+            data: zones.value
+              .filter((z) => z.name === '建仓区' || z.name === '止损区')
+              .map((z) => ({
+                name: `${z.name} ${z.mid.toFixed(2)}`,
+                yAxis: z.mid,
+                lineStyle: { color: z.color, type: 'dashed', width: 1, opacity: 0.75 },
+                label: { color: z.color, fontSize: 10, opacity: 1, backgroundColor: 'rgba(255,255,255,0.9)', padding: [1, 3], borderRadius: 4 },
+              })),
           },
           z: 4,
         },
