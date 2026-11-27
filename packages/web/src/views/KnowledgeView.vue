@@ -31,21 +31,15 @@ function funnelWidth(count: number, max: number): string {
   return `${Math.max(Math.sqrt(count / max) * 100, 9)}%`
 }
 
-function factorWidth(weight: number, list: PlaybookStrategy['selection']['factors']): string {
-  const max = Math.max(...list.map((f) => f.weight), 0.0001)
-  return `${Math.max((weight / max) * 100, 2)}%`
-}
-
 /** 数值带单位：百分比贴紧，其余（亿、倍、元）留一个空格，否则「1.3倍」读起来挤。 */
 function withUnit(value: unknown, unit: string): string {
   if (!unit) return String(value)
   return unit === '%' ? `${value}%` : `${value} ${unit}`
 }
 
-/** 命中值：布尔条件写成「是/否」，数值保留两位有效小数——成交额 13.0543 亿太吵。 */
+/** 命中值：布尔条件没有可比的数，标签里只留字段名，不写「涨停 是」。 */
 function hitText(h: PlaybookPick['hits'][number]): string {
-  if (h.value == null) return '—'
-  if (typeof h.value === 'boolean') return h.value ? '是' : '否'
+  if (h.value == null || typeof h.value === 'boolean') return ''
   return withUnit(Number(h.value.toFixed(2)), h.unit || '')
 }
 
@@ -56,25 +50,129 @@ function targetText(h: PlaybookPick['hits'][number]): string {
   return `${h.op}${withUnit(h.target, h.unit || '')}`
 }
 
-/** 硬条件：布尔条件写「是/否」，数值条件把比较符与单位带上。 */
+/** 硬条件同理：`涨停` 本身就是条件，后面再跟一个「是」是废话。 */
 function condText(c: PlaybookStrategy['selection']['conditions'][number]): string {
-  if (typeof c.target === 'boolean') return c.target ? '是' : '否'
+  if (typeof c.target === 'boolean') return ''
   if (Array.isArray(c.target)) return `${c.op} ${c.target.join('~')}${c.unit || ''}`
   return `${c.op} ${withUnit(c.target, c.unit || '')}`
 }
 
-const picksNote = computed(() => {
+type Tag = { t: string; v?: string; tone?: 'up' | 'down' }
+type Rule = { k: string; tags: Tag[]; why: string }
+
+const sortTags = computed<Tag[]>(() => {
   const s = active.value?.selection
-  if (!s) return ''
-  const sort = s.sort ? `按${s.sort.label}${s.sort.desc ? '从高到低' : '从低到高'}` : '按综合得分'
-  return `${sort}排序，同一行业最多 ${s.max_per_industry} 只，取前 ${s.top_n} 只`
+  if (!s) return []
+  if (!s.sort) return [{ t: '综合得分', v: '从高到低' }]
+  return [{ t: s.sort.label, v: s.sort.desc ? '从高到低' : '从低到高' }]
 })
 
-const marketNote = computed(() => {
+const quotaTags = computed<Tag[]>(() => {
+  const s = active.value?.selection
+  if (!s) return []
+  const tags: Tag[] = [{ t: '同行业', v: `≤ ${s.max_per_industry} 只` }]
+  if (s.pool_limit_min > 0) tags.push({ t: '连板', v: `≥ ${s.pool_limit_min}` })
+  tags.push({ t: '取前', v: `${s.top_n} 只` })
+  return tags
+})
+
+const entryRules = computed<Rule[]>(() => {
   const e = active.value?.entry
-  if (!e) return ''
-  if (!e.market_ma) return '这条策略不看大盘位置，任何指数环境下都照常选股，仓位也不按指数打折'
-  return `沪深300 站在 ${e.market_ma} 日均线上方才开新仓，跌破只做已有持仓的离场`
+  if (!e) return []
+  const s = e.sizing
+  const rules: Rule[] = [
+    {
+      k: '出手时间',
+      tags: [{ t: '收盘出信号' }, { t: '次日开盘买' }],
+      why: '选股用的是收盘价，当天买不进（T+1）',
+    },
+    {
+      k: '买点',
+      tags: e.gap_band
+        ? [{ t: '高开', v: `${e.gap_band[0]}%~${e.gap_band[1]}%` }]
+        : [{ t: '开盘市价' }],
+      why: e.gap_band
+        ? `低于 ${e.gap_band[0]}% 没人接，高于 ${e.gap_band[1]}% 接近一字`
+        : e.gap_gate
+          ? `高开超过 ${e.gap_max}% 视为情绪透支，不追`
+          : '赚的是趋势延续，不看跳空',
+    },
+    {
+      k: '买不到',
+      tags: [{ t: '一字涨停', v: '跳过' }, { t: '超仓位上限', v: '缩量' }],
+      why: '封死了买不进；钱不够就按可用额度少买',
+    },
+    {
+      k: '大盘',
+      tags: e.market_ma
+        ? [{ t: '沪深300', v: `> ${e.market_ma} 日线` }]
+        : [{ t: '不看大盘' }],
+      why: e.market_ma
+        ? '跌破只做已有持仓的离场，不开新仓'
+        : '涨停梯队在熊市里照样存在',
+    },
+  ]
+  if (e.market_ma && e.weak_participate) {
+    rules.push({
+      k: '弱势',
+      tags: [
+        { t: '仓位', v: `×${e.regime_scale}` },
+        { t: e.weak_huddle ? '要求行业抱团' : '不要求抱团' },
+      ],
+      why: '只放一半钱，靠题材强度筛掉没支撑的票',
+    })
+  }
+  rules.push(
+    {
+      k: '仓位',
+      tags: [
+        { t: '最多', v: `${s.top_n} 只` },
+        { t: '同行业', v: `≤ ${s.max_per_industry} 只` },
+        { t: '单票', v: `≤ ${Math.round(s.single_weight * 100)}%` },
+        { t: '单笔亏损', v: `≤ ${(s.risk_per_trade * 100).toFixed(1)}%` },
+      ],
+      why: '止损越宽，买入股数越少',
+    },
+    {
+      k: '加仓',
+      tags: [{ t: e.allow_add ? '允许加仓' : '不加仓' }],
+      why: e.allow_add
+        ? '信号还在就补到计划仓位'
+        : '一次下注就是一次，中途补仓等于两次没确认的下注',
+    },
+  )
+  return rules
+})
+
+const exitRules = computed<Rule[]>(() => {
+  const x = active.value?.exit
+  if (!x) return []
+  return [
+    {
+      k: '止损',
+      tags: [{ t: `-${x.stop_atr}×ATR`, tone: 'down' }],
+      why: '跌破就走，不找理由',
+    },
+    {
+      k: '第一目标',
+      tags: [
+        { t: `+${x.tp1_atr}×ATR`, tone: 'up' },
+        { t: '卖一半' },
+        ...(x.breakeven_after_tp1 ? [{ t: '止损移到成本' }] : []),
+      ],
+      why: '先锁一半利润，剩下的用成本价去博',
+    },
+    {
+      k: '第二目标',
+      tags: [{ t: `+${x.tp2_atr}×ATR`, tone: 'up' }, { t: '余仓清空' }],
+      why: '走到这一档说明是主升段，不再留尾仓',
+    },
+    {
+      k: '时间止损',
+      tags: [{ t: `${x.time_stop} 个交易日` }],
+      why: '到期没到任何一档也走，钱占着不涨就是成本',
+    },
+  ]
 })
 </script>
 
@@ -138,47 +236,51 @@ const marketNote = computed(() => {
             </div>
           </div>
 
-          <div class="kb-grid">
-            <div class="kb-block">
-              <div class="kb-title">硬条件：不满足就不在池子里</div>
-              <ul v-if="active.selection.conditions.length" class="kb-list">
-                <li v-for="(c, i) in active.selection.conditions" :key="i">
-                  <b>{{ c.label }}</b>
-                  <span class="kb-op">{{ condText(c) }}</span>
-                </li>
-              </ul>
-              <p v-else class="muted">这条策略没有硬条件，全池按因子打分排序</p>
+          <div class="rows">
+            <div class="row">
+              <span class="row-k">硬条件</span>
+              <div class="tags">
+                <span v-for="(c, i) in active.selection.conditions" :key="i" class="tg">
+                  <b>{{ c.label }}</b><i v-if="condText(c)">{{ condText(c) }}</i>
+                </span>
+                <span v-if="!active.selection.conditions.length" class="tg">
+                  <b>无</b><i>全池打分</i>
+                </span>
+              </div>
             </div>
-
-            <div class="kb-block">
-              <div class="kb-title">排序与名额</div>
-              <p class="kb-line">{{ picksNote }}</p>
-              <p class="kb-line muted">
-                行业分散是为了不把 {{ active.selection.top_n }} 个名额押在同一个题材上
-              </p>
+            <div class="row">
+              <span class="row-k">排序</span>
+              <div class="tags">
+                <span v-for="(t, i) in sortTags" :key="i" class="tg">
+                  <b>{{ t.t }}</b><i>{{ t.v }}</i>
+                </span>
+              </div>
             </div>
-          </div>
-
-          <div class="kb-block">
-            <div class="kb-title">软条件：因子加权（进化后的权重）</div>
-            <div class="factors">
-              <div v-for="f in active.selection.factors" :key="f.key" class="ft-row">
-                <span class="ft-label">{{ f.label }}</span>
-                <div class="ft-track">
-                  <div
-                    class="ft-fill"
-                    :style="{ width: factorWidth(f.weight, active.selection.factors) }"
-                  />
-                </div>
-                <span class="ft-weight num">{{ (f.weight * 100).toFixed(1) }}%</span>
-                <span class="ft-desc muted">{{ f.desc }}</span>
+            <div class="row">
+              <span class="row-k">名额</span>
+              <div class="tags">
+                <span v-for="(t, i) in quotaTags" :key="i" class="tg">
+                  <b>{{ t.t }}</b><i>{{ t.v }}</i>
+                </span>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-k">加分</span>
+              <div class="tags">
+                <span
+                  v-for="f in active.selection.factors"
+                  :key="f.key"
+                  class="tg"
+                  :class="{ brand: f.weight >= 0.2 }"
+                >
+                  <b>{{ f.label }}</b><i>×{{ (f.weight * 100).toFixed(0) }}%</i>
+                </span>
               </div>
             </div>
           </div>
 
           <div class="kb-block">
             <div class="kb-title">今天选中的 {{ active.selection.picks.length }} 只 · 为什么是它们</div>
-            <p v-if="active.selection.notice" class="muted kb-line">{{ active.selection.notice }}</p>
             <div v-if="active.selection.picks.length" class="picks">
               <article v-for="p in active.selection.picks" :key="p.code" class="pick">
                 <header class="pk-head">
@@ -193,23 +295,25 @@ const marketNote = computed(() => {
 
                 <div class="pk-why">
                   <span class="pk-k">命中</span>
-                  <span v-for="(h, i) in p.hits" :key="i" class="pk-tag">
-                    {{ h.label }} {{ hitText(h) }}
-                    <em v-if="targetText(h)" class="muted">{{ targetText(h) }}</em>
+                  <span v-for="(h, i) in p.hits" :key="i" class="tg">
+                    <b>{{ h.label }}</b>
+                    <i v-if="hitText(h)">{{ hitText(h) }}</i>
+                    <em v-if="targetText(h)">{{ targetText(h) }}</em>
                   </span>
                 </div>
 
                 <div v-if="p.factors.length" class="pk-why">
                   <span class="pk-k">加分</span>
-                  <span v-for="f in p.factors.filter((x) => x.contribution > 0)" :key="f.key" class="pk-tag">
-                    {{ f.label }} {{ signed(f.raw) }}{{ f.unit }}
-                    <em class="muted">×{{ (f.weight * 100).toFixed(0) }}%</em>
+                  <span v-for="f in p.factors.filter((x) => x.contribution > 0)" :key="f.key" class="tg">
+                    <b>{{ f.label }}</b>
+                    <i>{{ signed(f.raw) }}{{ f.unit }}</i>
+                    <em>×{{ (f.weight * 100).toFixed(0) }}%</em>
                   </span>
                 </div>
 
                 <div v-if="p.reason.negative?.length" class="pk-why">
                   <span class="pk-k warn">留意</span>
-                  <span v-for="(n, i) in p.reason.negative" :key="i" class="pk-tag warn">{{ n }}</span>
+                  <span v-for="(n, i) in p.reason.negative" :key="i" class="tg warn">{{ n }}</span>
                 </div>
 
                 <footer class="pk-levels">
@@ -236,73 +340,17 @@ const marketNote = computed(() => {
           </div>
         </div>
         <div class="panel-body kb-body">
-          <ol class="rules">
-            <li>
-              <div class="rule-k">信号与成交隔一夜</div>
-              <p>
-                选股用的都是<b>收盘后</b>才定下来的数，所以今天算出的信号最早
-                <b>明天开盘</b>成交，当天买不进（T+1）。
-              </p>
-            </li>
-            <li>
-              <div class="rule-k">买点</div>
-              <p v-if="active.entry.gap_band">
-                明天<b>高开 {{ active.entry.gap_band[0] }}%~{{ active.entry.gap_band[1] }}%</b>
-                才买。低于 {{ active.entry.gap_band[0] }}% 说明昨天的强势没被市场确认；
-                高于 {{ active.entry.gap_band[1] }}% 已经接近一字板，追进去没有溢价、还可能买不到。
-              </p>              <p v-else-if="active.entry.gap_gate">
-                明天<b>开盘按市价</b>买。高开超过 {{ active.entry.gap_max }}%
-                视为情绪透支不追；低开超过 {{ Math.abs(active.entry.gap_min) }}%
-                视为跳空破位，昨天的信号已作废。
-              </p>
-              <p v-else>
-                明天<b>开盘按市价</b>买，不看跳空幅度——这条策略赚的是趋势延续，高开就是确认。
-              </p>
-            </li>
-            <li>
-              <div class="rule-k">买不到的两种情况</div>
-              <p>
-                开盘一字涨停（买盘封死）直接跳过；现金不够或单票超过
-                <b>{{ (active.entry.sizing.single_weight * 100).toFixed(0) }}%</b> 仓位上限时，
-                按可用额度缩量或跳过。
-              </p>
-            </li>
-            <li>
-              <div class="rule-k">大盘闸门</div>
-              <p>{{ marketNote }}</p>
-            </li>
-            <!-- 不看大盘的策略没有「弱市」这个状态，回测里 regime 恒为空、
-                 折算系数从不生效，写了就是骗人。 -->
-            <li v-if="active.entry.market_ma">
-              <div class="rule-k">弱势怎么处理</div>
-              <p v-if="active.entry.weak_participate">
-                弱市不停手：仓位按 ×{{ active.entry.regime_scale }} 折算，
-                <template v-if="active.entry.weak_huddle">
-                  并且要求所属行业当天有抱团迹象（行业涨停家数够多或涨幅排进前列），
-                  不抱团的票只做观察
-                </template>
-                <template v-else>不额外要求行业抱团</template>。
-              </p>
-              <p v-else>弱市直接停手，一张新单都不挂，等指数回到均线上方再恢复。</p>
-            </li>
-            <li>
-              <div class="rule-k">一次买多少</div>
-              <p>
-                最多同时持有 <b>{{ active.entry.sizing.top_n }} 只</b>，同一行业不超过
-                <b>{{ active.entry.sizing.max_per_industry }} 只</b>；单票不超过总资产的
-                <b>{{ (active.entry.sizing.single_weight * 100).toFixed(0) }}%</b>，
-                单笔最大亏损控制在总资产的
-                <b>{{ (active.entry.sizing.risk_per_trade * 100).toFixed(1) }}%</b>，
-                所以止损越宽，买入股数越少。
-              </p>
-            </li>
-            <li>
-              <div class="rule-k">能不能加仓</div>
-              <p>
-                {{ active.entry.allow_add ? '允许加仓：回踩不破关键均线时补到目标仓位。' : '不加仓：一次下注就是一次，中途补仓等于把已确认的判断改成两次没确认的下注。' }}
-              </p>
-            </li>
-          </ol>
+          <div class="rows">
+            <div v-for="(r, i) in entryRules" :key="i" class="row">
+              <span class="row-k">{{ r.k }}</span>
+              <div class="tags">
+                <span v-for="(t, j) in r.tags" :key="j" class="tg">
+                  <b>{{ t.t }}</b><i v-if="t.v">{{ t.v }}</i>
+                </span>
+                <span class="row-why">{{ r.why }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -316,36 +364,29 @@ const marketNote = computed(() => {
           </div>
         </div>
         <div class="panel-body kb-body">
-          <div class="exits">
-            <div class="ex">
-              <div class="ex-k down">止损</div>
-              <p>成交价 − <b>{{ active.exit.stop_atr }}×ATR</b>，跌破即卖，不讲理由。</p>
+          <div class="rows">
+            <div v-for="(r, i) in exitRules" :key="i" class="row">
+              <span class="row-k">{{ r.k }}</span>
+              <div class="tags">
+                <span
+                  v-for="(t, j) in r.tags"
+                  :key="j"
+                  class="tg"
+                  :class="t.tone"
+                >
+                  <b>{{ t.t }}</b><i v-if="t.v">{{ t.v }}</i>
+                </span>
+                <span class="row-why">{{ r.why }}</span>
+              </div>
             </div>
-            <div class="ex">
-              <div class="ex-k up">第一目标 TP1</div>
-              <p>
-                成交价 + <b>{{ active.exit.tp1_atr }}×ATR</b>，卖出<b>一半</b>。
-                <template v-if="active.exit.breakeven_after_tp1">
-                  剩余仓位的止损同时上移到成本价，这笔交易从此不可能再亏损。
-                </template>
-              </p>
-            </div>
-            <div class="ex">
-              <div class="ex-k up">第二目标 TP2</div>
-              <p>成交价 + <b>{{ active.exit.tp2_atr }}×ATR</b>，剩余仓位全部清掉。</p>
-            </div>
-            <div class="ex">
-              <div class="ex-k">时间止损</div>
-              <p>
-                持有满 <b>{{ active.exit.time_stop }} 个交易日</b>还没到目标，无论盈亏都退出——
-                资金被占着不涨，本身就是成本。
-              </p>
+            <div v-if="active.exit.need_limit_close" class="row">
+              <span class="row-k">烂板</span>
+              <div class="tags">
+                <span class="tg"><b>当日没封住</b><i>次日走</i></span>
+                <span class="row-why">收盘没涨停说明板没做住，不等第二天开盘的低开</span>
+              </div>
             </div>
           </div>
-
-          <p v-if="active.exit.need_limit_close" class="kb-line">
-            另外：买入当天收盘没封住涨停，次日开盘无条件走。
-          </p>
 
           <div v-if="active.selection.picks.length" class="kb-block">
             <div class="kb-title">按今天的价位算，三档在哪里</div>
@@ -474,10 +515,100 @@ const marketNote = computed(() => {
   font-weight: 600;
 }
 
-.kb-grid {
+/* 一个条件一个标签，读法和同花顺问财一样：先看字段，再看门槛。 */
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.row-k {
+  padding-top: 3px;
+  font-size: 11.5px;
+  color: var(--af-ink-3);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--af-surface-2);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--af-ink-2);
+  white-space: nowrap;
+}
+
+.tg b {
+  font-weight: 600;
+  color: var(--af-ink);
+}
+
+.tg i {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--af-brand-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.tg.brand {
+  background: var(--af-brand-soft);
+}
+
+.tg.brand i {
+  color: var(--af-brand);
+}
+
+.tg.up,
+.tg.up b {
+  color: var(--af-up);
+}
+
+.tg.down,
+.tg.down b {
+  color: var(--af-down);
+}
+
+.tg.warn {
+  background: var(--af-warn-soft);
+  color: var(--af-warn);
+}
+
+.tg.warn b {
+  color: inherit;
+}
+
+.tg em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--af-ink-3);
+}
+
+.tg.warn em {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.row-why {
+  font-size: 11.5px;
+  color: var(--af-ink-3);
 }
 
 .kb-block {
@@ -492,82 +623,11 @@ const marketNote = computed(() => {
   color: var(--af-ink-2);
 }
 
-.kb-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.kb-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 10px;
-  border-radius: var(--af-radius-xs);
-  background: var(--af-surface-2);
-  font-size: 12px;
-}
-
-.kb-op {
-  color: var(--af-brand-ink);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 .kb-line {
   margin: 0;
   font-size: 12px;
   line-height: 1.7;
   color: var(--af-ink-2);
-}
-
-.factors {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ft-row {
-  display: grid;
-  grid-template-columns: 92px 1fr 52px minmax(0, 1.4fr);
-  align-items: center;
-  gap: 10px;
-}
-
-.ft-label {
-  font-size: 12px;
-  color: var(--af-ink-2);
-}
-
-.ft-track {
-  height: 8px;
-  border-radius: 4px;
-  background: var(--af-surface-3);
-  overflow: hidden;
-}
-
-.ft-fill {
-  height: 100%;
-  border-radius: 4px;
-  background: var(--af-brand);
-  opacity: 0.75;
-}
-
-.ft-weight {
-  text-align: right;
-  font-size: 11.5px;
-  color: var(--af-ink-2);
-}
-
-.ft-desc {
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .picks {
@@ -639,24 +699,6 @@ const marketNote = computed(() => {
   color: var(--af-warn);
 }
 
-.pk-tag {
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: var(--af-surface-2);
-  font-size: 11.5px;
-  color: var(--af-ink-2);
-}
-
-.pk-tag.warn {
-  background: var(--af-warn-soft);
-  color: var(--af-warn);
-}
-
-.pk-tag em {
-  font-style: normal;
-  font-size: 10.5px;
-}
-
 .pk-levels {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -689,94 +731,6 @@ const marketNote = computed(() => {
 
 .lv.up b {
   color: var(--af-up);
-}
-
-.rules {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  counter-reset: rule;
-}
-
-.rules li {
-  position: relative;
-  padding-left: 22px;
-  counter-increment: rule;
-}
-
-.rules li::before {
-  content: counter(rule);
-  position: absolute;
-  left: 0;
-  top: 1px;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: var(--af-surface-3);
-  color: var(--af-ink-2);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 15px;
-  text-align: center;
-}
-
-.rule-k {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--af-ink);
-  margin-bottom: 3px;
-}
-
-.rules p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.75;
-  color: var(--af-ink-2);
-}
-
-.rules b {
-  color: var(--af-ink);
-  font-weight: 600;
-}
-
-.exits {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 10px;
-}
-
-.ex {
-  padding: 10px 12px;
-  border-radius: var(--af-radius-sm);
-  background: var(--af-surface-2);
-}
-
-.ex-k {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.ex-k.down {
-  color: var(--af-down);
-}
-
-.ex-k.up {
-  color: var(--af-up);
-}
-
-.ex p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--af-ink-2);
-}
-
-.ex b {
-  color: var(--af-ink);
 }
 
 .lv-table {
@@ -819,12 +773,14 @@ const marketNote = computed(() => {
     grid-template-columns: 72px 1fr 48px;
   }
 
-  .ft-row {
-    grid-template-columns: 76px 1fr 46px;
+  /* 窄屏上标签行改成上下排：62px 的标签栏会把条件挤成一条条竖字。 */
+  .row {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
-  .ft-desc {
-    display: none;
+  .row-k {
+    padding-top: 0;
   }
 
   .picks {

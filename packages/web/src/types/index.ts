@@ -1507,6 +1507,7 @@ export interface PlaybookStrategy {
     sort: { by: string; desc: boolean; label: string } | null
     top_n: number
     max_per_industry: number
+    pool_limit_min: number
     factors: Array<{ key: string; label: string; weight: number; desc: string }>
     picks: PlaybookPick[]
     notice: string

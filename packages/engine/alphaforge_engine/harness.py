@@ -102,7 +102,12 @@ BOUNDS: dict[str, tuple[float, float]] = {
     "max_per_industry": (1, 4),
     "stop_atr": (1.0, 4.0),
     "tp1_atr": (1.2, 5.0),
-    "tp2_atr": (3.0, 10.0),
+    # 上界原来是 10。搜索会一路顶到 10 ——「第二目标永不到达」在目标函数里
+    # 等于「不清仓、让盈利跑」，Calmar 更好看。但那是把止盈这一环删掉了，
+    # 不是找到更好的止盈：打板账户实测 tp2_atr = 10.0、ATR 约 1 元、股价 20 元，
+    # 目标价 +200%，等于这条策略只剩「减半 + 止损 + 时间止损」三档退出。
+    # 6 倍 ATR 还在「一天之内够不着但一周内有机会」的范围里，再高就没意义了。
+    "tp2_atr": (3.0, 6.0),
     "time_stop": (2, 60),
     # 这里**没有** `rebalance`：进场已经改成「每天补空缺仓位」，与模拟盘一致，
     # 调仓周期这个基因只剩下「让账户空着的时间变长」这一个作用——它会让搜索
@@ -194,6 +199,21 @@ def _clamp(name: str, value: float, bounds: dict | None = None) -> float | int:
     low, high = (bounds or BOUNDS)[name]
     value = min(max(float(value), low), high)
     return int(round(value)) if name in INT_GENES else round(value, 2)
+
+
+def clamp_params(params: dict, spec: dict | None = None) -> dict:
+    """把账户参数夹回这条策略当前的搜索区间。
+
+    区间会收窄（`tp2_atr` 上限从 10 降到 6），旧存档里就留着已经出界的值。
+    显示、撮合、进化起点三处必须读同一份合法参数——否则知识库上写着
+    「第二目标 10×ATR」，撮合却按 6×ATR 卖，两边各说各话。
+    """
+    bounds = bounds_for(spec)
+    out = dict(params)
+    for key, (low, high) in bounds.items():
+        if out.get(key) is not None:
+            out[key] = _clamp(key, out[key], bounds)
+    return out
 
 
 def _normalize(weights: dict[str, float]) -> dict[str, float]:

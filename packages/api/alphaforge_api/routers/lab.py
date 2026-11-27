@@ -82,7 +82,8 @@ def _live_params(strategy: str) -> dict:
     """
     acc = get_lab().account(strategy) or {}
     params = acc.get("params") or {}
-    return {k: params[k] for k in paper.PARAM_KEYS if params.get(k) is not None}
+    live = {k: params[k] for k in paper.PARAM_KEYS if params.get(k) is not None}
+    return harness.clamp_params(live, _live_spec(strategy))
 
 
 def _account(strategy: str, spec: dict, capital: float | None = None) -> dict:

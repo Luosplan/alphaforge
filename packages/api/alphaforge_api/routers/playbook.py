@@ -121,6 +121,7 @@ def playbook(request: Request):
                 "sort": result.get("sort"),
                 "top_n": result.get("top_n"),
                 "max_per_industry": result.get("max_per_industry"),
+                "pool_limit_min": int(result.get("pool_limit_min") or 0),
                 "factors": _factors(result.get("weights") or {}),
                 "picks": _picks(result, params),
                 "notice": result.get("notice") or result.get("rank_hint") or "",
